@@ -2,9 +2,10 @@
 
 from fastapi import APIRouter
 
-from app.api import cases, diagnosis, llm, prd, runs
+from app.api import cases, diagnosis, llm, prd, projects, runs
 
 api_router = APIRouter(prefix="/api")
+api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(prd.router, prefix="/prd", tags=["prd"])
 api_router.include_router(cases.router, prefix="/cases", tags=["cases"])
 api_router.include_router(runs.router, prefix="/runs", tags=["runs"])

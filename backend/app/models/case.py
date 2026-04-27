@@ -19,6 +19,7 @@ def _utcnow() -> datetime:
 
 class TestCase(SQLModel, table=True):
     __tablename__ = "test_cases"
+    __test__ = False  # tell pytest this is a domain class, not a test class
 
     case_id: str = Field(primary_key=True, description="TC-YYYYMMDD-NNN")
     project_id: str = Field(index=True)

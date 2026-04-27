@@ -1,5 +1,6 @@
 """SQLModel definitions. Import order matters — register in order of dependency."""
 
+from app.models.project import Project, PRD  # noqa: F401
 from app.models.case import TestCase  # noqa: F401
 from app.models.run import Run, StepEvent  # noqa: F401
 from app.models.diagnosis import Diagnosis  # noqa: F401

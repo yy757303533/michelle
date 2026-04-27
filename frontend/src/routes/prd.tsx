@@ -1,19 +1,356 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 export const Route = createFileRoute("/prd")({
   component: PrdPage,
 });
 
+interface ChapterMeta {
+  position: number;
+  level: number;
+  title: string;
+  normalized_title: string;
+  hash: string;
+  body_chars: number;
+}
+
+interface UploadResponse {
+  data: {
+    prd_id: string;
+    version: number;
+    title: string;
+    chapters: ChapterMeta[];
+    prior_version_id: string | null;
+    diff_summary: Record<string, number> | null;
+  };
+}
+
+interface GenerateResponse {
+  data: {
+    prd_id: string;
+    total_cases: number;
+    results: Array<{
+      chapter_index: number;
+      chapter_title: string;
+      saved_count: number;
+      saved_case_ids?: string[];
+      coverage_notes?: string;
+      error?: string;
+    }>;
+  };
+}
+
+interface PRDListItem {
+  prd_id: string;
+  project_id: string;
+  name: string;
+  version: number;
+  chapter_count: number;
+  uploaded_at: string;
+}
+
 function PrdPage() {
+  const qc = useQueryClient();
+  const [projectId, setProjectId] = useState("michelle");
+  const [name, setName] = useState("");
+  const [markdown, setMarkdown] = useState("");
+  const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
+  const [genResult, setGenResult] = useState<GenerateResponse["data"] | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  const list = useQuery({
+    queryKey: ["prd-list", projectId],
+    queryFn: async (): Promise<{ data: PRDListItem[] }> => {
+      const r = await fetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
+      return r.json();
+    },
+  });
+
+  const upload = useMutation({
+    mutationFn: async (): Promise<UploadResponse> => {
+      const r = await fetch("/api/prd/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          name: name || undefined,
+          markdown,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      setUploaded(resp.data);
+      setGenResult(null);
+      setSelected(new Set(resp.data.chapters.map((c) => c.position)));
+      qc.invalidateQueries({ queryKey: ["prd-list"] });
+    },
+  });
+
+  const generate = useMutation({
+    mutationFn: async (): Promise<GenerateResponse> => {
+      if (!uploaded) throw new Error("upload first");
+      const r = await fetch(`/api/prd/${uploaded.prd_id}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chapter_indices: [...selected],
+          max_cases_per_chapter: 8,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      setGenResult(resp.data);
+      qc.invalidateQueries({ queryKey: ["cases"] });
+    },
+  });
+
+  const toggleChapter = (pos: number) => {
+    const next = new Set(selected);
+    if (next.has(pos)) next.delete(pos);
+    else next.add(pos);
+    setSelected(next);
+  };
+
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">PRD</h1>
-      <p className="text-slate-500 text-sm">
-        Upload a markdown PRD here. Chapter-level diff and AI case generation land Day 4.
-      </p>
-      <div className="bg-white border border-dashed border-slate-300 rounded-lg p-12 text-center text-slate-400">
-        (upload area placeholder)
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">PRD ingest</h1>
+        <p className="text-slate-500 text-sm mt-1">
+          Paste markdown, see chapters detected, pick which to AI-generate cases for.
+        </p>
+      </div>
+
+      {/* Upload form */}
+      <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="project_id">
+            <input
+              className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+            />
+          </Field>
+          <Field label="name (optional, defaults to first H1)">
+            <input
+              className="border border-slate-200 rounded px-2 py-1 w-full text-sm"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Michelle PRD v0.5"
+            />
+          </Field>
+        </div>
+        <Field label="markdown">
+          <textarea
+            className="border border-slate-200 rounded p-2 w-full text-sm font-mono"
+            rows={10}
+            value={markdown}
+            onChange={(e) => setMarkdown(e.target.value)}
+            placeholder="# My PRD\n\n## Goals\n\n..."
+          />
+        </Field>
+        <button
+          className="bg-slate-900 text-white text-sm px-3 py-1.5 rounded hover:bg-slate-700 disabled:opacity-50"
+          disabled={!markdown.trim() || upload.isPending}
+          onClick={() => upload.mutate()}
+        >
+          {upload.isPending ? "uploading…" : "Upload + parse"}
+        </button>
+        {upload.error && (
+          <pre className="text-xs text-red-600 whitespace-pre-wrap">
+            {(upload.error as Error).message}
+          </pre>
+        )}
+      </div>
+
+      {/* After upload: chapter list + diff + generate */}
+      {uploaded && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+          <div className="flex justify-between items-baseline">
+            <div>
+              <span className="text-xs uppercase tracking-wide text-slate-400">
+                uploaded
+              </span>{" "}
+              <code className="text-sm">{uploaded.title}</code>
+              <span className="ml-2 text-xs text-slate-500">v{uploaded.version}</span>
+              <span className="ml-2 text-xs text-slate-400">
+                · prd_id <code>{uploaded.prd_id.slice(0, 8)}</code>…
+              </span>
+            </div>
+            {uploaded.diff_summary && (
+              <div className="text-xs">
+                {Object.entries(uploaded.diff_summary).map(([k, v]) => (
+                  <span
+                    key={k}
+                    className={
+                      "ml-2 px-2 py-0.5 rounded " +
+                      (k === "added"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : k === "modified"
+                          ? "bg-amber-50 text-amber-700"
+                          : k === "removed"
+                            ? "bg-red-50 text-red-700"
+                            : "bg-slate-50 text-slate-600")
+                    }
+                  >
+                    {k}: {v}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="text-sm">
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-slate-500">
+                {uploaded.chapters.length} chapters · {selected.size} selected
+              </span>
+              <button
+                className="text-xs text-slate-500 underline hover:text-slate-700"
+                onClick={() => setSelected(new Set(uploaded.chapters.map((c) => c.position)))}
+              >
+                select all
+              </button>
+              <button
+                className="text-xs text-slate-500 underline hover:text-slate-700"
+                onClick={() => setSelected(new Set())}
+              >
+                clear
+              </button>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-left text-slate-400">
+                <tr>
+                  <th className="pb-1 w-8"></th>
+                  <th className="pb-1 w-12">#</th>
+                  <th className="pb-1">title</th>
+                  <th className="pb-1 w-16">level</th>
+                  <th className="pb-1 w-20">chars</th>
+                  <th className="pb-1 w-24">hash</th>
+                </tr>
+              </thead>
+              <tbody>
+                {uploaded.chapters.map((c) => (
+                  <tr key={c.position} className="border-t border-slate-100">
+                    <td className="py-1">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(c.position)}
+                        onChange={() => toggleChapter(c.position)}
+                      />
+                    </td>
+                    <td className="text-slate-400 font-mono text-xs">{c.position}</td>
+                    <td>
+                      <code>{c.title}</code>{" "}
+                      <span className="text-xs text-slate-400">
+                        ({c.normalized_title})
+                      </span>
+                    </td>
+                    <td className="text-slate-500">H{c.level}</td>
+                    <td className="text-slate-500 font-mono text-xs">{c.body_chars}</td>
+                    <td className="text-slate-400 font-mono text-xs">{c.hash}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <button
+              className="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50"
+              disabled={selected.size === 0 || generate.isPending}
+              onClick={() => generate.mutate()}
+            >
+              {generate.isPending
+                ? "generating (≤5 min)…"
+                : `Generate cases for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
+            </button>
+            {generate.error && (
+              <pre className="text-xs text-red-600 whitespace-pre-wrap mt-2">
+                {(generate.error as Error).message}
+              </pre>
+            )}
+          </div>
+
+          {genResult && (
+            <div className="bg-slate-50 rounded p-3 text-sm">
+              <div className="font-medium mb-1">
+                Generated <span className="text-emerald-700">{genResult.total_cases}</span> cases.
+              </div>
+              <ul className="space-y-1">
+                {genResult.results.map((r) => (
+                  <li key={r.chapter_index} className="text-xs">
+                    <code>#{r.chapter_index}</code> {r.chapter_title}: {" "}
+                    {r.error ? (
+                      <span className="text-red-600">error: {r.error}</span>
+                    ) : (
+                      <span className="text-slate-600">
+                        {r.saved_count} cases saved → review them on{" "}
+                        <a className="text-blue-700 underline" href="/cases">
+                          Cases
+                        </a>
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* PRD history */}
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+          PRD history (project: <code>{projectId}</code>)
+        </div>
+        {list.data?.data?.length ? (
+          <table className="w-full text-sm">
+            <thead className="text-left text-slate-400">
+              <tr>
+                <th className="pb-1">name</th>
+                <th className="pb-1 w-16">v</th>
+                <th className="pb-1 w-20">chapters</th>
+                <th className="pb-1 w-44">uploaded_at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.data.data.map((p) => (
+                <tr key={p.prd_id} className="border-t border-slate-100">
+                  <td className="py-1">
+                    <code>{p.name}</code>
+                    <span className="text-xs text-slate-400 ml-2">
+                      ({p.prd_id.slice(0, 8)})
+                    </span>
+                  </td>
+                  <td className="text-slate-500">v{p.version}</td>
+                  <td className="text-slate-500">{p.chapter_count}</td>
+                  <td className="text-slate-400 font-mono text-xs">
+                    {new Date(p.uploaded_at).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <span className="text-slate-400 text-sm">no PRDs yet</span>
+        )}
       </div>
     </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-sm">
+      <span className="text-slate-500 mb-1 block text-xs uppercase tracking-wide">
+        {label}
+      </span>
+      {children}
+    </label>
   );
 }

@@ -1,0 +1,603 @@
+[
+  {
+    "case_id": "TC-20260427-0001",
+    "name": "使用确认账号 admin/password 成功登录 ZStack AIOS",
+    "intent": "验证 PRD A3 中确认的 Staging 环境 URL 与账号可正常登录并进入控制台",
+    "module": "0. 已确认事项",
+    "tags": [
+      "happy"
+    ],
+    "priority": "P0",
+    "preconditions": [
+      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "账号 admin / password 仍然有效"
+    ],
+    "steps": [
+      {
+        "intent": "在浏览器地址栏打开 http://172.25.17.105:5000/",
+        "expected": "页面加载完成,显示 ZStack 登录界面"
+      },
+      {
+        "intent": "在用户名输入框中输入 admin",
+        "expected": "用户名输入框显示 admin"
+      },
+      {
+        "intent": "在密码输入框中输入 password",
+        "expected": "密码输入框显示已输入(掩码)字符"
+      },
+      {
+        "intent": "点击 '登录' 按钮",
+        "expected": "页面跳转,进入控制台/主页"
+      },
+      {
+        "intent": "等待主控制台首屏加载完成",
+        "expected": "可看到顶部导航或左侧菜单等已登录后的界面元素"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "登录后 URL 不再停留在登录页路径,而是进入主控制台对应路由"
+      },
+      {
+        "description": "页面顶部或右上角显示当前登录用户标识(如 admin 或头像菜单)"
+      },
+      {
+        "description": "页面中可见至少一个仅登录后才显示的导航菜单项"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:已确认事项#0"
+  },
+  {
+    "case_id": "TC-20260427-0002",
+    "name": "登录页面以中文 SPA 形式呈现且核心元素完整",
+    "intent": "验证 PRD A3 描述的 '中文 SPA' 特征——登录页文案为中文,且为单页应用(无整页刷新)",
+    "module": "0. 已确认事项",
+    "tags": [
+      "edge"
+    ],
+    "priority": "P1",
+    "preconditions": [
+      "Staging 环境 http://172.25.17.105:5000/ 可访问"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/",
+        "expected": "登录页面加载完成"
+      },
+      {
+        "intent": "查看页面整体语言与文案",
+        "expected": "页面主要按钮、标签为中文(如 '登录'、'用户名'、'密码')"
+      },
+      {
+        "intent": "在用户名输入框输入任意字符,再清空",
+        "expected": "输入框可正常输入并清除,无整页刷新"
+      },
+      {
+        "intent": "观察浏览器标签页标题",
+        "expected": "标题包含 ZStack 或产品中文名"
+      },
+      {
+        "intent": "在不点击登录的情况下,刷新页面",
+        "expected": "仍停留在登录页,且页面渲染快速(SPA 行为)"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "登录按钮的可见文案为中文 '登录' 而非英文 Login"
+      },
+      {
+        "description": "用户名/密码输入框的占位符或标签均为中文"
+      },
+      {
+        "description": "页面与输入交互过程中浏览器没有触发整页跳转刷新(SPA 特征)"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:已确认事项#0"
+  },
+  {
+    "case_id": "TC-20260427-0003",
+    "name": "使用错误密码登录时给出明确失败提示",
+    "intent": "验证错误凭据被拒绝,且界面给出可被用户识别的失败反馈",
+    "module": "0. 已确认事项",
+    "tags": [
+      "error"
+    ],
+    "priority": "P0",
+    "preconditions": [
+      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "存在 admin 账号"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/",
+        "expected": "显示登录页面"
+      },
+      {
+        "intent": "在用户名输入框中输入 admin",
+        "expected": "用户名显示 admin"
+      },
+      {
+        "intent": "在密码输入框中输入 wrong_password_12345",
+        "expected": "密码以掩码形式被填入"
+      },
+      {
+        "intent": "点击 '登录' 按钮",
+        "expected": "页面不跳转到控制台"
+      },
+      {
+        "intent": "等待 2-3 秒并观察页面提示",
+        "expected": "登录页面上出现错误提示(如 '用户名或密码错误')"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "提交错误密码后,URL 仍保留在登录页对应路径,未进入控制台"
+      },
+      {
+        "description": "页面上显示一条登录失败的中文错误提示信息"
+      },
+      {
+        "description": "用户名输入框内容仍可见,允许用户立即纠正后重试"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:已确认事项#0"
+  },
+  {
+    "case_id": "TC-20260427-0004",
+    "name": "未登录时直接访问受保护页面应被重定向到登录页",
+    "intent": "验证 ZStack AIOS 对未授权访问的拦截能力(隐含的鉴权约束)",
+    "module": "0. 已确认事项",
+    "tags": [
+      "security",
+      "error"
+    ],
+    "priority": "P1",
+    "preconditions": [
+      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "当前浏览器会话未登录(必要时清除站点 cookies / 使用隔离会话)"
+    ],
+    "steps": [
+      {
+        "intent": "打开浏览器隐私/无痕窗口或清除 172.25.17.105 的站点 cookies",
+        "expected": "当前会话处于未登录状态"
+      },
+      {
+        "intent": "直接访问 http://172.25.17.105:5000/",
+        "expected": "页面加载"
+      },
+      {
+        "intent": "在不输入任何凭据的情况下,直接点击 '登录' 按钮",
+        "expected": "出现必填校验或登录失败提示,且未进入控制台"
+      },
+      {
+        "intent": "尝试在地址栏直接输入一个登录后才能访问的路径(例如 http://172.25.17.105:5000/web/)",
+        "expected": "页面被路由回登录界面,而非展示受保护内容"
+      },
+      {
+        "intent": "观察最终所处页面",
+        "expected": "停留在登录页,可看到用户名/密码输入框"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "空凭据点击登录后,系统未进入控制台,且给出必填或登录失败的可见提示"
+      },
+      {
+        "description": "未登录直接访问受保护路径时,最终展示的是登录页而非任何业务数据"
+      },
+      {
+        "description": "整个未登录流程中,页面未泄露任何具体资源(如虚拟机/集群列表)"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:已确认事项#0"
+  },
+  {
+    "case_id": "TC-20260427-0005",
+    "name": "首页加载并展示 Michelle 平台标识",
+    "intent": "验证用户访问根路径后能看到 Michelle 平台主入口,确认产品已上线可用",
+    "module": "1. 概述",
+    "tags": [
+      "happy"
+    ],
+    "priority": "P0",
+    "preconditions": [
+      "浏览器可访问 http://172.25.17.105:5000/"
+    ],
+    "steps": [
+      {
+        "intent": "在浏览器地址栏打开 http://172.25.17.105:5000/",
+        "expected": "页面成功加载,无 5xx/连接拒绝错误"
+      },
+      {
+        "intent": "等待页面完全渲染(loading 指示消失)",
+        "expected": "页面进入静止状态,出现可交互内容"
+      },
+      {
+        "intent": "在页面顶部或主区域查找 'Michelle' 字样",
+        "expected": "可见包含 'Michelle' 的标题或 logo 文本"
+      },
+      {
+        "intent": "观察主导航栏是否存在",
+        "expected": "页面顶部或侧边出现导航菜单"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "HTTP 响应状态为 200,页面 DOM 已渲染完成"
+      },
+      {
+        "description": "页面可见区域内文本包含 'Michelle'(大小写不敏感)"
+      },
+      {
+        "description": "页面存在至少一个可点击的导航元素(链接或按钮)"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:概述#1"
+  },
+  {
+    "case_id": "TC-20260427-0006",
+    "name": "主导航覆盖生成-执行-诊断-沉淀四大能力入口",
+    "intent": "验证 PRD 概述中描述的 AI 全链路四个环节在 UI 中均有对应入口",
+    "module": "1. 概述",
+    "tags": [
+      "happy"
+    ],
+    "priority": "P1",
+    "preconditions": [
+      "首页可正常访问"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/",
+        "expected": "首页加载完成"
+      },
+      {
+        "intent": "查看主导航栏中的菜单项",
+        "expected": "导航栏显示多个一级入口"
+      },
+      {
+        "intent": "在导航中查找与 'PRD'、'用例' 或 '生成' 相关的入口",
+        "expected": "存在指向 PRD/用例管理的链接"
+      },
+      {
+        "intent": "在导航中查找与 '运行'、'执行' 或 'Run' 相关的入口",
+        "expected": "存在指向运行/执行视图的链接"
+      },
+      {
+        "intent": "在导航或页面中查找与 '诊断'、'失败' 或 'Trace' 相关的内容",
+        "expected": "存在诊断或 trace 查看相关入口"
+      },
+      {
+        "intent": "在导航或页面中查找与 '模式'、'沉淀' 或 'Pattern' 相关的内容",
+        "expected": "存在 pattern/沉淀相关入口"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "导航栏总条目数 >= 2,且文本上覆盖 PRD/Cases 与 Runs 两类入口"
+      },
+      {
+        "description": "每个被识别到的导航入口均为可点击链接(有 href 或 click handler)"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:概述#1"
+  },
+  {
+    "case_id": "TC-20260427-0007",
+    "name": "极长 URL 路径下首页仍优雅响应",
+    "intent": "验证当用户访问超长或异常路径片段时,平台不崩溃且给出可识别响应",
+    "module": "1. 概述",
+    "tags": [
+      "edge",
+      "error"
+    ],
+    "priority": "P2",
+    "preconditions": [
+      "首页可正常访问"
+    ],
+    "steps": [
+      {
+        "intent": "在浏览器地址栏访问 http://172.25.17.105:5000/this-route-definitely-does-not-exist-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected": "页面返回响应,而非浏览器级连接错误"
+      },
+      {
+        "intent": "等待页面渲染完成",
+        "expected": "DOM 进入稳定状态"
+      },
+      {
+        "intent": "观察页面是否显示 404、未找到、或回退到首页内容",
+        "expected": "可见 404 提示或被路由重定向至已知页面"
+      },
+      {
+        "intent": "查找页面上是否存在返回首页的可点击元素",
+        "expected": "出现返回首页/导航链接"
+      },
+      {
+        "intent": "点击返回首页的链接",
+        "expected": "浏览器导航至 http://172.25.17.105:5000/ 且首页正常加载"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "访问不存在路径时,页面 DOM 渲染成功,不出现浏览器级 ERR_CONNECTION_REFUSED 或白屏"
+      },
+      {
+        "description": "页面提供至少一种回到主入口的方式(链接、按钮或自动重定向)"
+      },
+      {
+        "description": "点击返回首页后,URL pathname 变为 '/' 且首页内容可见"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:概述#1"
+  },
+  {
+    "case_id": "TC-20260427-0008",
+    "name": "首页关键定位文案可被发现",
+    "intent": "验证 PRD 概述中的核心定位('AI-native'/'生成→执行→诊断→沉淀'之一)在 UI 中至少有一处呈现,确保产品信息一致",
+    "module": "1. 概述",
+    "tags": [
+      "happy",
+      "edge"
+    ],
+    "priority": "P2",
+    "preconditions": [
+      "首页可正常访问"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/",
+        "expected": "首页加载完成"
+      },
+      {
+        "intent": "在主可视区域内查看是否有产品介绍/标语区块",
+        "expected": "存在 hero/标题区块"
+      },
+      {
+        "intent": "在该区块中查找以下任一关键词: 'AI-native'、'AI'、'生成'、'诊断'、'沉淀'、'测试'",
+        "expected": "至少命中一个关键词"
+      },
+      {
+        "intent": "滚动页面到底部",
+        "expected": "能正常滚动,无 JS 报错导致的卡死"
+      },
+      {
+        "intent": "回到页面顶部",
+        "expected": "页面顶部内容重新可见"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "首页可见文本中至少包含 'AI'、'测试'、'生成'、'诊断'、'沉淀' 中的一个关键词"
+      },
+      {
+        "description": "页面可在垂直方向滚动,且滚动过程中无报错弹窗或控制台抛出未捕获异常导致的崩溃"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:概述#1"
+  },
+  {
+    "case_id": "TC-20260427-0009",
+    "name": "上传 PRD 后一分钟内可见生成用例",
+    "intent": "验证痛点 2.1.1 的反向能力:Michelle 能在分钟级把 PRD 转成可读的测试用例草稿",
+    "module": "2. 问题背景",
+    "tags": [
+      "happy"
+    ],
+    "priority": "P0",
+    "preconditions": [
+      "已部署的 Michelle Web 站点 http://172.25.17.105:5000/ 可访问",
+      "本地准备好一份至少包含 2 个章节的 PRD markdown 文件"
+    ],
+    "steps": [
+      {
+        "intent": "在浏览器打开 http://172.25.17.105:5000/",
+        "expected": "看到 Michelle 首页,顶部导航包含 'PRD' 与 '用例' 入口"
+      },
+      {
+        "intent": "点击顶部导航中的 'PRD' 入口",
+        "expected": "进入 PRD 管理页面,可见 '上传 PRD' 按钮"
+      },
+      {
+        "intent": "点击 '上传 PRD' 按钮并选择本地准备好的 markdown 文件",
+        "expected": "出现上传进度或文件名预览"
+      },
+      {
+        "intent": "点击 '生成用例' 或 '解析' 按钮触发 AI 用例生成",
+        "expected": "页面出现解析中/生成中状态提示"
+      },
+      {
+        "intent": "等待生成完成(不超过 60 秒),不要离开页面",
+        "expected": "状态由 '生成中' 变为 '已完成' 或类似终态"
+      },
+      {
+        "intent": "切换到 '用例' 列表页面",
+        "expected": "看到本次 PRD 对应的至少 1 条草稿用例"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "PRD 上传到生成用例完成的端到端耗时小于 60 秒"
+      },
+      {
+        "description": "用例列表中至少出现 1 条由本次 PRD 生成的草稿用例,且标题非空"
+      },
+      {
+        "description": "草稿用例显示来源 PRD 的文件名或章节信息,可追溯"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:问题背景#2"
+  },
+  {
+    "case_id": "TC-20260427-0010",
+    "name": "上传超长 PRD 仍可分章节生成用例",
+    "intent": "验证边界场景:PRD 内容很长(模拟真实大型需求文档)时,系统不会一次性失败,而是按章节切分推进",
+    "module": "2. 问题背景",
+    "tags": [
+      "edge"
+    ],
+    "priority": "P1",
+    "preconditions": [
+      "Michelle Web 可访问",
+      "准备一份含 10+ 章节、总长度 ≥ 2 万字符的 PRD markdown 文件"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/ 并进入 'PRD' 页面",
+        "expected": "看到 '上传 PRD' 按钮"
+      },
+      {
+        "intent": "上传准备好的超长 PRD 文件",
+        "expected": "页面显示文件已选中,文件名可见"
+      },
+      {
+        "intent": "点击 '生成用例' 按钮",
+        "expected": "进入生成中状态,可能出现章节进度或计数提示"
+      },
+      {
+        "intent": "等待解析过程,期间观察是否有章节级进度反馈",
+        "expected": "页面持续显示进行中状态,不出现整体崩溃或白屏"
+      },
+      {
+        "intent": "解析完成后切换到 '用例' 列表",
+        "expected": "用例数量明显大于普通短 PRD"
+      },
+      {
+        "intent": "在用例列表中按 'module' 或章节字段筛选/分组",
+        "expected": "可以看到来自多个不同章节的用例,而不是只有第 1 章"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "超长 PRD 上传未触发前端报错弹窗或 5xx 错误页"
+      },
+      {
+        "description": "生成完成后用例列表至少包含来自 3 个不同章节的用例"
+      },
+      {
+        "description": "用例总数 ≥ PRD 章节数,体现按章节切分而非整体一锅生成"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:问题背景#2"
+  },
+  {
+    "case_id": "TC-20260427-0011",
+    "name": "运行失败用例后可一键查看 AI 诊断",
+    "intent": "验证痛点 2.1.3 的反向能力:CI 红时不需要人工逐条看截图,Michelle 直接给出根因判断",
+    "module": "2. 问题背景",
+    "tags": [
+      "happy"
+    ],
+    "priority": "P0",
+    "preconditions": [
+      "Michelle Web 可访问",
+      "系统中已存在至少 1 条之前执行失败的用例(或可通过故意指向不存在 URL 的用例制造一次失败)"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/ 并进入 '用例' 列表页",
+        "expected": "看到用例列表,部分用例标记为失败状态"
+      },
+      {
+        "intent": "点击一条状态为 '失败' 的用例,进入详情页",
+        "expected": "进入用例详情页,显示最近一次运行记录"
+      },
+      {
+        "intent": "在详情页找到该次失败的运行条目并点击进入",
+        "expected": "进入运行 trace 页面,可见步骤列表与状态"
+      },
+      {
+        "intent": "点击 '诊断' 或 'AI 分析' 按钮(如已自动诊断则定位到诊断面板)",
+        "expected": "页面出现诊断结果区块或开始诊断中状态"
+      },
+      {
+        "intent": "等待诊断结果出现",
+        "expected": "诊断面板显示根因总结、相关失败步骤与修复建议"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "诊断结果包含一段不超过 3 行的中文根因摘要,且非空"
+      },
+      {
+        "description": "诊断结果至少链接或高亮 1 个具体失败步骤,可点击跳转回 trace"
+      },
+      {
+        "description": "从打开失败用例到看到诊断结果的耗时小于 30 秒"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:问题背景#2"
+  },
+  {
+    "case_id": "TC-20260427-0012",
+    "name": "上传非 PRD 格式文件应给出明确错误",
+    "intent": "验证错误处理:用户误传非 markdown / 非 PRD 文件时,系统不应静默生成空用例,而要明确报错",
+    "module": "2. 问题背景",
+    "tags": [
+      "error",
+      "edge"
+    ],
+    "priority": "P1",
+    "preconditions": [
+      "Michelle Web 可访问",
+      "本地准备一个明显不是 PRD 的文件,例如一张 1KB 的随机 png 图片或一个空 .txt 文件"
+    ],
+    "steps": [
+      {
+        "intent": "打开 http://172.25.17.105:5000/ 并进入 'PRD' 页面",
+        "expected": "看到 '上传 PRD' 按钮"
+      },
+      {
+        "intent": "点击 '上传 PRD' 按钮并选择那张 png 图片(或空 txt)",
+        "expected": "文件选择完成,文件名出现在表单中"
+      },
+      {
+        "intent": "点击 '生成用例' 按钮提交",
+        "expected": "页面给出明确反馈,不进入长时间转圈"
+      },
+      {
+        "intent": "观察页面是否出现错误提示文本",
+        "expected": "出现红色 / 警示样式的错误信息,例如 '不支持的文件类型' 或 '内容无法解析为 PRD'"
+      },
+      {
+        "intent": "切换到 '用例' 列表页面",
+        "expected": "未出现由本次错误上传产生的新草稿用例"
+      }
+    ],
+    "assertions": [
+      {
+        "description": "错误提示在 5 秒内出现,且文案明确说明失败原因(类型不支持或内容为空)"
+      },
+      {
+        "description": "用例列表数量在错误上传前后保持一致,不会被脏数据污染"
+      },
+      {
+        "description": "页面未崩溃,用户可以立即重新选择正确的 PRD 文件再次上传"
+      }
+    ],
+    "prompt_version": "case_gen_v1",
+    "model_version": "claude-opus-4-7[1m]",
+    "generated_from": "chapter:问题背景#2"
+  }
+]
