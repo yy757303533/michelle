@@ -6,12 +6,21 @@ Strategy:
   3. On LLMAuthError or LLMResponseFormatError → bubble up (config or bug).
   4. If all clients fail → re-raise the last `FallbackableLLMError`.
 
-Configuration order (highest priority first):
-  - claude-cli (if `claude` binary present + subscription)
-  - flywheel   (if FLYWHEEL_TOKEN; quota currently exhausted)
-  - minimax    (if MINIMAX_API_KEY)
+Configuration order (highest priority first; lower number = higher priority):
 
-Selection can be overridden per-call via `prefer=...`.
+  10  claude-cli   subscription, $0 main path
+  15  codex-cli    OpenAI subscription, secondary CLI
+  20  flywheel     premium proxy (Opus / GPT-5.x) when quota allows
+  25  deepseek     cheap reasoning + chat (OpenAI-compatible)
+  30  qwen         Alibaba DashScope (OpenAI-compatible mode)
+  35  glm          智谱 (OpenAI-compatible)
+  40  kimi         Moonshot (OpenAI-compatible)
+  45  gemini       Google (OpenAI-compatible)
+  50  minimax      original Day-3 fallback, supports vision natively
+  60  relay        any OpenAI-compatible relay (OneAPI/NewAPI/OpenRouter…)
+
+Selection can be overridden per-call via `prefer=...`. All providers are
+opt-in: empty API keys/binaries → disabled, never tried.
 """
 
 from __future__ import annotations
@@ -27,8 +36,10 @@ from app.llm.base import (
     LLMResult,
 )
 from app.llm.claude_cli import ClaudeCLIClient
+from app.llm.codex_cli import CodexCLIClient
 from app.llm.flywheel import FlywheelClient
 from app.llm.minimax import MiniMaxClient
+from app.llm.openai_compatible import OpenAICompatibleClient
 from app.obs import EVENTS, get_logger
 
 _log = get_logger(__name__)
@@ -46,34 +57,71 @@ def _claude_binary_present() -> bool:
     return shutil.which(settings.claude_cli_path or "claude") is not None
 
 
+def _codex_binary_present() -> bool:
+    return shutil.which(settings.codex_cli_path or "codex") is not None
+
+
+def _oai(name: str, key: str, base: str, model: str, *, supports_image: bool = False) -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        name=name,
+        api_key=key,
+        base_url=base,
+        default_model=model,
+        supports_image=supports_image,
+    )
+
+
 def build_default_clients() -> list[GatewayClient]:
     """Construct clients based on env. Empty configs become disabled clients."""
     out: list[GatewayClient] = []
 
-    out.append(
-        GatewayClient(
-            name="claude-cli",
-            client=ClaudeCLIClient(),
-            priority=10,
-            available=_claude_binary_present(),
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="flywheel",
-            client=FlywheelClient(),
-            priority=20,
-            available=bool(settings.flywheel_token),
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="minimax",
-            client=MiniMaxClient(),
-            priority=30,
-            available=bool(settings.minimax_api_key),
-        )
-    )
+    out.append(GatewayClient(
+        name="claude-cli", client=ClaudeCLIClient(),
+        priority=10, available=_claude_binary_present(),
+    ))
+    out.append(GatewayClient(
+        name="codex-cli", client=CodexCLIClient(binary=settings.codex_cli_path or "codex"),
+        priority=15, available=settings.codex_enabled and _codex_binary_present(),
+    ))
+    out.append(GatewayClient(
+        name="flywheel", client=FlywheelClient(),
+        priority=20, available=bool(settings.flywheel_token),
+    ))
+    out.append(GatewayClient(
+        name="deepseek",
+        client=_oai("deepseek", settings.deepseek_api_key, settings.deepseek_base_url, settings.deepseek_model),
+        priority=25, available=settings.has_deepseek,
+    ))
+    out.append(GatewayClient(
+        name="qwen",
+        client=_oai("qwen", settings.qwen_api_key, settings.qwen_base_url, settings.qwen_model, supports_image=True),
+        priority=30, available=settings.has_qwen,
+    ))
+    out.append(GatewayClient(
+        name="glm",
+        client=_oai("glm", settings.glm_api_key, settings.glm_base_url, settings.glm_model, supports_image=True),
+        priority=35, available=settings.has_glm,
+    ))
+    out.append(GatewayClient(
+        name="kimi",
+        client=_oai("kimi", settings.kimi_api_key, settings.kimi_base_url, settings.kimi_model, supports_image=True),
+        priority=40, available=settings.has_kimi,
+    ))
+    out.append(GatewayClient(
+        name="gemini",
+        client=_oai("gemini", settings.gemini_api_key, settings.gemini_base_url, settings.gemini_model, supports_image=True),
+        priority=45, available=settings.has_gemini,
+    ))
+    out.append(GatewayClient(
+        name="minimax", client=MiniMaxClient(),
+        priority=50, available=bool(settings.minimax_api_key),
+    ))
+    if settings.has_relay:
+        out.append(GatewayClient(
+            name=settings.relay_name or "relay",
+            client=_oai(settings.relay_name or "relay", settings.relay_api_key, settings.relay_base_url, settings.relay_model),
+            priority=60, available=True,
+        ))
     return sorted(out, key=lambda g: g.priority)
 
 

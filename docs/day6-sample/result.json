@@ -1,0 +1,22 @@
+{
+  "project": "michelle",
+  "run_id": "1b63c75e-07f5-4fb4-bd01-ce04ac8bea64",
+  "excel_path": "验证 PRD A3 中确认的 Staging 环境 URL 与账号可正常登录并进入控制台",
+  "timestamp": "2026-04-27T10:20:24.395105+00:00",
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0
+  },
+  "results": [
+    {
+      "case_id": "TC-20260427-0001",
+      "title": "使用确认账号 admin/password 成功登录 ZStack AIOS",
+      "module": "0. 已确认事项",
+      "status": "pass",
+      "error": "",
+      "screenshot_path": null
+    }
+  ]
+}

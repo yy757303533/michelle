@@ -1,8 +1,4 @@
-"""Run lifecycle endpoints + report serving.
-
-Day 5: list/detail + serve generated HTML report.
-Day 6: POST /api/runs to actually trigger a run via claude_runner.
-"""
+"""Run lifecycle endpoints + report serving."""
 
 from __future__ import annotations
 
@@ -10,20 +6,76 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
 from app.db import get_session
 from app.models import Run, StepEvent, TestCase
+from app.obs import EVENTS, get_logger
 from app.services.report_html import (
     render_report_html,
     render_report_json,
     run_to_report_input,
     write_report_files,
 )
+from app.services.run_orchestrator import (
+    DEFAULT_RUN_TIMEOUT,
+    create_run_row,
+    kick_off,
+)
 from app.storage import run_dir as run_dir_for
 
 router = APIRouter()
+log = get_logger(__name__)
+
+
+class CreateRunsRequest(BaseModel):
+    case_ids: list[str]
+    env: str = "default"
+    timeout_seconds: int | None = None
+    """Override per-call. Defaults to DEFAULT_RUN_TIMEOUT."""
+
+
+@router.post("/")
+async def create_runs(
+    body: CreateRunsRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Kick off async execution for one or more cases. Returns run_ids."""
+    if not body.case_ids:
+        raise HTTPException(status_code=400, detail="case_ids must not be empty")
+
+    runs: list[Run] = []
+    timeout = body.timeout_seconds or DEFAULT_RUN_TIMEOUT
+    for cid in body.case_ids:
+        try:
+            run = await create_run_row(case_id=cid, env=body.env, session=session)
+            runs.append(run)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    await session.commit()
+
+    # Schedule background execution. Each runs in its own AsyncSession.
+    for run in runs:
+        kick_off(
+            case_id=run.case_id,
+            run_id=run.run_id,
+            env=run.env,
+            timeout_seconds=timeout,
+        )
+        log.info(EVENTS.RUN_CREATED.name, run_id=run.run_id, case_id=run.case_id, env=run.env)
+
+    return {
+        "data": {
+            "run_ids": [r.run_id for r in runs],
+            "runs": [
+                {"run_id": r.run_id, "case_id": r.case_id, "status": r.status}
+                for r in runs
+            ],
+        }
+    }
 
 
 @router.get("/")

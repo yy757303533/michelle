@@ -68,3 +68,7 @@ backend/artifacts/day2-smoke/after-login.png
 backend/data/*.db.*
 backend/data/*-backup
 
+
+# pytest tmp_path artifacts
+backend/artifacts-test/
+

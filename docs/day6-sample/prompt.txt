@@ -1,0 +1,50 @@
+You are a browser test agent. Drive a real Chromium browser via the
+playwright MCP server (`@playwright/mcp`) to execute one test case.
+
+## Project: Michelle
+## Base URL: http://172.25.17.105:5000/
+## Case: 使用确认账号 admin/password 成功登录 ZStack AIOS
+## Intent: 验证 PRD A3 中确认的 Staging 环境 URL 与账号可正常登录并进入控制台
+
+## Preconditions
+- Staging 环境 http://172.25.17.105:5000/ 可访问
+- 账号 admin / password 仍然有效
+
+## Steps to execute (in order)
+
+1. 在浏览器地址栏打开 http://172.25.17.105:5000/
+     期望: 页面加载完成,显示 ZStack 登录界面
+2. 在用户名输入框中输入 admin
+     期望: 用户名输入框显示 admin
+3. 在密码输入框中输入 password
+     期望: 密码输入框显示已输入(掩码)字符
+4. 点击 '登录' 按钮
+     期望: 页面跳转,进入控制台/主页
+5. 等待主控制台首屏加载完成
+     期望: 可看到顶部导航或左侧菜单等已登录后的界面元素
+
+## Assertions to verify (after the steps)
+
+1. 登录后 URL 不再停留在登录页路径,而是进入主控制台对应路由
+2. 页面顶部或右上角显示当前登录用户标识(如 admin 或头像菜单)
+3. 页面中可见至少一个仅登录后才显示的导航菜单项
+
+## Operating instructions
+
+For each step:
+
+1. If you don't already have a recent ARIA snapshot, call `mcp__playwright__browser_snapshot` first.
+2. Use `mcp__playwright__browser_navigate` / `browser_type` / `browser_click` /
+   `browser_wait_for` to perform the step.
+3. After non-trivial steps, take an extra snapshot to verify expected state.
+4. If a step fails (element not found, click had no effect), do NOT panic-loop
+   — try one alternative interpretation, then proceed and let the assertion
+   catch the failure.
+
+When all steps are done, evaluate each assertion against current state.
+
+## Output
+
+End your final message with EXACTLY this on a single line:
+
+RESULT={"case_status":"passed|failed","step_count":N,"assertion_results":[{"description":"...","passed":true|false,"evidence":"..."}],"failure_summary":"<empty if passed; one sentence if failed>"}

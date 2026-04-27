@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -41,6 +41,7 @@ const STATUS_FILTERS: Array<{ key: string; label: string }> = [
 
 function CasesPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -68,6 +69,22 @@ function CasesPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cases"] }),
   });
 
+  const runMut = useMutation({
+    mutationFn: async (case_id: string): Promise<{ data: { run_ids: string[] } }> => {
+      const r = await fetch("/api/runs/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_ids: [case_id], env: "default" }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      const id = resp?.data?.run_ids?.[0];
+      if (id) navigate({ to: "/runs/$id", params: { id } });
+    },
+  });
+
   const counts = cases.data?.counts_by_status ?? {};
 
   return (
@@ -75,8 +92,8 @@ function CasesPage() {
       <div>
         <h1 className="text-2xl font-semibold">Test cases</h1>
         <p className="text-slate-500 text-sm mt-1">
-          AI-generated drafts enter here as <code>pending</code>. Review or reject.
-          Day 6 wires "Run" — for now this is the queue.
+          AI-generated drafts enter as <code>pending</code>. Review → approve → click <strong>Run</strong>.
+          {runMut.error && <span className="ml-2 text-red-600">run error: {(runMut.error as Error).message}</span>}
         </p>
       </div>
 
@@ -136,7 +153,9 @@ function CasesPage() {
                   onReject={() =>
                     review.mutate({ id: c.case_id, action: "reject" })
                   }
+                  onRun={() => runMut.mutate(c.case_id)}
                   busy={review.isPending}
+                  runBusy={runMut.isPending && runMut.variables === c.case_id}
                 />
               ))}
             </tbody>
@@ -153,14 +172,18 @@ function CaseRowView({
   onToggle,
   onApprove,
   onReject,
+  onRun,
   busy,
+  runBusy,
 }: {
   c: CaseRow;
   expanded: boolean;
   onToggle: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onRun: () => void;
   busy: boolean;
+  runBusy: boolean;
 }) {
   return (
     <>
@@ -209,6 +232,14 @@ function CaseRowView({
                 reject
               </button>
             </>
+          ) : c.review_status === "approved" ? (
+            <button
+              className="text-xs px-2 py-0.5 rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50"
+              disabled={runBusy}
+              onClick={onRun}
+            >
+              {runBusy ? "starting…" : "▶ Run"}
+            </button>
           ) : (
             <span className="text-xs text-slate-400">—</span>
           )}
