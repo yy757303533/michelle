@@ -52,3 +52,14 @@ coverage.xml
 # Build
 build/
 *.egg
+
+# Day 2 artifacts that ARE binary or transient (not committed)
+backend/artifacts/day2-smoke/claude.stream.jsonl
+backend/artifacts/day2-smoke/claude.err.log
+backend/artifacts/day2-smoke/.playwright-mcp/
+backend/artifacts/day2-smoke/after-login.png
+
+
+# Playwright MCP per-run state
+.playwright-mcp/
+*.playwright-mcp.tmp
