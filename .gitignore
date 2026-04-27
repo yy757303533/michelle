@@ -63,3 +63,8 @@ backend/artifacts/day2-smoke/after-login.png
 # Playwright MCP per-run state
 .playwright-mcp/
 *.playwright-mcp.tmp
+
+# DB backups
+backend/data/*.db.*
+backend/data/*-backup
+
