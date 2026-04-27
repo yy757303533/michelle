@@ -79,6 +79,9 @@ function RunDetailPage() {
 
   return (
     <div className="space-y-6">
+      <Link to="/runs" className="text-xs text-slate-500 hover:text-slate-900">
+        ← all runs
+      </Link>
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-xs uppercase tracking-wide text-slate-400">run</div>

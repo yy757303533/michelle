@@ -9,12 +9,19 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as RunsRouteImport } from './routes/runs'
 import { Route as PrdRouteImport } from './routes/prd'
 import { Route as CasesRouteImport } from './routes/cases'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as RunsIndexRouteImport } from './routes/runs.index'
 import { Route as RunsIdRouteImport } from './routes/runs.$id'
 import { Route as DiagnosisIdRouteImport } from './routes/diagnosis.$id'
 
+const RunsRoute = RunsRouteImport.update({
+  id: '/runs',
+  path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PrdRoute = PrdRouteImport.update({
   id: '/prd',
   path: '/prd',
@@ -30,10 +37,15 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RunsIndexRoute = RunsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => RunsRoute,
+} as any)
 const RunsIdRoute = RunsIdRouteImport.update({
-  id: '/runs/$id',
-  path: '/runs/$id',
-  getParentRoute: () => rootRouteImport,
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => RunsRoute,
 } as any)
 const DiagnosisIdRoute = DiagnosisIdRouteImport.update({
   id: '/diagnosis/$id',
@@ -45,8 +57,10 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
   '/prd': typeof PrdRoute
+  '/runs': typeof RunsRouteWithChildren
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
+  '/runs/': typeof RunsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,33 +68,58 @@ export interface FileRoutesByTo {
   '/prd': typeof PrdRoute
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
+  '/runs': typeof RunsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
   '/prd': typeof PrdRoute
+  '/runs': typeof RunsRouteWithChildren
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
+  '/runs/': typeof RunsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/cases' | '/prd' | '/diagnosis/$id' | '/runs/$id'
+  fullPaths:
+    | '/'
+    | '/cases'
+    | '/prd'
+    | '/runs'
+    | '/diagnosis/$id'
+    | '/runs/$id'
+    | '/runs/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/cases' | '/prd' | '/diagnosis/$id' | '/runs/$id'
-  id: '__root__' | '/' | '/cases' | '/prd' | '/diagnosis/$id' | '/runs/$id'
+  to: '/' | '/cases' | '/prd' | '/diagnosis/$id' | '/runs/$id' | '/runs'
+  id:
+    | '__root__'
+    | '/'
+    | '/cases'
+    | '/prd'
+    | '/runs'
+    | '/diagnosis/$id'
+    | '/runs/$id'
+    | '/runs/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CasesRoute: typeof CasesRoute
   PrdRoute: typeof PrdRoute
+  RunsRoute: typeof RunsRouteWithChildren
   DiagnosisIdRoute: typeof DiagnosisIdRoute
-  RunsIdRoute: typeof RunsIdRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/runs': {
+      id: '/runs'
+      path: '/runs'
+      fullPath: '/runs'
+      preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/prd': {
       id: '/prd'
       path: '/prd'
@@ -102,12 +141,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/runs/': {
+      id: '/runs/'
+      path: '/'
+      fullPath: '/runs/'
+      preLoaderRoute: typeof RunsIndexRouteImport
+      parentRoute: typeof RunsRoute
+    }
     '/runs/$id': {
       id: '/runs/$id'
-      path: '/runs/$id'
+      path: '/$id'
       fullPath: '/runs/$id'
       preLoaderRoute: typeof RunsIdRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof RunsRoute
     }
     '/diagnosis/$id': {
       id: '/diagnosis/$id'
@@ -119,12 +165,24 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface RunsRouteChildren {
+  RunsIdRoute: typeof RunsIdRoute
+  RunsIndexRoute: typeof RunsIndexRoute
+}
+
+const RunsRouteChildren: RunsRouteChildren = {
+  RunsIdRoute: RunsIdRoute,
+  RunsIndexRoute: RunsIndexRoute,
+}
+
+const RunsRouteWithChildren = RunsRoute._addFileChildren(RunsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CasesRoute: CasesRoute,
   PrdRoute: PrdRoute,
+  RunsRoute: RunsRouteWithChildren,
   DiagnosisIdRoute: DiagnosisIdRoute,
-  RunsIdRoute: RunsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -22,6 +22,9 @@ function RootLayout() {
             <Link to="/cases" activeProps={{ className: "text-slate-900 font-medium" }} className="text-slate-500 hover:text-slate-900">
               Cases
             </Link>
+            <Link to="/runs" activeProps={{ className: "text-slate-900 font-medium" }} className="text-slate-500 hover:text-slate-900">
+              Runs
+            </Link>
           </nav>
         </div>
       </header>
