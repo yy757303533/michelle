@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]\n*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual
+.venv/
+venv/
+env/
+
+# Test / IDE
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Artifacts（测试执行结果，不提交）
+artifacts/
+**/artifacts/
+
+# 敏感文件（含账号密码，不提交）
+projects/*/project.yaml
+
+# MCP（如本地临时生成，可不提交）
+.claude.json

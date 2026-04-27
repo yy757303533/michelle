@@ -1,0 +1,5 @@
+# git archive 打包时排除
+__pycache__/ export-ignore
+.pytest_cache/ export-ignore
+artifacts/ export-ignore
+*.pyc export-ignore

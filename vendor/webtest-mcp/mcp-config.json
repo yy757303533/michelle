@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "webtest": {
+      "command": "webtest-mcp"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}

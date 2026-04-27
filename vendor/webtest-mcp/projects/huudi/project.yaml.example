@@ -1,0 +1,8 @@
+# huudi 项目配置模板
+# 复制此文件为 project.yaml，填入真实账号密码，不要提交 project.yaml 到 git
+base_url: "https://huudi.chintec.net"
+
+login:
+  url: "https://huudi.chintec.net/login"
+  account: "your-email@example.com"
+  password_value: "your-password"
