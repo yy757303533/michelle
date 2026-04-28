@@ -205,7 +205,8 @@ async def test_bulk_review_bad_action(app_client):
         "/api/cases/bulk-review",
         json={"case_ids": ["TC-1"], "action": "purgatory"},
     )
-    assert r.status_code == 400
+    # Pydantic Literal validation rejects with 422 (Unprocessable Entity).
+    assert r.status_code == 422
 
 
 # ── case_versioning: plan_regeneration ─────────────────────────────────────
@@ -295,12 +296,13 @@ async def test_plan_regen_skips_chapter_with_approved_case(session):
     session.add(Project(project_id="demo", name="demo"))
     session.add(prev)
     session.add(new)
-    # An approved case from chapter A
+    # An approved case from chapter A. Signature format is
+    # `chapter:<level>:<normalized_title>` after the move-stability fix.
     session.add(
         _case(
             "TC-APPROVED",
             review_status="approved",
-            generated_from=f"chapter:{a['normalized_title']}#0",
+            generated_from=f"chapter:{a['level']}:{a['normalized_title']}",
         )
     )
     await session.commit()
@@ -326,21 +328,21 @@ async def test_mark_stale_when_chapter_removed(session):
     session.add(
         _case(
             "TC-FROM-B-PEND",
-            generated_from=f"chapter:{b['normalized_title']}#1",
+            generated_from=f"chapter:{b['level']}:{b['normalized_title']}",
             review_status="pending",
         )
     )
     session.add(
         _case(
             "TC-FROM-B-APPROVED",
-            generated_from=f"chapter:{b['normalized_title']}#1",
+            generated_from=f"chapter:{b['level']}:{b['normalized_title']}",
             review_status="approved",
         )
     )
     session.add(
         _case(
             "TC-FROM-A-PEND",
-            generated_from=f"chapter:{a['normalized_title']}#0",
+            generated_from=f"chapter:{a['level']}:{a['normalized_title']}",
             review_status="pending",
         )
     )

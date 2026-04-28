@@ -28,7 +28,7 @@ from app.agent.trace_parser import ParsedRun
 from app.agent.trace_parser import StepEvent as ParsedStep
 from app.config import settings
 from app.db import async_session_maker
-from app.llm import prompt_id, render
+from app.llm import render
 from app.models import Project, Run, StepEvent, TestCase
 from app.obs import EVENTS, bind_request_context, get_logger
 from app.services.report_html import run_to_report_input, write_report_files
@@ -152,16 +152,34 @@ def _step_intent(parsed: ParsedStep) -> str | None:
     return parsed.tool_name
 
 
+async def _next_step_offset(session: AsyncSession, run_id: str) -> int:
+    """Return one past the highest step_index already persisted for this run.
+
+    Retries (attempt > 1) need to push their step_index past existing rows so
+    we don't collide on the (run_id, step_index) primary-key-shaped tuple and
+    so the report viewer can show attempt boundaries via gaps."""
+    from sqlalchemy import func
+    from sqlmodel import select
+
+    stmt = select(func.max(StepEvent.step_index)).where(StepEvent.run_id == run_id)
+    result = (await session.execute(stmt)).scalar_one_or_none()
+    if result is None:
+        return 0
+    return int(result) + 1
+
+
 def _persist_step_events(
     session: AsyncSession,
     run_id: str,
     parsed_steps: list[ParsedStep],
+    *,
+    step_offset: int = 0,
 ) -> list[StepEvent]:
     rows: list[StepEvent] = []
     for s in parsed_steps:
         ev = StepEvent(
             run_id=run_id,
-            step_index=s.step_index,
+            step_index=step_offset + s.step_index,
             event=EVENTS.AGENT_STEP_EXECUTED.name,
             intent=_step_intent(s),
             tool_name=s.tool_name,
@@ -217,6 +235,9 @@ async def execute_case(
         if case is None:
             run.status = "aborted"
             run.error_message = f"case {case_id} not found"
+            run.ended_at = datetime.now(UTC)
+            if run.started_at:
+                run.duration_ms = int((run.ended_at - run.started_at).total_seconds() * 1000)
             await session.commit()
             log.error("orchestrator.case.not_found")
             return run
@@ -237,6 +258,11 @@ async def execute_case(
         # Stash the prompt for forensics
         (rd / "prompt.txt").write_text(prompt, encoding="utf-8")
 
+        # Treat configured target credentials as secrets — they get baked into
+        # the prompt and would otherwise leak via stdout/stderr files,
+        # StepEvent.tool_args (browser_type text=…), and final_text logs.
+        secrets = [s for s in (settings.default_target_password,) if s and len(s) >= 3]
+
         try:
             outcome: RunOutcome = await run_claude_with_playwright(
                 RunRequest(
@@ -245,6 +271,7 @@ async def execute_case(
                     timeout_seconds=timeout_seconds,
                     headless=True,
                     isolated=True,
+                    secrets=secrets,
                 )
             )
         except ClaudeRunnerError as exc:
@@ -268,7 +295,7 @@ async def execute_case(
             encoding="utf-8",
         )
 
-        await _persist_results(session, run, case, outcome.parsed, prompt_id("execute", "v1"))
+        await _persist_results(session, run, outcome.parsed)
 
         # Render the HTML report immediately
         steps_in_db = await _load_step_events(session, run_id)
@@ -299,12 +326,13 @@ async def execute_case(
 async def _persist_results(
     session: AsyncSession,
     run: Run,
-    case: TestCase,
     parsed: ParsedRun,
-    prompt_v: str,
 ) -> None:
-    """Write StepEvents + update Run fields."""
-    _persist_step_events(session, run.run_id, parsed.steps)
+    """Write StepEvents + update Run fields. Retries push step_index past
+    existing rows so the (run_id, step_index) tuple stays unique and the
+    report viewer can render attempt boundaries via the gap."""
+    step_offset = await _next_step_offset(session, run.run_id)
+    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset)
 
     status, err = _infer_status(parsed)
     run.status = status
@@ -533,11 +561,15 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
             await _persist_abort(run_id=run_id, error=f"retry crashed: {exc}")
             return
 
-        # If retry passed but first attempt failed → mark flaky
+        # If retry passed but first attempt failed → mark flaky and re-render
+        # the report so report.html status matches the DB Run.status. Without
+        # this, the HTML still says "passed" even though Run.status="flaky".
         if run.status == "passed":
             await _mark_status(run_id=run_id, status="flaky", note="passed on retry")
+            await _rerender_report(run_id=run_id)
         else:
             await _classify_and_persist(run_id=run_id)
+            await _rerender_report(run_id=run_id)
 
 
 async def _persist_abort(*, run_id: str, error: str) -> None:
@@ -565,6 +597,31 @@ async def _mark_status(*, run_id: str, status: str, note: str = "") -> None:
         await session.commit()
 
 
+async def _rerender_report(*, run_id: str) -> None:
+    """Regenerate report.html after a post-execute_case status mutation
+    (retry → flaky, heuristic classification appended to error_message).
+    Without this the report freezes at the value execute_case wrote."""
+    async with async_session_maker() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        case = await session.get(TestCase, run.case_id)
+        if case is None:
+            return
+        steps = await _load_step_events(session, run_id)
+        rd = run_dir_for(run.project_id, run_id)
+        rep = run_to_report_input(
+            run=run,
+            steps=steps,
+            case_name=case.name,
+            case_intent=case.intent,
+            case_module=case.module,
+        )
+        paths = write_report_files(rep, rd)
+        run.report_html_path = str(paths["html"])
+        await session.commit()
+
+
 async def _emit_failure_hook(*, run_id: str) -> None:
     """Fire run.failed hook handlers (auto-diagnose lives there)."""
     from app.agent import hooks
@@ -583,6 +640,8 @@ async def _classify_and_persist(*, run_id: str) -> None:
         if run is None:
             return
         # Synthesize a fake ParsedRun-like object from DB for classification
+        from types import SimpleNamespace
+
         from sqlmodel import select
 
         steps = (
@@ -591,16 +650,15 @@ async def _classify_and_persist(*, run_id: str) -> None:
             .all()
         )
 
-        # Build minimal ParsedRun-compatible
-        class _ShimStep:
-            def __init__(self, s: StepEvent):
-                self.result_is_error = s.status == "failed"
-                self.result_text = (s.tool_result or {}).get("result_text") or s.error_message
-
-        class _Shim:
-            steps = [_ShimStep(s) for s in steps]
-
-        category = heuristic_classify(_Shim(), run.error_message)  # type: ignore[arg-type]
+        shim_steps = [
+            SimpleNamespace(
+                result_is_error=s.status == "failed",
+                result_text=(s.tool_result or {}).get("result_text") or s.error_message,
+            )
+            for s in steps
+        ]
+        parsed_shim = SimpleNamespace(steps=shim_steps)
+        category = heuristic_classify(parsed_shim, run.error_message)  # type: ignore[arg-type]
         if category:
             existing = run.error_message or ""
             tag = f"[heuristic:{category}]"

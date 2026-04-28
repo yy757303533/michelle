@@ -98,9 +98,7 @@ async def generate_cases_for_chapter(
 
     log.info("case.generation.start", prompt_version=pv_id, max_cases=max_cases)
 
-    text, model = await _call_with_one_retry(gw, prompt, pv_id, log, prefer_provider)
-
-    raw = _parse_batch(text, log)
+    text, model, raw = await _call_with_one_retry(gw, prompt, pv_id, log, prefer_provider)
     saved: list[TestCase] = []
     batch_id_seq = await _next_seq(session, project_id)
 
@@ -124,7 +122,7 @@ async def generate_cases_for_chapter(
             source="ai-generated",
             prompt_version=pv_id,
             model_version=model or "unknown",
-            generated_from=f"chapter:{chapter.normalized_title}#{chapter.position}",
+            generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
             review_status="pending",
             version=1,
         )
@@ -144,8 +142,10 @@ async def generate_cases_for_chapter(
 
 async def _call_with_one_retry(
     gw: LLMGateway, prompt: str, prompt_version: str, log, prefer: str | None
-) -> tuple[str, str]:
-    """Call LLM, retry once with a tighter system prompt if first JSON parse fails."""
+) -> tuple[str, str, GeneratedBatch]:
+    """Call LLM, parse the JSON, and retry once with a stricter system prompt
+    if real `json.loads` fails (not just a "looks like JSON" pre-check —
+    truncated `{"cases": [...` passes that check but blows up at parse time)."""
     res = await gw.chat(
         prompt,
         prompt_version=prompt_version,
@@ -154,10 +154,12 @@ async def _call_with_one_retry(
         max_tokens=4000,
         timeout_seconds=180,
     )
-    if _looks_like_json(res.text):
-        return res.text, res.model
+    try:
+        batch = _parse_batch(res.text, log)
+        return res.text, res.model, batch
+    except ValueError:
+        log.warning("case.generation.retry", reason="JSON parse failed on first attempt")
 
-    log.warning("case.generation.retry", reason="non-JSON response on first attempt")
     res2 = await gw.chat(
         prompt,
         prompt_version=prompt_version,
@@ -167,17 +169,8 @@ async def _call_with_one_retry(
         max_tokens=4000,
         timeout_seconds=180,
     )
-    return res2.text, res2.model
-
-
-def _looks_like_json(text: str) -> bool:
-    s = text.strip()
-    if not s:
-        return False
-    if s.startswith("```"):
-        # likely fenced; we strip in parse step. For "looks like" purposes accept.
-        return True
-    return s.startswith("{")
+    batch = _parse_batch(res2.text, log)
+    return res2.text, res2.model, batch
 
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*", re.IGNORECASE)

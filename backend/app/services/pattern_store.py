@@ -59,6 +59,11 @@ _STOP_WORDS = {
 }
 _KEYWORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}|[一-鿿]{2,}")
 
+# `find_matches_for_run` ignores patterns below this Jaccard score. Without a
+# floor, a single keyword overlap is enough to surface every old pattern as a
+# "match", drowning the human in noise as the library grows.
+_MIN_MATCH_SCORE = 0.25
+
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -76,13 +81,17 @@ async def absorb_diagnosis(*, diag: Diagnosis, session: AsyncSession) -> Pattern
     now = datetime.now(UTC)
 
     if existing is not None:
-        existing.hit_count += 1
-        existing.last_hit_at = now
-        existing.updated_at = now
+        # Idempotent: only count this diag once per pattern. Prevents
+        # hit_count inflation when callers re-confirm the same diagnosis
+        # (button mash, retry-on-network-blip, etc).
         prev = list(existing.confirmed_by_diag_ids or [])
-        if diag.diag_id not in prev:
+        is_new_confirmation = diag.diag_id not in prev
+        if is_new_confirmation:
             prev.append(diag.diag_id)
             existing.confirmed_by_diag_ids = prev
+            existing.hit_count += 1
+        existing.last_hit_at = now
+        existing.updated_at = now
         # Merge new matcher fields (union keywords)
         existing.matcher = _merge_matchers(existing.matcher or {}, matcher)
         await session.commit()
@@ -91,6 +100,7 @@ async def absorb_diagnosis(*, diag: Diagnosis, session: AsyncSession) -> Pattern
             pattern_id=existing.pattern_id,
             diag_id=diag.diag_id,
             hit_count=existing.hit_count,
+            new_confirmation=is_new_confirmation,
         )
         return existing
 
@@ -117,7 +127,11 @@ async def absorb_diagnosis(*, diag: Diagnosis, session: AsyncSession) -> Pattern
 
 
 async def find_matches_for_run(
-    *, run_id: str, session: AsyncSession, top_n: int = 3
+    *,
+    run_id: str,
+    session: AsyncSession,
+    top_n: int = 3,
+    bump_hit_count: bool = True,
 ) -> list[Pattern]:
     """For a (typically failed) Run, return Patterns whose matcher is consistent
     with the failure signature, sorted by score desc.
@@ -146,17 +160,22 @@ async def find_matches_for_run(
     scored: list[tuple[float, Pattern]] = []
     for p in patterns:
         score = _score(candidate, p.matcher or {})
-        if score > 0:
+        if score >= _MIN_MATCH_SCORE:
             scored.append((score, p))
     scored.sort(key=lambda x: x[0], reverse=True)
 
     matched = [p for _, p in scored[:top_n]]
-    for p in matched:
-        p.hit_count += 1
-        p.last_hit_at = datetime.now(UTC)
-        _log.info(EVENTS.PATTERN_MATCHED.name, pattern_id=p.pattern_id, pattern_type=p.pattern_type)
-    if matched:
-        await session.commit()
+    if bump_hit_count:
+        for p in matched:
+            p.hit_count += 1
+            p.last_hit_at = datetime.now(UTC)
+            _log.info(
+                EVENTS.PATTERN_MATCHED.name,
+                pattern_id=p.pattern_id,
+                pattern_type=p.pattern_type,
+            )
+        if matched:
+            await session.commit()
     return matched
 
 

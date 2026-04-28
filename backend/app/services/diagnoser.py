@@ -74,7 +74,13 @@ async def diagnose_run(
 
     if not overwrite_existing:
         existing = (
-            (await session.execute(select(Diagnosis).where(Diagnosis.run_id == run_id)))
+            (
+                await session.execute(
+                    select(Diagnosis)
+                    .where(Diagnosis.run_id == run_id)
+                    .order_by(Diagnosis.created_at.desc())
+                )
+            )
             .scalars()
             .first()
         )
@@ -154,10 +160,12 @@ async def diagnose_run(
     except LLMError as exc:
         # Last-ditch: retry without the image (text-only) so the diagnosis
         # still produces SOMETHING the human can review.
-        log.warning(
-            "diagnoser.llm_failed_with_image_retry_text",
-            error=str(exc)[:200],
+        retry_event = (
+            "diagnoser.llm_failed_with_image_retry_text"
+            if image_bytes
+            else "diagnoser.llm_failed_retry"
         )
+        log.warning(retry_event, error=str(exc)[:200])
         try:
             result = await gw.chat(
                 prompt,
@@ -185,14 +193,18 @@ async def diagnose_run(
         reasoning=parsed.get("reasoning", "")[:4000],
         fix_suggestion=parsed.get("fix_suggestion", "")[:2000],
     )
+    # Capture log fields before commit() in case the session is configured
+    # with expire_on_commit=True (default). Without this, downstream lazy
+    # attribute reads can MissingGreenlet.
+    diag_id_v, category_v, confidence_v = diag.diag_id, diag.category, diag.confidence
     session.add(diag)
     await session.commit()
     log.info(
         EVENTS.DIAGNOSIS_GENERATED.name,
-        diag_id=diag.diag_id,
+        diag_id=diag_id_v,
         run_id=run_id,
-        category=diag.category,
-        confidence=diag.confidence,
+        category=category_v,
+        confidence=confidence_v,
     )
     return diag
 
@@ -204,12 +216,16 @@ async def record_feedback(
     note: str = "",
     session: AsyncSession,
 ) -> Diagnosis:
-    """Persist human feedback. Triggers pattern_store.absorb on `confirmed`."""
+    """Persist human feedback. Triggers pattern_store.absorb on the
+    transition into `confirmed` (idempotent — repeated POSTs from a flaky
+    network or button mash do NOT re-bump pattern hit counts)."""
     if feedback not in {"confirmed", "wrong", "partially_correct"}:
         raise DiagnoserError(f"invalid feedback {feedback!r}")
     diag = await session.get(Diagnosis, diag_id)
     if diag is None:
         raise DiagnoserError(f"diagnosis {diag_id} not found")
+
+    was_confirmed = diag.human_feedback == "confirmed"
     diag.human_feedback = feedback
     diag.feedback_note = note[:1000]
     diag.feedback_at = datetime.now(UTC)
@@ -221,8 +237,8 @@ async def record_feedback(
         feedback=feedback,
     )
 
-    # On confirmed, fold this case into the sediment library
-    if feedback == "confirmed":
+    # Only absorb on the transition into confirmed, never on a repeat.
+    if feedback == "confirmed" and not was_confirmed:
         from app.services.pattern_store import absorb_diagnosis
 
         await absorb_diagnosis(diag=diag, session=session)
@@ -360,7 +376,15 @@ def _parse_diagnosis_json(text: str) -> dict[str, Any]:
 
 
 def _safe_float(v: Any) -> float:
+    """Coerce anything model-shaped to a [0,1] confidence. Tolerates `"80%"`,
+    `"0.8"`, `0.8`, `80` (>1 → divided by 100 only when it has a `%` suffix;
+    bare `80` clamps to 1.0 since the model meant `0.8` poorly)."""
     try:
+        if isinstance(v, str):
+            s = v.strip()
+            if s.endswith("%"):
+                return max(0.0, min(1.0, float(s[:-1].strip()) / 100.0))
+            v = s
         f = float(v)
         return max(0.0, min(1.0, f))
     except (TypeError, ValueError):

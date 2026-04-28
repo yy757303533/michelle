@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent.mcp_config import build_playwright_mcp_config, write_config
-from app.agent.trace_parser import ParsedRun, parse_stream
+from app.agent.trace_parser import ParsedRun, parse_stream, redact_bytes
 from app.config import settings
 from app.obs import EVENTS, get_logger
 
@@ -45,6 +45,10 @@ class RunRequest:
     """Extra args appended to `npx @playwright/mcp` (e.g. ['--storage-state', '...']) ."""
     headless: bool = True
     isolated: bool = True
+    secrets: list[str] | None = None
+    """Literal strings (passwords, tokens) to redact from logs, persisted
+    artifacts, and StepEvent rows. The orchestrator builds this list from the
+    target credentials baked into the prompt."""
 
 
 @dataclass
@@ -94,7 +98,12 @@ async def run_claude_with_playwright(req: RunRequest) -> RunOutcome:
     ]
 
     log = _log.bind(work_dir=str(work))
-    log.info("agent.claude.spawn", cmd=shlex.join(cmd))
+    # The prompt position (cmd[2]) carries credentials for login smoke runs.
+    # Log a redacted shape so operators can see invocation flags without
+    # leaking secrets to log aggregators.
+    safe_cmd = list(cmd)
+    safe_cmd[2] = "<redacted-prompt>"
+    log.info("agent.claude.spawn", cmd=shlex.join(safe_cmd))
 
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
@@ -118,10 +127,22 @@ async def run_claude_with_playwright(req: RunRequest) -> RunOutcome:
 
     elapsed = int((time.monotonic() - t0) * 1000)
 
-    stdout_path.write_bytes(stdout_bytes)
-    stderr_path.write_bytes(stderr_bytes)
+    redacted_stdout = redact_bytes(stdout_bytes, req.secrets)
+    redacted_stderr = redact_bytes(stderr_bytes, req.secrets)
+    stdout_path.write_bytes(redacted_stdout)
+    stderr_path.write_bytes(redacted_stderr)
 
-    parsed = parse_stream(stdout_bytes.decode("utf-8", errors="replace").splitlines())
+    parsed = parse_stream(
+        redacted_stdout.decode("utf-8", errors="replace").splitlines(),
+        secrets=req.secrets,
+    )
+
+    if proc.returncode:
+        log.error(
+            "agent.claude.nonzero_exit",
+            exit_code=proc.returncode,
+            stderr_tail=redacted_stderr.decode("utf-8", errors="replace")[-2000:],
+        )
 
     log.info(
         EVENTS.RUN_COMPLETED.name,

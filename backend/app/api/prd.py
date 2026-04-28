@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
@@ -35,16 +35,17 @@ class GenerateRequest(BaseModel):
     chapter_indices: list[int] | None = None
     """If null → generate for all NEW + MODIFIED chapters (vs prev version)."""
 
-    max_cases_per_chapter: int = 8
+    max_cases_per_chapter: int = Field(default=8, ge=1, le=50)
     prefer_provider: str | None = None
 
 
 @router.get("/")
 async def list_prds(
     project_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(PRD).order_by(desc(PRD.uploaded_at))
+    stmt = select(PRD).order_by(desc(PRD.uploaded_at)).limit(limit)
     if project_id:
         stmt = stmt.where(PRD.project_id == project_id)
     rows = (await session.execute(stmt)).scalars().all()
@@ -205,7 +206,9 @@ async def generate_cases(
     indices = body.chapter_indices
     if indices is None:
         indices = list(range(len(prd.chapters)))
-    indices = [i for i in indices if 0 <= i < len(prd.chapters)]
+    # dedupe + clamp to valid range. Without dedupe, callers passing
+    # `[1,1,2]` would double-process chapter 1.
+    indices = sorted({i for i in indices if 0 <= i < len(prd.chapters)})
     if not indices:
         return {"data": {"prd_id": prd_id, "results": [], "total_cases": 0}}
 
@@ -213,6 +216,10 @@ async def generate_cases(
     stale_marked = await mark_stale_for_removed_chapters(
         session=session, new_prd=prd, prev_prd=prev_prd
     )
+    # If every chapter ends up skipped, no later commit will fire — flush the
+    # stale-marked rows now so they aren't rolled back when the request ends.
+    if stale_marked:
+        await session.commit()
 
     decisions = await plan_regeneration(
         session=session, new_prd=prd, prev_prd=prev_prd, chapter_indices=indices

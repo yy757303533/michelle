@@ -95,7 +95,13 @@ def test_render_html_skip_handled():
     assert "skip-row" in h
 
 
-def test_render_html_screenshot_embedded(tmp_path: Path):
+def test_render_html_screenshot_embedded(tmp_path: Path, monkeypatch):
+    # The renderer sandboxes screenshot reads to the artifacts root — point
+    # that root at the test's tmp_path so the test image is reachable.
+    from app import storage
+
+    monkeypatch.setattr(storage, "artifacts_root", lambda: tmp_path)
+
     img = tmp_path / "shot.png"
     # 1×1 transparent PNG
     img.write_bytes(

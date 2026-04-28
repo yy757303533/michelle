@@ -25,9 +25,60 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 # Headings we treat as chapter boundaries. Top-level (#) is the document title.
-_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-_NUMBERING_RE = re.compile(r"^(?:[#§]+\s*)?(?:\d+(?:\.\d+)*\.?\s+)?(?:[一-鿿]?\s*)?")
+_FENCE_RE = re.compile(r"^(```+|~~~+)")
+
+
+def _scan_headings(text: str) -> list[tuple[int, int, int, str]]:
+    """Find headings outside fenced code blocks.
+
+    Returns (start_offset, end_offset, level, title) tuples — same shape the
+    parser used previously when it relied on `_HEADING_RE.finditer`. The fence
+    awareness is the only difference: a `## API` line inside a ```...``` block
+    no longer becomes a phantom chapter."""
+    headings: list[tuple[int, int, int, str]] = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped_for_fence = line.lstrip()
+        m_fence = _FENCE_RE.match(stripped_for_fence)
+        if m_fence:
+            marker = m_fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_len:
+                # CommonMark requires the closer to be at least as long as the
+                # opener. Without this, a 3-tick fence inside a 4-tick block
+                # would prematurely close the outer fence.
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+            offset += len(line)
+            continue
+
+        if not in_fence:
+            stripped_line = line.rstrip("\r\n")
+            mh = _HEADING_RE.match(stripped_line)
+            if mh:
+                level = len(mh.group(1))
+                title_text = mh.group(2).strip()
+                # The match's start in `line` is 0; end of the heading line is
+                # offset + length of the heading itself (no trailing newline).
+                headings.append(
+                    (
+                        offset,
+                        offset + len(stripped_line),
+                        level,
+                        title_text,
+                    )
+                )
+        offset += len(line)
+    return headings
 
 
 @dataclass
@@ -101,11 +152,8 @@ def parse_prd(markdown: str) -> ParsedPRD:
         fm = m.group(1)
         text = text[m.end() :]
 
-    # Find all H1/H2/H3 positions
-    headings = []
-    for m in _HEADING_RE.finditer(text):
-        level = len(m.group(1))
-        headings.append((m.start(), m.end(), level, m.group(2).strip()))
+    # Find all H1/H2/H3 positions, ignoring headings inside fenced code blocks.
+    headings = _scan_headings(text)
 
     title = "<untitled>"
     preamble = ""
@@ -120,10 +168,12 @@ def parse_prd(markdown: str) -> ParsedPRD:
             raw_hash=hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         )
 
-    # Title = first H1, or first heading if no H1
+    # Title = first H1, or fall back to the first heading of any level.
     h1s = [h for h in headings if h[2] == 1]
     if h1s:
         title = h1s[0][3]
+    else:
+        title = headings[0][3]
 
     # Preamble = text from start to first H2 (or H3 if no H2)
     boundary_levels = [h for h in headings if h[2] >= 2]
@@ -133,7 +183,9 @@ def parse_prd(markdown: str) -> ParsedPRD:
     else:
         preamble = text.strip()
 
-    # Chapters = each H2/H3 + its body up to the next same-or-higher level boundary
+    # Each H2/H3 is its own chapter. The body for an H2 ends at the *next*
+    # H2 OR H3 (so the H3 doesn't double-count: once as part of its parent
+    # H2 body and once as its own chapter). H3 body ends at the next H2/H3.
     n_headings = len(headings)
     pos = 0
     for i, (_start, end, level, title_text) in enumerate(headings):
@@ -143,7 +195,7 @@ def parse_prd(markdown: str) -> ParsedPRD:
         body_end = len(text)
         for j in range(i + 1, n_headings):
             other_level = headings[j][2]
-            if other_level <= level:
+            if other_level >= 2:
                 body_end = headings[j][0]
                 break
         body = text[body_start:body_end].strip()

@@ -26,7 +26,11 @@ class ChapterDelta:
     old: Chapter | None = None
 
     def __post_init__(self):
-        assert self.status in {"added", "removed", "modified", "unchanged", "moved"}
+        # ValueError instead of assert — Python under `-O` strips asserts and
+        # this would silently accept invalid statuses in production builds.
+        valid = {"added", "removed", "modified", "unchanged", "moved"}
+        if self.status not in valid:
+            raise ValueError(f"invalid ChapterDelta status: {self.status!r}")
 
     @property
     def title(self) -> str:
@@ -63,10 +67,15 @@ class PRDDiff:
 
 
 def diff_prds(old: ParsedPRD, new: ParsedPRD) -> PRDDiff:
-    if old.raw_hash == new.raw_hash:
-        # Byte-identical: every chapter is unchanged
+    if old.raw_hash == new.raw_hash and len(old.chapters) == len(new.chapters):
+        # Byte-identical: every chapter is unchanged. Pair old/new positionally
+        # so consumers that compare object identity (or position) see the
+        # actual prev-version chapter on the `old` side, not a self-reference.
         return PRDDiff(
-            deltas=[ChapterDelta("unchanged", new=c, old=c) for c in new.chapters],
+            deltas=[
+                ChapterDelta("unchanged", new=new_c, old=old_c)
+                for old_c, new_c in zip(old.chapters, new.chapters, strict=True)
+            ],
             raw_unchanged=True,
         )
 

@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # ── Run orchestration ──
     max_concurrent_runs: int = 2
     """How many cases may execute simultaneously. Each = 1 Chromium + 1 claude CLI."""
+    playwright_mcp_package: str = "@playwright/mcp@latest"
+    """npx package spec for the Playwright MCP server. Pin to a specific
+    version (e.g. `@playwright/mcp@0.0.20`) in production via .env to avoid
+    silent behaviour drift from the upstream `@latest` tag."""
 
     # ── LLM: Claude CLI (primary, subscription) ──
     claude_cli_path: str = "claude"

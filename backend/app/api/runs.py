@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
@@ -31,9 +31,9 @@ log = get_logger(__name__)
 
 
 class CreateRunsRequest(BaseModel):
-    case_ids: list[str]
+    case_ids: list[str] = Field(min_length=1)
     env: str = "default"
-    timeout_seconds: int | None = None
+    timeout_seconds: int | None = Field(default=None, gt=0, le=3600)
     """Override per-call. Defaults to DEFAULT_RUN_TIMEOUT."""
 
 
@@ -79,7 +79,7 @@ async def create_runs(
 async def list_runs(
     project_id: str | None = None,
     case_id: str | None = None,
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(Run).order_by(desc(Run.created_at)).limit(limit)
@@ -126,8 +126,6 @@ async def get_run_artifact(
 ) -> FileResponse:
     """Serve a single artifact file (screenshot, trace.jsonl, etc.) sandboxed
     to the run's directory. Path traversal blocked."""
-    from app.storage import run_dir as run_dir_for
-
     run = await session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -167,8 +165,6 @@ async def list_run_artifacts(
 ) -> dict:
     """List files inside the run's artifacts dir. Used by the trace viewer
     frontend to discover screenshots without fetching one-by-one."""
-    from app.storage import run_dir as run_dir_for
-
     run = await session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -250,7 +246,9 @@ async def _ensure_report(run: Run, session: AsyncSession) -> Path:
     run.artifacts_dir = str(rd)
     await session.commit()
 
-    # Also keep an inline copy in case the file system path changes
+    # Defensive: write_report_files may have failed to land for any reason
+    # (FS hiccup, race with cleanup); rebuild the file in that case so the
+    # caller gets a real document instead of a 404.
     if not html_path.exists():
         html_path.write_text(render_report_html(rep), encoding="utf-8")
 

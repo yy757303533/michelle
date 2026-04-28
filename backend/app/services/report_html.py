@@ -191,14 +191,46 @@ def run_to_report_input(
 # ── Internal helpers ─────────────────────────────────────────────────────
 
 
+_MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024
+_ALLOWED_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif"}
+
+
+def _safe_screenshot_path(raw: str) -> Path | None:
+    """Resolve `raw` only if it sits under the artifacts root.
+
+    Without this gate, a malicious or buggy upstream that planted
+    `../../../etc/passwd` (or any local image) into a StepEvent's
+    `screenshot_path` would have its contents embedded into the report HTML
+    and served to anyone who opened it. Sandbox is artifacts root."""
+    from app.storage import artifacts_root
+
+    try:
+        root = artifacts_root().resolve()
+        candidate = Path(raw).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if not candidate.is_file():
+        return None
+    ext = candidate.suffix.lstrip(".").lower()
+    if ext not in _ALLOWED_IMAGE_EXTS:
+        return None
+    try:
+        if candidate.stat().st_size > _MAX_SCREENSHOT_BYTES:
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def _build_screenshot_map(rows: list[ResultRow]) -> dict[str, str]:
     """Return {case_id: data:image/<mime>;base64,...} for embedding inline."""
     out: dict[str, str] = {}
     for r in rows:
         if not r.screenshot_path:
             continue
-        p = Path(r.screenshot_path)
-        if not p.is_file():
+        p = _safe_screenshot_path(r.screenshot_path)
+        if p is None:
             continue
         try:
             data = p.read_bytes()
@@ -211,9 +243,12 @@ def _build_screenshot_map(rows: list[ResultRow]) -> dict[str, str]:
 
 
 def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
-    if r.status == PASS:
+    # Coerce status into the known set so the HTML attribute below is never
+    # attacker-controllable, then escape it for the attribute regardless.
+    status = r.status if r.status in {PASS, FAIL, SKIP} else SKIP
+    if status == PASS:
         badge, row_cls = '<span class="badge pass">PASS</span>', ""
-    elif r.status == FAIL:
+    elif status == FAIL:
         badge, row_cls = '<span class="badge fail">FAIL</span>', ' class="fail-row"'
     else:
         badge, row_cls = '<span class="badge skip">SKIP</span>', ' class="skip-row"'
@@ -222,6 +257,7 @@ def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
     mod = _html.escape(r.module or "")
     title = _html.escape(r.title or "")
     err = _html.escape(r.error or "")
+    status_attr = _html.escape(status, quote=True)
     ss_tag = ""
     if uri := screenshots.get(r.case_id):
         ss_tag = (
@@ -230,7 +266,7 @@ def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
         )
 
     return (
-        f'<tr{row_cls} data-status="{r.status}">'
+        f'<tr{row_cls} data-status="{status_attr}">'
         f'<td class="cid">{cid}</td>'
         f'<td class="mod">{mod}</td>'
         f"<td>{title}</td>"
@@ -288,7 +324,7 @@ tr:last-child td{{border-bottom:none}}
 .fail-row td{{background:#fff8f8}}.skip-row td{{background:#fffbf5}}
 .cid{{font-family:monospace;font-size:12px;color:#6e6e73;white-space:nowrap}}
 .mod{{font-size:12px;color:#6e6e73;white-space:nowrap}}
-.err{{color:#dc3545;font-size:12px;max-width:300px;word-break:break-word}}
+.err{{color:#dc3545;font-size:12px;max-width:300px;word-break:break-word;white-space:pre-wrap}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;letter-spacing:.3px;white-space:nowrap}}
 .badge.pass{{background:#d4edda;color:#155724}}.badge.fail{{background:#f8d7da;color:#721c24}}.badge.skip{{background:#fff3cd;color:#856404}}
 .filter-bar{{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}}

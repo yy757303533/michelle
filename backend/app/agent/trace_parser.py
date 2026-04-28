@@ -100,6 +100,41 @@ class ParsedRun:
 # ────────────────────────────────────────────────────────────────────────────
 
 
+_REDACTION = "***"
+
+
+def _redact_text(text: str, secrets: list[str] | None) -> str:
+    if not secrets or not text:
+        return text
+    out = text
+    for s in secrets:
+        if s and len(s) >= 3:
+            out = out.replace(s, _REDACTION)
+    return out
+
+
+def _redact_value(v: Any, secrets: list[str] | None) -> Any:
+    if not secrets:
+        return v
+    if isinstance(v, str):
+        return _redact_text(v, secrets)
+    if isinstance(v, dict):
+        return {k: _redact_value(vv, secrets) for k, vv in v.items()}
+    if isinstance(v, list):
+        return [_redact_value(item, secrets) for item in v]
+    return v
+
+
+def redact_bytes(data: bytes, secrets: list[str] | None) -> bytes:
+    """Replace each secret string in raw stream bytes. Used to scrub stdout/stderr
+    before they hit disk so artifacts don't preserve plaintext credentials."""
+    if not secrets or not data:
+        return data
+    text = data.decode("utf-8", errors="replace")
+    text = _redact_text(text, secrets)
+    return text.encode("utf-8")
+
+
 def _parse_tool_result_text(text: str) -> dict[str, Any]:
     """Pull structured fields out of a `@playwright/mcp` tool_result text body."""
     fields: dict[str, Any] = {}
@@ -133,8 +168,12 @@ def _flatten_tool_result_content(content: Any) -> str:
     return str(content)
 
 
-def parse_stream(lines: list[str]) -> ParsedRun:
-    """Parse a list of JSONL lines into a ParsedRun."""
+def parse_stream(lines: list[str], *, secrets: list[str] | None = None) -> ParsedRun:
+    """Parse a list of JSONL lines into a ParsedRun.
+
+    `secrets`: literal strings to scrub from tool_args / result_text / final_text
+    so that StepEvent rows persisted to DB / served to the frontend never carry
+    plaintext credentials. Caller (Run Orchestrator) supplies the list."""
     tool_uses: list[StepEvent] = []
     tool_use_by_id: dict[str, StepEvent] = {}
     final_assistant_text = ""
@@ -159,16 +198,17 @@ def parse_stream(lines: list[str]) -> ParsedRun:
                     name = c.get("name", "")
                     is_pw = name.startswith(PLAYWRIGHT_TOOL_PREFIX)
                     short = name.removeprefix(PLAYWRIGHT_TOOL_PREFIX) if is_pw else name
+                    raw_id = c.get("id") or f"missing-{step_idx}"
                     step = StepEvent(
                         step_index=step_idx,
                         tool_name=short,
                         tool_full_name=name,
-                        tool_args=c.get("input", {}) or {},
-                        tool_use_id=c.get("id", ""),
+                        tool_args=_redact_value(c.get("input", {}) or {}, secrets),
+                        tool_use_id=raw_id,
                         is_playwright=is_pw,
                     )
                     tool_uses.append(step)
-                    tool_use_by_id[step.tool_use_id] = step
+                    tool_use_by_id[raw_id] = step
                     step_idx += 1
                 elif c.get("type") == "text":
                     text = c.get("text", "") or ""
@@ -185,6 +225,7 @@ def parse_stream(lines: list[str]) -> ParsedRun:
                     if step is None:
                         continue
                     body = _flatten_tool_result_content(c.get("content", []))
+                    body = _redact_text(body, secrets)
                     step.result_text = body
                     step.result_is_error = c.get("is_error")
                     extracted = _parse_tool_result_text(body)
@@ -196,7 +237,14 @@ def parse_stream(lines: list[str]) -> ParsedRun:
 
         elif t == "result":
             raw_result = obj
+            # Some Claude CLI builds emit the final answer here even when no
+            # assistant `text` block was streamed. Use it as a fallback.
+            if not final_assistant_text:
+                rtext = obj.get("result")
+                if isinstance(rtext, str) and rtext.strip():
+                    final_assistant_text = rtext
 
+    final_assistant_text = _redact_text(final_assistant_text, secrets)
     summary = _build_summary(final_assistant_text, raw_result)
     return ParsedRun(steps=tool_uses, summary=summary)
 
@@ -250,6 +298,6 @@ def _build_summary(final_text: str, raw_result: dict[str, Any] | None) -> RunSum
     )
 
 
-def parse_stream_file(path: str | Path) -> ParsedRun:
+def parse_stream_file(path: str | Path, *, secrets: list[str] | None = None) -> ParsedRun:
     p = Path(path)
-    return parse_stream(p.read_text(encoding="utf-8").splitlines())
+    return parse_stream(p.read_text(encoding="utf-8").splitlines(), secrets=secrets)

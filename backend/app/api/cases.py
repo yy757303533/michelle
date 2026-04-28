@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
@@ -30,14 +30,21 @@ EDITABLE_FIELDS = {
 }
 
 
+ReviewVerb = Literal["approve", "reject"]
+
+
 class ReviewAction(BaseModel):
-    action: str  # approve | reject
+    action: ReviewVerb
     note: str = ""
 
 
 class CaseEdit(BaseModel):
     """Partial edit of a case. Any field present overwrites + is added to
-    manual_edited_fields, which protects it from future LLM regenerations."""
+    manual_edited_fields, which protects it from future LLM regenerations.
+    `extra='forbid'` rejects unknown fields up front so typos surface as 422
+    rather than silently dropping the change."""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
     intent: str | None = None
@@ -51,14 +58,14 @@ class CaseEdit(BaseModel):
 
 class BulkReview(BaseModel):
     case_ids: list[str] = Field(min_length=1)
-    action: str  # approve | reject
+    action: ReviewVerb
 
 
 @router.get("/")
 async def list_cases(
-    status: str | None = None,
+    status: Literal["pending", "approved", "rejected", "stale"] | None = None,
     project_id: str | None = None,
-    limit: int = 200,
+    limit: int = Query(default=200, ge=1, le=1000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(TestCase).order_by(desc(TestCase.created_at)).limit(limit)
@@ -100,13 +107,7 @@ async def review_case(
         raise HTTPException(status_code=404, detail="case not found")
 
     before = row.review_status
-    if body.action == "approve":
-        row.review_status = "approved"
-    elif body.action == "reject":
-        row.review_status = "rejected"
-    else:
-        raise HTTPException(status_code=400, detail="action must be approve|reject")
-
+    row.review_status = "approved" if body.action == "approve" else "rejected"
     row.updated_at = datetime.now(UTC)
     await session.commit()
     log.info(
@@ -115,6 +116,7 @@ async def review_case(
         action=body.action,
         before_state=before,
         after_state=row.review_status,
+        note=body.note[:500] if body.note else "",
     )
     return {"data": row.model_dump()}
 
@@ -122,8 +124,6 @@ async def review_case(
 @router.post("/bulk-review")
 async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_session)) -> dict:
     """Apply approve/reject to many cases in one transaction."""
-    if body.action not in {"approve", "reject"}:
-        raise HTTPException(status_code=400, detail="action must be approve|reject")
     target = "approved" if body.action == "approve" else "rejected"
 
     rows = (
@@ -194,7 +194,9 @@ async def edit_case(
             edited.append(k)
 
     if edited:
-        merged = list({*row.manual_edited_fields, *edited})
+        # dict.fromkeys preserves insertion order — set() would scramble the
+        # field list across calls and make diffs harder to reason about.
+        merged = list(dict.fromkeys([*row.manual_edited_fields, *edited]))
         row.manual_edited_fields = merged
         # Edits revert review back to pending if the case was already approved/rejected
         # so a human re-confirms the change. Plain field touch on a pending case stays pending.

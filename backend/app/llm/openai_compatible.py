@@ -86,10 +86,20 @@ class OpenAICompatibleClient(BaseChatClient):
         if system:
             messages.append({"role": "system", "content": system})
 
+        if image and not self.supports_image:
+            # Refuse rather than silently strip — caller (typically the
+            # diagnoser) requested vision and the result would be misleading
+            # if we ran the call as text-only.
+            raise LLMResponseFormatError(
+                f"{self.name} does not support image input; route this call to a vision provider",
+                provider=self.name,
+            )
+
         if image and self.supports_image:
             import base64
 
             b64 = base64.b64encode(image).decode("ascii")
+            mime = _detect_image_mime(image)
             messages.append(
                 {
                     "role": "user",
@@ -97,17 +107,12 @@ class OpenAICompatibleClient(BaseChatClient):
                         {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                            "image_url": {"url": f"data:{mime};base64,{b64}"},
                         },
                     ],
                 }
             )
         else:
-            if image and not self.supports_image:
-                log.warning(
-                    "openai_compat.image_not_supported_dropped",
-                    provider=self.name,
-                )
             messages.append({"role": "user", "content": prompt})
 
         body: dict[str, Any] = {
@@ -219,9 +224,10 @@ def _is_quota_error(data: dict[str, Any]) -> bool:
     err = data.get("error") or {}
     if not isinstance(err, dict):
         return False
-    typ = (err.get("type") or "").lower()
-    msg = (err.get("message") or "").lower()
-    code = (err.get("code") or "").lower()
+    # `code` can be int (HTTP status) or str — coerce defensively.
+    typ = str(err.get("type") or "").lower()
+    msg = str(err.get("message") or "").lower()
+    code = str(err.get("code") or "").lower()
     return any(w in typ or w in msg or w in code for w in _QUOTA_WORDS)
 
 
@@ -229,6 +235,18 @@ def _is_rate_error(data: dict[str, Any]) -> bool:
     err = data.get("error") or {}
     if not isinstance(err, dict):
         return False
-    typ = (err.get("type") or "").lower()
-    msg = (err.get("message") or "").lower()
+    typ = str(err.get("type") or "").lower()
+    msg = str(err.get("message") or "").lower()
     return any(w in typ or w in msg for w in _RATE_WORDS)
+
+
+def _detect_image_mime(image: bytes) -> str:
+    if image.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image.startswith(b"RIFF") and image[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
@@ -25,7 +27,7 @@ class GenerateRequest(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    feedback: str  # confirmed | wrong | partially_correct
+    feedback: Literal["confirmed", "wrong", "partially_correct"]
     note: str = ""
 
 
@@ -33,7 +35,7 @@ class FeedbackRequest(BaseModel):
 async def list_diagnoses(
     run_id: str | None = None,
     case_id: str | None = None,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(Diagnosis).order_by(desc(Diagnosis.created_at)).limit(limit)
@@ -48,7 +50,7 @@ async def list_diagnoses(
 @router.get("/patterns/")
 async def list_patterns(
     pattern_type: str | None = None,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(Pattern).order_by(desc(Pattern.last_hit_at), desc(Pattern.hit_count)).limit(limit)

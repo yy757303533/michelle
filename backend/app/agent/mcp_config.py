@@ -28,11 +28,17 @@ def build_playwright_mcp_config(
     headless: bool = True,
     browser: str = "chromium",
     extra_args: list[str] | None = None,
+    package: str | None = None,
 ) -> dict[str, Any]:
     """Return an MCP servers config dict suitable for `claude --mcp-config <file>`."""
+    if package is None:
+        # Lazy import to keep this module testable without app.config side effects.
+        from app.config import settings
+
+        package = settings.playwright_mcp_package
     args: list[str] = [
         "-y",
-        "@playwright/mcp@latest",
+        package,
         "--browser",
         browser,
     ]

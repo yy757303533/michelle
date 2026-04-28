@@ -27,8 +27,12 @@ _REGISTRY: dict[str, list[HookFn]] = {}
 
 
 def register(event_name: str, fn: HookFn) -> None:
-    """Register an async function to fire when an event is emitted."""
-    _REGISTRY.setdefault(event_name, []).append(fn)
+    """Register an async function to fire when an event is emitted.
+    Dedups on (event_name, fn) so re-import or reload doesn't double-fire."""
+    handlers = _REGISTRY.setdefault(event_name, [])
+    if fn in handlers:
+        return
+    handlers.append(fn)
     _log.debug("hook.registered", hook_event=event_name, fn=fn.__name__)
 
 
@@ -85,9 +89,16 @@ async def _on_diagnosis_confirmed_sediment(payload: dict[str, Any]) -> None:
     _log.debug("hook.diagnosis_confirmed.sediment.stub", diag_id=payload.get("diag_id"))
 
 
+_INSTALLED_DEFAULTS = False
+
+
 def install_default_hooks() -> None:
-    """Wire defaults at startup."""
+    """Wire defaults at startup. Idempotent."""
+    global _INSTALLED_DEFAULTS
+    if _INSTALLED_DEFAULTS:
+        return
     register("case.approved", _on_case_approved_auto_run)
     register("run.failed", _on_run_failed_auto_diagnose)
     register("diagnosis.confirmed", _on_diagnosis_confirmed_sediment)
+    _INSTALLED_DEFAULTS = True
     _log.info("hooks.installed", count=3)

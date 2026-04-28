@@ -11,18 +11,33 @@ from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.types import Processor
 
 from app.config import settings
+from app.obs.events import Event
+
+
+def _normalize_event_catalog(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Allow `log.info(EVENTS.X, **fields)` — render the Event dataclass as its
+    canonical name string, and surface missing key_fields for debugging.
+    Without this processor JSONRenderer raises TypeError on the Event object."""
+    event = event_dict.get("event")
+    if isinstance(event, Event):
+        event_dict["event"] = event.name
+        missing = [f for f in event.key_fields if f not in event_dict]
+        if missing:
+            event_dict["event_missing_fields"] = missing
+    return event_dict
 
 
 def _add_trace_id(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
-    """Pull current OTel trace_id into the log record (best-effort)."""
+    """Pull current OTel trace_id into the log record (best-effort).
+    Don't gate on is_recording() — a non-recording span can still carry a valid
+    trace context that downstream log aggregators use to stitch records."""
     try:
         from opentelemetry.trace import format_trace_id, get_current_span
 
         span = get_current_span()
-        if span and span.is_recording():
-            ctx = span.get_span_context()
-            if ctx.trace_id:
-                event_dict.setdefault("trace_id", format_trace_id(ctx.trace_id))
+        ctx = span.get_span_context() if span else None
+        if ctx and ctx.is_valid:
+            event_dict.setdefault("trace_id", format_trace_id(ctx.trace_id))
     except Exception:
         pass
     return event_dict
@@ -51,6 +66,7 @@ def setup_logging() -> None:
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         _add_service,
         _add_trace_id,
+        _normalize_event_catalog,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.JSONRenderer(),

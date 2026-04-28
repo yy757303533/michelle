@@ -127,23 +127,14 @@ async def test_image_sent_when_supported():
 
 
 @pytest.mark.asyncio
-@respx.mock
-async def test_image_dropped_when_not_supported():
-    captured = {}
-
-    def _capture(req: httpx.Request):
-        captured["body"] = req.read().decode()
-        return httpx.Response(
-            200,
-            json={
-                "choices": [{"message": {"content": "text only"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
-            },
+async def test_image_raises_when_not_supported():
+    """Vision-incapable providers must refuse image input rather than silently
+    drop it — otherwise callers (e.g. the diagnoser) get a misleading
+    text-only diagnosis labelled as a vision pass."""
+    with pytest.raises(LLMResponseFormatError):
+        await _client(supports_image=False).chat(
+            "hi", prompt_version="probe_v1", image=b"\x89PNG\r\n"
         )
-
-    respx.post(URL).mock(side_effect=_capture)
-    await _client(supports_image=False).chat("hi", prompt_version="probe_v1", image=b"\x89PNG\r\n")
-    assert "image_url" not in captured["body"]
 
 
 @pytest.mark.asyncio
