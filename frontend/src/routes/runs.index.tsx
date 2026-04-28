@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 
 export const Route = createFileRoute("/runs/")({
@@ -32,24 +32,35 @@ function RunsListPage() {
   const { projectId } = useCurrentProject();
   const [filter, setFilter] = useState<string>("");
 
+  // Always fetch the full set for this project — filtering happens at
+  // render time only. The previous version filtered inside `queryFn`,
+  // so picking "running" left the cache holding 2 rows instead of all
+  // 3, which collapsed every other pill's count to 0.
   const runs = useQuery({
-    queryKey: ["runs", projectId, filter],
+    queryKey: ["runs", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
       const r = await fetch(`/api/runs/?limit=200&project_id=${encodeURIComponent(projectId)}`);
-      const body = await r.json();
-      if (!filter) return body;
-      return {
-        ...body,
-        data: body.data.filter((x: RunRow) => x.status === filter),
-        count: body.data.filter((x: RunRow) => x.status === filter).length,
-      };
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
     },
     refetchInterval: 5000,
   });
 
-  const grouped: Record<string, number> = {};
-  for (const r of runs.data?.data ?? []) grouped[r.status] = (grouped[r.status] ?? 0) + 1;
+  const allRuns = runs.data?.data ?? [];
+
+  // Counts come from the full set so pills stay stable when the user
+  // toggles between filters.
+  const grouped = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const r of allRuns) out[r.status] = (out[r.status] ?? 0) + 1;
+    return out;
+  }, [allRuns]);
+
+  const visible = useMemo(
+    () => (filter ? allRuns.filter((r) => r.status === filter) : allRuns),
+    [allRuns, filter],
+  );
 
   if (!projectId) {
     return (
@@ -72,7 +83,7 @@ function RunsListPage() {
 
       <div className="flex items-center gap-2">
         {STATUSES.map((s) => {
-          const n = s ? grouped[s] ?? 0 : runs.data?.count ?? 0;
+          const n = s ? (grouped[s] ?? 0) : allRuns.length;
           const active = filter === s;
           return (
             <button
@@ -94,13 +105,18 @@ function RunsListPage() {
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {runs.isLoading ? (
           <div className="p-6 text-slate-400 text-sm">loading…</div>
-        ) : (runs.data?.count ?? 0) === 0 ? (
+        ) : allRuns.length === 0 ? (
           <div className="p-8 text-center text-slate-400 text-sm">
             no runs yet — head to{" "}
             <Link to="/cases" className="text-blue-700 underline">
               Cases
             </Link>{" "}
             and click ▶ Run on an approved case
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="p-8 text-center text-slate-400 text-sm">
+            no runs in <code>{filter}</code> state — pick another filter or
+            wait for new runs
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -116,7 +132,7 @@ function RunsListPage() {
               </tr>
             </thead>
             <tbody>
-              {runs.data?.data.map((r) => (
+              {visible.map((r) => (
                 <tr key={r.run_id} className="border-t border-slate-100 hover:bg-slate-50">
                   <td className="p-2 font-mono text-xs">
                     <Link to="/runs/$id" params={{ id: r.run_id }} className="text-blue-700 hover:underline">
