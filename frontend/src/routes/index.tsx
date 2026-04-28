@@ -585,15 +585,18 @@ function ProjectInlineEditForm({
   );
 }
 
-interface RuntimeKnob {
-  value: number;
-  default: number;
-  min: number;
-  max: number;
+interface RuntimeKnob<T = number | boolean> {
+  value: T;
+  default: T;
+  min?: number;
+  max?: number;
   describe: string;
 }
 interface RuntimeSettingsResponse {
-  data: { max_concurrent_runs: RuntimeKnob };
+  data: {
+    max_concurrent_runs: RuntimeKnob<number>;
+    headless: RuntimeKnob<boolean>;
+  };
 }
 
 /** Live-tunable platform knobs. Currently just `max_concurrent_runs`,
@@ -610,16 +613,17 @@ function RuntimeSettingsPanel() {
     },
   });
 
-  const knob = settings.data?.data.max_concurrent_runs;
+  const concurrencyKnob = settings.data?.data.max_concurrent_runs;
+  const headlessKnob = settings.data?.data.headless;
   const [draft, setDraft] = useState<number | null>(null);
-  const value = draft ?? knob?.value ?? 2;
+  const value = draft ?? concurrencyKnob?.value ?? 2;
 
   const save = useMutation({
-    mutationFn: async (v: number) => {
+    mutationFn: async (body: Record<string, number | boolean>) => {
       const r = await fetch("/api/settings/runtime", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ max_concurrent_runs: v }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
@@ -632,29 +636,32 @@ function RuntimeSettingsPanel() {
 
   return (
     <Panel title="Platform settings">
-      {settings.isLoading || !knob ? (
+      {settings.isLoading || !concurrencyKnob || !headlessKnob ? (
         <span className="text-slate-400 text-sm">…</span>
       ) : (
-        <div className="space-y-2 text-sm">
+        <div className="space-y-3 text-sm">
+          {/* concurrency */}
           <div>
             <div className="flex items-center gap-2 mb-1">
               <code className="text-xs text-slate-500">max_concurrent_runs</code>
               <input
                 type="number"
-                min={knob.min}
-                max={knob.max}
+                min={concurrencyKnob.min}
+                max={concurrencyKnob.max}
                 value={value}
-                onChange={(e) => setDraft(parseInt(e.target.value, 10) || knob.value)}
+                onChange={(e) =>
+                  setDraft(parseInt(e.target.value, 10) || concurrencyKnob.value)
+                }
                 className="border border-slate-200 rounded px-2 py-0.5 w-20 text-sm font-mono"
               />
               <button
-                disabled={save.isPending || value === knob.value}
-                onClick={() => save.mutate(value)}
+                disabled={save.isPending || value === concurrencyKnob.value}
+                onClick={() => save.mutate({ max_concurrent_runs: value })}
                 className="text-xs bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
               >
                 {save.isPending ? "saving…" : "save"}
               </button>
-              {draft != null && draft !== knob.value && (
+              {draft != null && draft !== concurrencyKnob.value && (
                 <button
                   onClick={() => setDraft(null)}
                   className="text-xs text-slate-500 hover:text-slate-900"
@@ -663,10 +670,31 @@ function RuntimeSettingsPanel() {
                 </button>
               )}
               <span className="text-xs text-slate-400">
-                env default: <code>{knob.default}</code>
+                default: <code>{String(concurrencyKnob.default)}</code>
               </span>
             </div>
-            <p className="text-xs text-slate-500">{knob.describe}</p>
+            <p className="text-xs text-slate-500">{concurrencyKnob.describe}</p>
+          </div>
+          {/* headless */}
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <code className="text-xs text-slate-500">headless</code>
+              <label className="inline-flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={headlessKnob.value}
+                  onChange={(e) => save.mutate({ headless: e.target.checked })}
+                  disabled={save.isPending}
+                />
+                <span className="text-xs">
+                  {headlessKnob.value ? "headless (no window)" : "show browser"}
+                </span>
+              </label>
+              <span className="text-xs text-slate-400">
+                default: <code>{String(headlessKnob.default)}</code>
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">{headlessKnob.describe}</p>
           </div>
           {save.error && (
             <span className="text-red-600 text-xs">{(save.error as Error).message}</span>

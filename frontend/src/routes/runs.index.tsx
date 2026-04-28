@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+import { fmtDateTime, fmtMs } from "../lib/datetime";
 
 const RERUNNABLE = new Set(["failed", "aborted", "flaky"]);
 
@@ -384,7 +385,7 @@ function RunsListPage() {
                     {r.input_tokens}/{r.output_tokens}
                   </td>
                   <td className="p-2 text-xs text-slate-500">
-                    {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
+                    {fmtDateTime(r.started_at)}
                   </td>
                   <td className="p-2 text-right">
                     {RERUNNABLE.has(r.status) && (
@@ -425,8 +426,3 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function fmtMs(ms: number | null): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}

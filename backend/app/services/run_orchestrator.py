@@ -292,13 +292,19 @@ async def execute_case(
             if s and len(s) >= 3
         ]
 
+        # Read live headless preference. Operator can toggle from the
+        # dashboard to watch the agent drive Chromium during debugging.
+        from app.api.settings import get_headless
+
+        headless = await get_headless(session)
+
         try:
             outcome: RunOutcome = await run_claude_with_playwright(
                 RunRequest(
                     prompt=prompt,
                     work_dir=rd,
                     timeout_seconds=timeout_seconds,
-                    headless=True,
+                    headless=headless,
                     isolated=True,
                     secrets=secrets,
                 )

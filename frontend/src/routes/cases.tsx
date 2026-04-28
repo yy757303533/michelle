@@ -1,8 +1,9 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+import { fmtDateTime, fmtMs } from "../lib/datetime";
 
 export const Route = createFileRoute("/cases")({
   component: CasesPage,
@@ -65,6 +66,43 @@ function CasesPage() {
       return r.json();
     },
   });
+
+  // Latest run per case_id for the per-row "last run: failed · 138s · 5m ago"
+  // summary. Polls every 5s so the user can watch a freshly-triggered batch
+  // light up. Pulled from /api/runs/ rather than tracked locally because the
+  // truth is in the run history — works after page reload, in another tab,
+  // and for runs the user didn't trigger from this page.
+  interface RunRow {
+    run_id: string;
+    case_id: string;
+    status: string;
+    duration_ms: number | null;
+    started_at: string | null;
+    created_at: string;
+  }
+  const projectRuns = useQuery({
+    queryKey: ["cases-overlay-runs", projectId],
+    enabled: Boolean(projectId),
+    refetchInterval: 5000,
+    queryFn: async (): Promise<{ data: RunRow[] }> => {
+      const r = await fetch(
+        `/api/runs/?project_id=${encodeURIComponent(projectId)}&limit=500`,
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  /** Map case_id → latest run. /api/runs/ is desc by created_at, so the
+   * first row we see for a case is its most-recent run. */
+  const lastRunByCase = useMemo(() => {
+    const out = new Map<string, RunRow>();
+    if (!projectRuns.data) return out;
+    for (const r of projectRuns.data.data) {
+      if (!out.has(r.case_id)) out.set(r.case_id, r);
+    }
+    return out;
+  }, [projectRuns.data]);
 
   const review = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: "approve" | "reject" }) => {
@@ -418,6 +456,7 @@ function CasesPage() {
                 <th className="p-2 w-20">priority</th>
                 <th className="p-2 w-24">module</th>
                 <th className="p-2 w-24">status</th>
+                <th className="p-2 w-40">last run</th>
                 <th className="p-2 w-32">edited</th>
                 <th className="p-2 w-48">actions</th>
               </tr>
@@ -427,6 +466,7 @@ function CasesPage() {
                 <CaseRowView
                   key={c.case_id}
                   c={c}
+                  lastRun={lastRunByCase.get(c.case_id) ?? null}
                   expanded={expanded === c.case_id}
                   editing={editing === c.case_id}
                   selected={selected.has(c.case_id)}
@@ -622,8 +662,17 @@ function DeleteBtn({ busy, onDelete }: { busy: boolean; onDelete: () => void }) 
   );
 }
 
+interface CaseRowLastRun {
+  run_id: string;
+  status: string;
+  duration_ms: number | null;
+  started_at: string | null;
+  created_at: string;
+}
+
 function CaseRowView({
   c,
+  lastRun,
   expanded,
   editing,
   selected,
@@ -642,6 +691,7 @@ function CaseRowView({
   deleteBusy,
 }: {
   c: CaseRow;
+  lastRun: CaseRowLastRun | null;
   expanded: boolean;
   editing: boolean;
   selected: boolean;
@@ -690,6 +740,24 @@ function CaseRowView({
         <td className="p-2 text-xs text-slate-500">{c.module}</td>
         <td className="p-2">
           <StatusPill status={c.review_status} />
+        </td>
+        <td className="p-2 text-xs" onClick={(e) => e.stopPropagation()}>
+          {lastRun ? (
+            <Link
+              to="/runs/$id"
+              params={{ id: lastRun.run_id }}
+              className="block hover:underline"
+              title={`open run ${lastRun.run_id.slice(0, 8)}`}
+            >
+              <RunStatusDot status={lastRun.status} />{" "}
+              <span className="font-mono">{fmtMs(lastRun.duration_ms)}</span>
+              <div className="text-[10px] text-slate-400">
+                {fmtDateTime(lastRun.started_at ?? lastRun.created_at)}
+              </div>
+            </Link>
+          ) : (
+            <span className="text-slate-300">never</span>
+          )}
         </td>
         <td className="p-2">
           {c.manual_edited_fields.length === 0 ? (
@@ -776,7 +844,7 @@ function CaseRowView({
       </tr>
       {expanded && !editing && (
         <tr>
-          <td colSpan={8} className="p-3 bg-slate-50">
+          <td colSpan={9} className="p-3 bg-slate-50">
             <div className="grid grid-cols-3 gap-4 text-xs">
               <Block title="preconditions">
                 {c.preconditions.length ? (
@@ -897,7 +965,7 @@ function EditForm({
 
   return (
     <tr>
-      <td colSpan={8} className="p-4 bg-amber-50 border-t border-amber-200">
+      <td colSpan={9} className="p-4 bg-amber-50 border-t border-amber-200">
         <div className="text-xs uppercase tracking-wide text-amber-700 mb-3">
           edit case · {c.case_id}
         </div>
@@ -1009,6 +1077,27 @@ function StatusPill({ status }: { status: string }) {
       }
     >
       {status}
+    </span>
+  );
+}
+
+/** Compact run-status indicator for tight rows: a coloured dot + label.
+ * Reused on /cases to render the per-row "last run" summary. */
+function RunStatusDot({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    pending: "bg-slate-400",
+    running: "bg-blue-500 animate-pulse",
+    passed: "bg-emerald-500",
+    failed: "bg-red-500",
+    flaky: "bg-amber-500",
+    aborted: "bg-slate-400",
+  };
+  return (
+    <span className="inline-flex items-center gap-1 font-mono">
+      <span
+        className={"inline-block w-1.5 h-1.5 rounded-full " + (colors[status] ?? "bg-slate-300")}
+      />
+      <span className="text-slate-700">{status}</span>
     </span>
   );
 }

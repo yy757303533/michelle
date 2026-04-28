@@ -24,6 +24,10 @@ router = APIRouter()
 log = get_logger(__name__)
 
 
+def _coerce_bool(v: Any) -> bool:
+    return str(v).lower() in {"true", "1", "yes", "on"}
+
+
 # Whitelist of mutable knobs, with type coercion + bounds. Anything not in
 # this dict is ignored even if it shows up in the DB (forward-compat) or in
 # a PUT request (rejected with 422).
@@ -38,15 +42,34 @@ _KNOBS: dict[str, dict[str, Any]] = {
             "Chromium + one claude subprocess (~250MB RAM)."
         ),
     },
+    "headless": {
+        "type": _coerce_bool,
+        "default_attr": None,  # see _env_default below — defaults to True
+        "describe": (
+            "Run Chromium headless (no visible window). Turn OFF to watch the "
+            "agent drive the browser live — useful for debugging selector "
+            "drift or auth flows. Slower + breaks if you don't have a display."
+        ),
+    },
 }
 
 
 class SettingsUpdate(BaseModel):
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=32)
+    headless: bool | None = None
+
+
+_KNOB_DEFAULTS: dict[str, Any] = {
+    "headless": True,  # default chromium runs headless; toggle off to watch
+}
 
 
 def _env_default(knob: str) -> Any:
-    return getattr(settings, _KNOBS[knob]["default_attr"])
+    spec = _KNOBS[knob]
+    attr = spec.get("default_attr")
+    if attr is None:
+        return _KNOB_DEFAULTS.get(knob)
+    return getattr(settings, attr)
 
 
 async def _read_knob(session: AsyncSession, knob: str) -> Any:
@@ -64,6 +87,11 @@ async def get_max_concurrent_runs(session: AsyncSession) -> int:
     """Free-standing helper so run_orchestrator can read the live value
     without going through HTTP."""
     return int(await _read_knob(session, "max_concurrent_runs"))
+
+
+async def get_headless(session: AsyncSession) -> bool:
+    """Whether new browser sessions should run without a visible window."""
+    return bool(await _read_knob(session, "headless"))
 
 
 @router.get("/runtime")

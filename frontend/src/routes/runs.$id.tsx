@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { fmtDateTime, fmtMs, fmtTime } from "../lib/datetime";
 
 /** Build an artifact URL with each path segment percent-encoded so filenames
  * with spaces / `#` / `?` round-trip correctly to the backend's
@@ -199,7 +200,7 @@ function RunDetailPage() {
           sub={`${steps.filter(s => s.status === "ok").length} ok / ${steps.filter(s => s.status === "failed").length} failed`}
         />
         <Card label="tokens" value={`${run.input_tokens} in / ${run.output_tokens} out`} />
-        <Card label="started" value={run.started_at ? new Date(run.started_at).toLocaleTimeString() : "—"} />
+        <Card label="started" value={fmtTime(run.started_at)} />
       </div>
 
       {run.error_message && (
@@ -361,9 +362,7 @@ function RunHistorySection({
                 {fmtMs(r.duration_ms)}
               </span>
               <span className="text-xs text-slate-400">
-                {r.started_at
-                  ? new Date(r.started_at).toLocaleString()
-                  : new Date(r.created_at).toLocaleString()}
+                {fmtDateTime(r.started_at ?? r.created_at)}
               </span>
               {r.error_message && (
                 <span className="text-xs text-red-600 truncate max-w-md" title={r.error_message}>
@@ -475,8 +474,3 @@ function StatusBadge({ status, live }: { status: string; live: boolean }) {
   );
 }
 
-function fmtMs(ms: number | null): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
