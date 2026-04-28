@@ -4,7 +4,7 @@
 >
 > *not a tool, an agent that gets smarter the more it runs.*
 
-📖 [5-minute walkthrough](docs/STORY.md) · 🎬 [demo video](docs/day12-demo/walkthrough.webm) · 📋 [PRD](docs/prd.md) · 🏗 [ADRs](docs/adr/) · 🔬 [lessons learned](docs/lessons-learned.md)
+📖 [5-min walkthrough](docs/STORY.md) · 🎬 [demo video](docs/day12-demo/walkthrough.webm) · 📋 [PRD](docs/prd.md) · 🏗 [ADRs](docs/adr/) · 🔬 [lessons learned](docs/lessons-learned.md) · 🎤 [interview talk track](docs/INTERVIEW.md)
 
 ---
 
