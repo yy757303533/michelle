@@ -545,8 +545,18 @@ async def _mark_status(*, run_id: str, status: str, note: str = "") -> None:
         await session.commit()
 
 
+async def _emit_failure_hook(*, run_id: str) -> None:
+    """Fire run.failed hook handlers (auto-diagnose lives there)."""
+    from app.agent import hooks
+    try:
+        await hooks.emit("run.failed", {"run_id": run_id})
+    except Exception:  # noqa: BLE001
+        _log.exception("orchestrator.failure_hook_emit_failed", run_id=run_id)
+
+
 async def _classify_and_persist(*, run_id: str) -> None:
-    """After a final-failed run, attach a heuristic category to error_message."""
+    """After a final-failed run, attach a heuristic category to error_message
+    and fire the run.failed hook (auto-diagnose lives there)."""
     async with async_session_maker() as session:
         run = await session.get(Run, run_id)
         if run is None:
@@ -582,6 +592,10 @@ async def _classify_and_persist(*, run_id: str) -> None:
                 category=category,
                 final_status=run.status,
             )
+
+    # Fire the failure hook (auto-diagnose) outside the session — diagnose_run
+    # opens its own AsyncSession.
+    await _emit_failure_hook(run_id=run_id)
 
 
 # Surface the default timeout from settings so callers can override per env

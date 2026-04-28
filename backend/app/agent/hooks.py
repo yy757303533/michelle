@@ -29,7 +29,7 @@ _REGISTRY: dict[str, list[HookFn]] = {}
 def register(event_name: str, fn: HookFn) -> None:
     """Register an async function to fire when an event is emitted."""
     _REGISTRY.setdefault(event_name, []).append(fn)
-    _log.debug("hook.registered", event=event_name, fn=fn.__name__)
+    _log.debug("hook.registered", hook_event=event_name, fn=fn.__name__)
 
 
 async def emit(event_name: str, payload: dict[str, Any]) -> None:
@@ -37,11 +37,11 @@ async def emit(event_name: str, payload: dict[str, Any]) -> None:
     handlers = _REGISTRY.get(event_name, [])
     if not handlers:
         return
-    _log.debug("hook.emit", event=event_name, n_handlers=len(handlers))
+    _log.debug("hook.emit", hook_event=event_name, n_handlers=len(handlers))
     results = await asyncio.gather(*(fn(payload) for fn in handlers), return_exceptions=True)
     for fn, res in zip(handlers, results, strict=True):
         if isinstance(res, Exception):
-            _log.error("hook.handler_failed", event=event_name, fn=fn.__name__, error=str(res))
+            _log.error("hook.handler_failed", hook_event=event_name, fn=fn.__name__, error=str(res))
 
 
 # ── Default hook intents (bodies filled later) ──────────────────────────────
@@ -56,11 +56,27 @@ async def _on_case_approved_auto_run(payload: dict[str, Any]) -> None:
 
 
 async def _on_run_failed_auto_diagnose(payload: dict[str, Any]) -> None:
-    """When a run fails, automatically trigger AI diagnosis.
+    """When a run fails, automatically trigger AI diagnosis."""
+    run_id = payload.get("run_id")
+    if not run_id:
+        return
+    try:
+        from app.db import async_session_maker
+        from app.services.diagnoser import diagnose_run
 
-    Day 11: call diagnoser service. ON by default.
-    """
-    _log.debug("hook.run_failed.auto_diagnose.stub", run_id=payload.get("run_id"))
+        async with async_session_maker() as session:
+            diag = await diagnose_run(run_id=run_id, session=session)
+        _log.info(
+            "hook.run_failed.auto_diagnosed",
+            run_id=run_id,
+            diag_id=diag.diag_id,
+            category=diag.category,
+            confidence=diag.confidence,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.exception(
+            "hook.run_failed.auto_diagnose_failed", run_id=run_id, error=str(exc)[:200]
+        )
 
 
 async def _on_diagnosis_confirmed_sediment(payload: dict[str, Any]) -> None:

@@ -50,6 +50,12 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 async def lifespan(app: FastAPI):
     log.info(EVENTS.APP_STARTED.name, version=__version__, env=settings.app_env)
     await init_db()
+
+    # Wire internal business hooks (run.failed → auto-diagnose, etc.)
+    from app.agent.hooks import install_default_hooks
+
+    install_default_hooks()
+
     yield
     log.info(EVENTS.APP_SHUTDOWN.name)
 

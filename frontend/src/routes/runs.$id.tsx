@@ -148,14 +148,25 @@ function RunDetailPage() {
         <div className="flex items-center gap-3">
           <StatusBadge status={run.status} live={live} />
           {TERMINAL.has(run.status) && (
-            <a
-              href={`/api/runs/${run.run_id}/report.html`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs px-3 py-1 rounded bg-slate-900 text-white hover:bg-slate-700"
-            >
-              open HTML report ↗
-            </a>
+            <>
+              {(run.status === "failed" || run.status === "flaky" || run.status === "aborted") && (
+                <Link
+                  to="/diagnosis/$id"
+                  params={{ id: run.run_id }}
+                  className="text-xs px-3 py-1 rounded bg-amber-600 text-white hover:bg-amber-700"
+                >
+                  AI diagnose →
+                </Link>
+              )}
+              <a
+                href={`/api/runs/${run.run_id}/report.html`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs px-3 py-1 rounded bg-slate-900 text-white hover:bg-slate-700"
+              >
+                open HTML report ↗
+              </a>
+            </>
           )}
         </div>
       </div>

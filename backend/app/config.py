@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ── LLM: Flywheel proxy (premium upgrade) ──
     flywheel_token: str = ""
     flywheel_base_url: str = "https://flywheel.zstack.io/v1/chat/completions"
-    flywheel_model_premium: str = "anthropic/claude-opus-4.7"
+    flywheel_model_premium: str = "openai/gpt-5.5-2026-04-23"
 
     # ── LLM: Kimi / Moonshot (OpenAI-compatible) ──
     kimi_api_key: str = ""
