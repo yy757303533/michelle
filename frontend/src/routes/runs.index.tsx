@@ -1,8 +1,10 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+
+const RERUNNABLE = new Set(["failed", "aborted", "flaky"]);
 
 export const Route = createFileRoute("/runs/")({
   component: RunsListPage,
@@ -31,6 +33,8 @@ const STATUSES = ["", "pending", "running", "passed", "failed", "flaky", "aborte
 
 function RunsListPage() {
   const { projectId } = useCurrentProject();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
   const [filter, setFilter] = useState<string>("");
 
   // Always fetch the full set for this project — filtering happens at
@@ -46,6 +50,37 @@ function RunsListPage() {
       return r.json();
     },
     refetchInterval: 5000,
+  });
+
+  /** Spawn fresh runs for the selected case_ids. We deliberately don't
+   * mutate the original failed Run rows — they stay as-is for forensics
+   * and so the diagnoser keeps its target. The new runs show up at the
+   * top of the list with status=pending and run independently. */
+  const rerun = useMutation({
+    mutationFn: async (
+      caseIds: string[],
+    ): Promise<{ data: { run_ids: string[] } }> => {
+      // Dedupe — a case might have failed multiple times; rerunning it
+      // should fire ONE new run, not N.
+      const unique = [...new Set(caseIds)];
+      const r = await fetch("/api/runs/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_ids: unique, env: "default" }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["runs-recent"] });
+      // For a single rerun, jump to its detail page so the user can watch
+      // the new attempt. For bulk, stay on the list and let the rows
+      // appear via the 5s poll.
+      if (resp.data.run_ids.length === 1) {
+        navigate({ to: "/runs/$id", params: { id: resp.data.run_ids[0] } });
+      }
+    },
   });
 
   const allRuns = runs.data?.data ?? [];
@@ -104,6 +139,36 @@ function RunsListPage() {
             </button>
           );
         })}
+        {/* Bulk rerun for all visible failed/aborted/flaky. Pulls case_ids
+            out of the currently-rendered set so the filter pills double as
+            scope selectors — pick "failed" then click rerun to retry just
+            those, or "all" to retry every non-terminal-success run. */}
+        {(() => {
+          const rerunable = visible.filter((r) => RERUNNABLE.has(r.status));
+          const uniqueCases = new Set(rerunable.map((r) => r.case_id));
+          if (uniqueCases.size === 0) return null;
+          return (
+            <button
+              disabled={rerun.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Rerun ${uniqueCases.size} unique case${uniqueCases.size > 1 ? "s" : ""} from ${rerunable.length} failed/aborted/flaky run${rerunable.length > 1 ? "s" : ""}?\n\n` +
+                      `New runs land in pending and execute under the current concurrency cap. The original failed runs stay untouched for forensics.`,
+                  )
+                ) {
+                  rerun.mutate(rerunable.map((r) => r.case_id));
+                }
+              }}
+              className="ml-auto text-sm px-3 py-1 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+              title={`spawn fresh runs for ${uniqueCases.size} case(s) that previously failed`}
+            >
+              {rerun.isPending
+                ? "scheduling…"
+                : `↻ Rerun ${uniqueCases.size} failed`}
+            </button>
+          );
+        })()}
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -133,6 +198,7 @@ function RunsListPage() {
                 <th className="p-2 w-20">duration</th>
                 <th className="p-2 w-32">tokens</th>
                 <th className="p-2 w-44">started</th>
+                <th className="p-2 w-16"></th>
               </tr>
             </thead>
             <tbody>
@@ -158,6 +224,18 @@ function RunsListPage() {
                   </td>
                   <td className="p-2 text-xs text-slate-500">
                     {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
+                  </td>
+                  <td className="p-2 text-right">
+                    {RERUNNABLE.has(r.status) && (
+                      <button
+                        disabled={rerun.isPending}
+                        onClick={() => rerun.mutate([r.case_id])}
+                        className="text-xs px-2 py-0.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                        title={`rerun ${r.case_id} as a fresh run`}
+                      >
+                        ↻ rerun
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

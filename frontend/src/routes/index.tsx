@@ -502,6 +502,7 @@ function ProjectInlineEditForm({
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [username, setUsername] = useState(initial.default_username);
   const [password, setPassword] = useState(initial.default_password);
+  const [showPwd, setShowPwd] = useState(false);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -552,12 +553,21 @@ function ProjectInlineEditForm({
       </label>
       <label className="block">
         <span className="text-xs text-slate-500">default_password</span>
-        <input
-          type="password"
-          className="border border-slate-200 rounded px-2 py-1 w-full font-mono"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type={showPwd ? "text" : "password"}
+            className="border border-slate-200 rounded px-2 py-1 flex-1 font-mono"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => setShowPwd((v) => !v)}
+            className="text-xs text-slate-500 hover:text-slate-900"
+          >
+            {showPwd ? "hide" : "show"}
+          </button>
+        </div>
       </label>
       <div className="md:col-span-2 flex items-center gap-2">
         <button

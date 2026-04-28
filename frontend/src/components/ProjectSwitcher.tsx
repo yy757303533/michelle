@@ -140,6 +140,7 @@ function ProjectForm({
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
   const [username, setUsername] = useState(initial?.default_username ?? "");
   const [password, setPassword] = useState(initial?.default_password ?? "");
+  const [showPwd, setShowPwd] = useState(false);
 
   const save = useMutation({
     mutationFn: async (): Promise<ProjectRow> => {
@@ -194,13 +195,22 @@ function ProjectForm({
         />
       </Optional>
       <Optional label="password">
-        <input
-          type="password"
-          className="border border-slate-200 rounded px-2 py-0.5 w-28"
-          placeholder="••••"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+        <span className="inline-flex items-center gap-1">
+          <input
+            type={showPwd ? "text" : "password"}
+            className="border border-slate-200 rounded px-2 py-0.5 w-28"
+            placeholder="••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => setShowPwd((v) => !v)}
+            className="text-slate-400 hover:text-slate-700"
+          >
+            {showPwd ? "hide" : "show"}
+          </button>
+        </span>
       </Optional>
       <button
         disabled={!required || save.isPending}
