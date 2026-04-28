@@ -158,19 +158,66 @@ async def upload_prd(
 
 @router.get("/{prd_id}")
 async def get_prd(prd_id: str, session: AsyncSession = Depends(get_session)) -> dict:
+    """Return PRD with the same compact chapter shape the upload endpoint
+    emits, so the frontend can re-hydrate page state from a URL `?prd_id=`
+    deep link without caring whether the data came from a fresh upload or
+    from history."""
     row = await session.get(PRD, prd_id)
     if row is None:
         raise HTTPException(status_code=404, detail="PRD not found")
+    chapters = [
+        {
+            "position": c.get("position"),
+            "level": c.get("level"),
+            "title": c.get("title"),
+            "normalized_title": c.get("normalized_title"),
+            "hash": (c.get("hash") or "")[:12],
+            "body_chars": len(c.get("body") or ""),
+        }
+        for c in row.chapters
+    ]
     return {
         "data": {
             "prd_id": row.prd_id,
             "project_id": row.project_id,
             "name": row.name,
+            "title": row.name,
             "version": row.version,
             "uploaded_at": row.uploaded_at.isoformat(),
-            "chapters": row.chapters,
+            "chapters": chapters,
+            "prior_version_id": row.prev_version_id,
+            "diff_summary": None,
         }
     }
+
+
+@router.delete("/{prd_id}", status_code=204)
+async def delete_prd(prd_id: str, session: AsyncSession = Depends(get_session)) -> None:
+    """Hard-delete a PRD record. Generated TestCases keep living — their
+    `generated_from` is just a string label, not a FK, so cases survive
+    on purpose: the user often wants to keep approved cases even after
+    pruning duplicate uploads.
+
+    Children that referenced this row via `prev_version_id` get the
+    pointer cleared so the version chain doesn't dangle."""
+    row = await session.get(PRD, prd_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="PRD not found")
+    children = (
+        (await session.execute(select(PRD).where(PRD.prev_version_id == prd_id)))
+        .scalars()
+        .all()
+    )
+    for c in children:
+        c.prev_version_id = None
+    await session.delete(row)
+    await session.commit()
+    log.info(
+        "prd.deleted",
+        prd_id=prd_id,
+        project_id=row.project_id,
+        children_unchained=len(children),
+    )
 
 
 @router.post("/{prd_id}/generate")

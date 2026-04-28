@@ -1,7 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
+
+const PRD_URL_KEY = "prd_id";
+
+/** Read `?prd_id=` from the URL without going through the router so we
+ * don't have to declare a search schema on the file route. */
+function readPrdIdFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get(PRD_URL_KEY) ?? "";
+}
+
+function writePrdIdToUrl(prdId: string) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (prdId) url.searchParams.set(PRD_URL_KEY, prdId);
+  else url.searchParams.delete(PRD_URL_KEY);
+  window.history.replaceState({}, "", url.toString());
+}
 
 export const Route = createFileRoute("/prd")({
   component: PrdPage,
@@ -62,6 +79,17 @@ function PrdPage() {
   const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
   const [genResult, setGenResult] = useState<GenerateResponse["data"] | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // `?prd_id=` survives navigation away and back. Without it, the
+  // user uploads a 90-chapter PRD, hops to /cases to check a result,
+  // returns, and the chapter list is gone — all transient state
+  // disappeared with the unmounted component. Persisting just the id
+  // is enough: the chapters live on the server, we re-fetch on mount.
+  const [activePrdId, setActivePrdIdState] = useState<string>(readPrdIdFromUrl);
+
+  const setActivePrdId = (id: string) => {
+    setActivePrdIdState(id);
+    writePrdIdToUrl(id);
+  };
 
   const list = useQuery({
     queryKey: ["prd-list", projectId],
@@ -71,6 +99,32 @@ function PrdPage() {
       return r.json();
     },
   });
+
+  // Re-hydrate `uploaded` whenever `activePrdId` changes (mount, URL deep
+  // link, history-table click). Doesn't run unless we have an id, so the
+  // "upload first" empty state stays clean.
+  const hydrate = useQuery({
+    queryKey: ["prd-detail", activePrdId],
+    enabled: Boolean(activePrdId),
+    queryFn: async (): Promise<UploadResponse> => {
+      const r = await fetch(`/api/prd/${activePrdId}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  useEffect(() => {
+    if (hydrate.data) {
+      setUploaded(hydrate.data.data);
+      setSelected(new Set(hydrate.data.data.chapters.map((c) => c.position)));
+      setGenResult(null);
+    }
+    if (!activePrdId) {
+      setUploaded(null);
+      setSelected(new Set());
+      setGenResult(null);
+    }
+  }, [hydrate.data, activePrdId]);
 
   const upload = useMutation({
     mutationFn: async (): Promise<UploadResponse> => {
@@ -90,7 +144,21 @@ function PrdPage() {
       setUploaded(resp.data);
       setGenResult(null);
       setSelected(new Set(resp.data.chapters.map((c) => c.position)));
+      setActivePrdId(resp.data.prd_id);
       qc.invalidateQueries({ queryKey: ["prd-list"] });
+    },
+  });
+
+  const deletePrd = useMutation({
+    mutationFn: async (prdId: string) => {
+      const r = await fetch(`/api/prd/${prdId}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    },
+    onSuccess: (_void, prdId) => {
+      // If the deleted row was the active one, clear the page state.
+      if (prdId === activePrdId) setActivePrdId("");
+      qc.invalidateQueries({ queryKey: ["prd-list"] });
+      qc.invalidateQueries({ queryKey: ["prd-detail"] });
     },
   });
 
@@ -370,28 +438,67 @@ function PrdPage() {
                 <th className="pb-1 w-16">v</th>
                 <th className="pb-1 w-20">chapters</th>
                 <th className="pb-1 w-44">uploaded_at</th>
+                <th className="pb-1 w-20"></th>
               </tr>
             </thead>
             <tbody>
-              {list.data.data.map((p) => (
-                <tr key={p.prd_id} className="border-t border-slate-100">
-                  <td className="py-1">
-                    <code>{p.name}</code>
-                    <span className="text-xs text-slate-400 ml-2">
-                      ({p.prd_id.slice(0, 8)})
-                    </span>
-                  </td>
-                  <td className="text-slate-500">v{p.version}</td>
-                  <td className="text-slate-500">{p.chapter_count}</td>
-                  <td className="text-slate-400 font-mono text-xs">
-                    {new Date(p.uploaded_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
+              {list.data.data.map((p) => {
+                const isActive = p.prd_id === activePrdId;
+                return (
+                  <tr
+                    key={p.prd_id}
+                    className={
+                      "border-t border-slate-100 cursor-pointer hover:bg-slate-50 " +
+                      (isActive ? "bg-blue-50" : "")
+                    }
+                    onClick={() => setActivePrdId(p.prd_id)}
+                  >
+                    <td className="py-1">
+                      <code className={isActive ? "text-blue-700 font-medium" : ""}>
+                        {p.name}
+                      </code>
+                      <span className="text-xs text-slate-400 ml-2">
+                        ({p.prd_id.slice(0, 8)})
+                      </span>
+                    </td>
+                    <td className="text-slate-500">v{p.version}</td>
+                    <td className="text-slate-500">{p.chapter_count}</td>
+                    <td className="text-slate-400 font-mono text-xs">
+                      {new Date(p.uploaded_at).toLocaleString()}
+                    </td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <button
+                        className="text-xs text-slate-400 hover:text-red-600 disabled:opacity-50"
+                        disabled={
+                          deletePrd.isPending && deletePrd.variables === p.prd_id
+                        }
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete ${p.name} v${p.version}?\n\n` +
+                                `Generated cases keep living — only the PRD record itself is removed.`,
+                            )
+                          ) {
+                            deletePrd.mutate(p.prd_id);
+                          }
+                        }}
+                        title="delete this PRD"
+                      >
+                        🗑 delete
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : (
           <span className="text-slate-400 text-sm">no PRDs yet</span>
+        )}
+        {deletePrd.error && (
+          <div className="text-xs text-red-600 mt-2">
+            delete error: {(deletePrd.error as Error).message}
+          </div>
         )}
       </div>
     </div>
