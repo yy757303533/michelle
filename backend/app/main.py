@@ -56,7 +56,27 @@ async def lifespan(app: FastAPI):
 
     install_default_hooks()
 
+    # Startup heal: any run still marked `running`/`pending` was orphaned
+    # by a previous process (uvicorn --reload, crash, SIGKILL, …). The
+    # asyncio task hosting it is gone; safe to declare aborted so the UI
+    # shows truth and the case becomes rerunnable.
+    from app.services.run_lifecycle import heal_stale_runs
+
+    healed = await heal_stale_runs(reason="previous backend instance exited mid-run")
+    if healed:
+        log.info("run.lifecycle.startup_healed", count=healed)
+
     yield
+
+    # Shutdown heal: best-effort cleanup before exit. Covers Ctrl+C; SIGKILL
+    # bypasses this path, but the next startup heal will catch those.
+    try:
+        healed = await heal_stale_runs(reason="backend shutting down")
+        if healed:
+            log.info("run.lifecycle.shutdown_healed", count=healed)
+    except Exception as exc:  # noqa: BLE001 — never block shutdown on this
+        log.warning("run.lifecycle.shutdown_heal_failed", error=str(exc)[:200])
+
     log.info(EVENTS.APP_SHUTDOWN.name)
 
 
