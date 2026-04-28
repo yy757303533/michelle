@@ -61,7 +61,13 @@ async def heal_stale_runs(*, reason: str) -> int:
             if not r.ended_at:
                 r.ended_at = now
             if r.started_at and r.duration_ms is None:
-                r.duration_ms = int((now - r.started_at).total_seconds() * 1000)
+                # SQLite returns naive datetimes (it has no native tz support).
+                # All our timestamps are conceptually UTC — re-attach the tz so
+                # subtraction against `now` (aware) doesn't TypeError.
+                started = r.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=UTC)
+                r.duration_ms = int((now - started).total_seconds() * 1000)
         await session.commit()
         _log.info(
             "run.lifecycle.healed",
