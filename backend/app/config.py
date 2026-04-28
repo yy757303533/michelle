@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/michelle.db"
     artifacts_dir: str = "./artifacts"
 
+    # ── Run orchestration ──
+    max_concurrent_runs: int = 2
+    """How many cases may execute simultaneously. Each = 1 Chromium + 1 claude CLI."""
+
     # ── LLM: Claude CLI (primary, subscription) ──
     claude_cli_path: str = "claude"
     claude_timeout_seconds: int = 180

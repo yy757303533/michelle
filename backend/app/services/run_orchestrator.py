@@ -192,6 +192,7 @@ async def execute_case(
     run_id: str,
     env: str = "default",
     timeout_seconds: int = 300,
+    attempt: int = 1,
 ) -> Run:
     """Run a single case end-to-end.
 
@@ -199,9 +200,12 @@ async def execute_case(
     this function loads it, runs Claude, persists StepEvents, updates the Run.
     Each call uses its own AsyncSession (decoupled from request session) so it
     can be invoked from a background task.
+
+    On retry (attempt > 1) the prior StepEvents stay in place and we continue
+    appending — the report viewer shows attempt boundaries via step_index gaps.
     """
-    bind_request_context(run_id=run_id, case_id=case_id)
-    log = _log.bind(run_id=run_id, case_id=case_id, env=env)
+    bind_request_context(run_id=run_id, case_id=case_id, attempt=attempt)
+    log = _log.bind(run_id=run_id, case_id=case_id, env=env, attempt=attempt)
 
     async with async_session_maker() as session:
         run = await session.get(Run, run_id)
@@ -373,30 +377,211 @@ async def create_run_row(
     return run
 
 
+# ── Concurrency control ────────────────────────────────────────────────────
+
+# Max simultaneous browser sessions. Each session = 1 Chromium + 1 claude CLI
+# subprocess + ~250MB RAM. 2 is comfortable on a dev laptop; tune via env if
+# you have headroom.
+MAX_CONCURRENT_RUNS = max(1, int(getattr(settings, "max_concurrent_runs", 2)))
+_run_semaphore: asyncio.Semaphore | None = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    """Lazy singleton — `asyncio.Semaphore()` binds to the running loop and
+    we want to defer creation until inside a coroutine."""
+    global _run_semaphore
+    if _run_semaphore is None:
+        _run_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+    return _run_semaphore
+
+
 def kick_off(case_id: str, run_id: str, env: str, *, timeout_seconds: int = 300) -> asyncio.Task:
-    """Fire-and-forget background runner. Returns the task so callers may await in tests."""
+    """Fire-and-forget background runner. Concurrency is gated by a semaphore
+    sized to MAX_CONCURRENT_RUNS so a 50-case batch doesn't fork 50 Chromiums."""
     return asyncio.create_task(
         _safe_execute(case_id=case_id, run_id=run_id, env=env, timeout_seconds=timeout_seconds)
     )
 
 
+# ── Failure heuristics ─────────────────────────────────────────────────────
+
+_ENV_HINTS = (
+    "econnrefused", "connection refused", "connection reset",
+    "name not resolved", "nxdomain", "getaddrinfo enotfound",
+    "net::err_connection", "net::err_name", "net::err_address",
+    "timeout exceeded", "navigation timeout", "tcp connect",
+    "ssl_error", "certificate", "503 service unavailable",
+    "502 bad gateway", "504 gateway",
+)
+_FLAKY_HINTS = (
+    "stale element", "detached from dom", "click was intercepted",
+    "element is not visible", "element is not stable",
+    "wait_for timeout", "race condition",
+)
+
+
+def heuristic_classify(parsed: ParsedRun, error_message: str | None) -> str | None:
+    """Best-effort failure category. Returns one of:
+      - 'real_bug' / 'flaky' / 'env_issue' / None (insufficient evidence)
+
+    This is a Day-9 quick triage before the real AI diagnoser lands on Day 11.
+    Day 11's diagnoser will replace this with a proper LLM judgement; for now
+    we just look for obvious string patterns.
+    """
+    blobs: list[str] = []
+    if error_message:
+        blobs.append(error_message.lower())
+    for s in parsed.steps:
+        if s.result_is_error and s.result_text:
+            blobs.append(s.result_text.lower()[:1000])
+    if not blobs:
+        return None
+    blob = " ".join(blobs)
+
+    if any(h in blob for h in _ENV_HINTS):
+        return "env_issue"
+    if any(h in blob for h in _FLAKY_HINTS):
+        return "flaky"
+    return "real_bug"
+
+
+# ── Run with retry + classification ────────────────────────────────────────
+
+# Patterns that MAY recover on a retry (e.g. one Chromium hiccup, transient
+# network blip). Anything else fails fast.
+_TRANSIENT_HINTS = (
+    "timeout", "stale element", "detached from dom",
+    "wait_for timeout", "navigation timeout", "claude cli timed out",
+    "race condition", "element is not visible", "element is not stable",
+    "click was intercepted",
+)
+
+
+def _looks_transient(blob: str | None) -> bool:
+    if not blob:
+        return False
+    s = blob.lower()
+    return any(h in s for h in _TRANSIENT_HINTS)
+
+
 async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds: int) -> None:
-    try:
-        await execute_case(
-            case_id=case_id, run_id=run_id, env=env, timeout_seconds=timeout_seconds
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Persist abort
+    """Run the case under a semaphore, with one retry on transient failure.
+
+    Retry policy: if execute_case finishes with status=failed/aborted AND the
+    error string looks transient, run it again (preserves the same Run row,
+    appends step events from the second attempt with step_index continuing).
+    The second attempt's terminal status is what sticks.
+    """
+    sem = _semaphore()
+    async with sem:
+        attempt = 1
         try:
-            async with async_session_maker() as session:
-                run = await session.get(Run, run_id)
-                if run is not None and run.status in {"pending", "running"}:
-                    run.status = "aborted"
-                    run.error_message = str(exc)[:500]
-                    run.ended_at = datetime.now(timezone.utc)
-                    await session.commit()
-        finally:
-            _log.exception("orchestrator.background.failed", run_id=run_id)
+            run = await execute_case(
+                case_id=case_id,
+                run_id=run_id,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await _persist_abort(run_id=run_id, error=str(exc))
+            _log.exception("orchestrator.background.failed", run_id=run_id, attempt=attempt)
+            return
+
+        if run.status not in {"failed", "aborted"}:
+            return
+
+        if not _looks_transient(run.error_message):
+            await _classify_and_persist(run_id=run_id)
+            return
+
+        _log.info(
+            "orchestrator.run.retry",
+            run_id=run_id,
+            attempt=attempt + 1,
+            reason="transient error in attempt 1",
+            error=(run.error_message or "")[:200],
+        )
+        try:
+            run = await execute_case(
+                case_id=case_id,
+                run_id=run_id,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                attempt=attempt + 1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await _persist_abort(run_id=run_id, error=f"retry crashed: {exc}")
+            return
+
+        # If retry passed but first attempt failed → mark flaky
+        if run.status == "passed":
+            await _mark_status(run_id=run_id, status="flaky", note="passed on retry")
+        else:
+            await _classify_and_persist(run_id=run_id)
+
+
+async def _persist_abort(*, run_id: str, error: str) -> None:
+    try:
+        async with async_session_maker() as session:
+            run = await session.get(Run, run_id)
+            if run is not None and run.status in {"pending", "running"}:
+                run.status = "aborted"
+                run.error_message = error[:500]
+                run.ended_at = datetime.now(timezone.utc)
+                await session.commit()
+    except Exception:  # noqa: BLE001
+        _log.exception("orchestrator.persist_abort.failed", run_id=run_id)
+
+
+async def _mark_status(*, run_id: str, status: str, note: str = "") -> None:
+    async with async_session_maker() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        run.status = status
+        if note:
+            existing = run.error_message or ""
+            run.error_message = (existing + ("\n" if existing else "") + note)[:500]
+        await session.commit()
+
+
+async def _classify_and_persist(*, run_id: str) -> None:
+    """After a final-failed run, attach a heuristic category to error_message."""
+    async with async_session_maker() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        # Synthesize a fake ParsedRun-like object from DB for classification
+        from sqlmodel import select
+
+        steps = (
+            await session.execute(
+                select(StepEvent).where(StepEvent.run_id == run_id)
+            )
+        ).scalars().all()
+
+        # Build minimal ParsedRun-compatible
+        class _ShimStep:
+            def __init__(self, s: StepEvent):
+                self.result_is_error = s.status == "failed"
+                self.result_text = (s.tool_result or {}).get("result_text") or s.error_message
+
+        class _Shim:
+            steps = [_ShimStep(s) for s in steps]
+
+        category = heuristic_classify(_Shim(), run.error_message)  # type: ignore[arg-type]
+        if category:
+            existing = run.error_message or ""
+            tag = f"[heuristic:{category}]"
+            if tag not in existing:
+                run.error_message = (existing + ("\n" if existing else "") + tag)[:500]
+            await session.commit()
+            _log.info(
+                "orchestrator.classified",
+                run_id=run_id,
+                category=category,
+                final_status=run.status,
+            )
 
 
 # Surface the default timeout from settings so callers can override per env
