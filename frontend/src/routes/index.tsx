@@ -375,6 +375,8 @@ interface ProjectConfig {
  * sit invisible inside `runs` and `cases` requests. */
 function CurrentProjectPanel({ projectId }: { projectId: string }) {
   const [showPwd, setShowPwd] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const qc = useQueryClient();
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: async (): Promise<{ data: ProjectConfig[] }> => {
@@ -388,11 +390,35 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
 
   const hasCreds = Boolean(proj.default_username && proj.default_password);
 
+  if (editing) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs uppercase tracking-wide text-slate-400">
+            Edit project / {proj.project_id}
+          </span>
+          <button
+            onClick={() => setEditing(false)}
+            className="text-xs text-slate-500 hover:text-slate-900"
+          >
+            cancel
+          </button>
+        </div>
+        <ProjectInlineEditForm
+          initial={proj}
+          onSaved={() => {
+            setEditing(false);
+            qc.invalidateQueries({ queryKey: ["projects"] });
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <Panel
       title={`Project config / ${proj.project_id}`}
-      linkTo="/"
-      linkLabel="(use ✎ in header to edit)"
+      onEdit={() => setEditing(true)}
     >
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <Row label="name" value={<code>{proj.name}</code>} />
@@ -459,6 +485,93 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
         )}
       </div>
     </Panel>
+  );
+}
+
+/** Tiny edit form for the dashboard panel. Mirrors the header's
+ * ProjectSwitcher edit form but lives in the page so the user doesn't
+ * have to chase the ✎ icon. */
+function ProjectInlineEditForm({
+  initial,
+  onSaved,
+}: {
+  initial: ProjectConfig;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [baseUrl, setBaseUrl] = useState(initial.base_url);
+  const [username, setUsername] = useState(initial.default_username);
+  const [password, setPassword] = useState(initial.default_password);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const r = await fetch("/api/projects/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: initial.project_id,
+          name: name.trim(),
+          base_url: baseUrl.trim(),
+          default_username: username.trim(),
+          default_password: password,
+        }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      return r.json();
+    },
+    onSuccess: onSaved,
+  });
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+      <label className="block">
+        <span className="text-xs text-slate-500">name *</span>
+        <input
+          className="border border-slate-200 rounded px-2 py-1 w-full"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <label className="block">
+        <span className="text-xs text-slate-500">base_url *</span>
+        <input
+          className="border border-slate-200 rounded px-2 py-1 w-full font-mono"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+          placeholder="http://localhost:5000/"
+        />
+      </label>
+      <label className="block">
+        <span className="text-xs text-slate-500">default_username</span>
+        <input
+          className="border border-slate-200 rounded px-2 py-1 w-full font-mono"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="admin@example.com"
+        />
+      </label>
+      <label className="block">
+        <span className="text-xs text-slate-500">default_password</span>
+        <input
+          type="password"
+          className="border border-slate-200 rounded px-2 py-1 w-full font-mono"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </label>
+      <div className="md:col-span-2 flex items-center gap-2">
+        <button
+          disabled={!name.trim() || !baseUrl.trim() || save.isPending}
+          onClick={() => save.mutate()}
+          className="bg-slate-900 text-white text-sm px-3 py-1 rounded hover:bg-slate-700 disabled:opacity-50"
+        >
+          {save.isPending ? "saving…" : "save"}
+        </button>
+        {save.error && (
+          <span className="text-red-600 text-xs">{(save.error as Error).message}</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -561,21 +674,33 @@ function Panel({
   children,
   linkTo,
   linkLabel,
+  onEdit,
 }: {
   title: string;
   children: React.ReactNode;
   linkTo?: string;
   linkLabel?: string;
+  onEdit?: () => void;
 }) {
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs uppercase tracking-wide text-slate-400">{title}</span>
-        {linkTo && (
-          <Link to={linkTo} className="text-xs text-blue-700 hover:underline">
-            {linkLabel || "open"}
-          </Link>
-        )}
+        <div className="flex items-center gap-3">
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="text-xs text-blue-700 hover:underline"
+            >
+              ✎ edit
+            </button>
+          )}
+          {linkTo && (
+            <Link to={linkTo} className="text-xs text-blue-700 hover:underline">
+              {linkLabel || "open"}
+            </Link>
+          )}
+        </div>
       </div>
       {children}
     </div>

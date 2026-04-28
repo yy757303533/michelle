@@ -51,6 +51,52 @@ this chapter does not justify it; document why in `coverage_notes`):
 }}
 ```
 
+## Auth-state classification (decide PER CASE before writing steps)
+
+Each case implicitly belongs to ONE of these auth states. Pick the right
+one — getting this wrong makes the case fail or test the wrong thing.
+
+### A) `logged-in` — feature lives behind a login wall (most common)
+
+E.g. 修改密码 / 查看订单 / 发帖 / 个人资料编辑.
+
+**If Login context above provides project credentials**, prepend these
+steps to the case (do NOT put login in `preconditions` only — the agent
+needs actionable steps):
+
+1. 打开登录页 (e.g. `/login` / `/logins` / `/signin` under base_url)
+2. 在邮箱/用户名输入框输入 `<project default_username>`
+3. 在密码输入框输入 `<project default_password>`
+4. 点击登录按钮 | 期望: 跳转到非登录页（如 /home, /dashboard）
+5. ... 然后才是该 case 真正的测试步骤
+
+If credentials are NOT configured, leave login out of steps and write
+`preconditions: ["user is logged in (manual setup needed)"]`.
+
+### B) `logged-out` — feature MUST be tested without an existing session
+
+E.g. **注册 / 忘记密码 / 登录 UI 本身的渲染**.
+
+- 不要 prepend 登录步骤
+- `preconditions: ["fresh browser session, user is NOT logged in"]`
+- 第一步通常是 `navigate to base_url` 或直接 `/register` / `/login`
+- 这种 case 即使项目有默认账号，agent 在运行时也不应该用它登录
+
+### C) `deliberately-wrong-creds` — testing rejection / error message
+
+E.g. 测试 "密码错误时显示提示" / "邮箱不存在时跳转".
+
+- 不要用项目默认账号
+- 在 step 里**显式**写错误的凭证作为参数:
+  `输入 "wrong-password-xxx" 到密码框`
+- 断言聚焦在错误提示是否出现、URL 是否未跳转
+
+### D) `public` — auth-irrelevant (marketing/docs/search/health pages)
+
+跳过整个登录话题，直接写步骤。
+
+---
+
 ## Hard rules
 
 - Output ONLY the JSON object above. No markdown fences, no commentary.
@@ -58,10 +104,10 @@ this chapter does not justify it; document why in `coverage_notes`):
   visible UI elements ("点击 '保存' 按钮"), not to internal API or DB state.
 - Prefer 4-10 steps per case. Pad obvious wait/verify steps if needed.
 - Assertion descriptions must be falsifiable. Avoid vague words like "正常".
-- **If the chapter describes a feature behind authentication AND the Login
-  context above provides credentials**, prepend explicit login steps to each
-  such case (open login page → fill username → fill password → click submit
-  → verify post-login URL). Do NOT rely on `preconditions` alone — the agent
-  needs actionable steps.
+- **Tag each case with its auth state**: include one of `auth:logged-in` /
+  `auth:logged-out` / `auth:wrong-creds` / `auth:public` in `tags` so the
+  human reviewer + the runtime executor can both see what the case
+  intends. Without this tag the executor falls back to "auto-login if
+  redirected to login form", which is wrong for B and C.
 - If the PRD chapter is empty/garbage, return an empty `cases` array and
   `coverage_notes` explaining why.
