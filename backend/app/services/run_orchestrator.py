@@ -261,7 +261,13 @@ async def execute_case(
         # Treat configured target credentials as secrets — they get baked into
         # the prompt and would otherwise leak via stdout/stderr files,
         # StepEvent.tool_args (browser_type text=…), and final_text logs.
-        secrets = [s for s in (settings.default_target_password,) if s and len(s) >= 3]
+        # Project-level credentials override the env-level defaults so each
+        # project can target its own environment without a restart.
+        secrets = [
+            s
+            for s in (project.default_password, settings.default_target_password)
+            if s and len(s) >= 3
+        ]
 
         try:
             outcome: RunOutcome = await run_claude_with_playwright(

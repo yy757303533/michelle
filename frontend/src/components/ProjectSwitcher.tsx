@@ -7,11 +7,15 @@ interface ProjectRow {
   name: string;
   base_url: string;
   description?: string;
+  default_username?: string;
+  default_password?: string;
 }
 
 interface ProjectsResponse {
   data: ProjectRow[];
 }
+
+type Mode = "view" | "create" | "edit";
 
 /** Header dropdown for the active project. Auto-selects the only project
  * when there's exactly one (preserves the single-project happy path). When
@@ -19,7 +23,7 @@ interface ProjectsResponse {
  * stuck on a blank state. */
 export function ProjectSwitcher() {
   const { projectId, setProjectId } = useCurrentProject();
-  const [creating, setCreating] = useState(false);
+  const [mode, setMode] = useState<Mode>("view");
   const qc = useQueryClient();
 
   const projects = useQuery({
@@ -43,18 +47,43 @@ export function ProjectSwitcher() {
     if (!projectId || !ids.includes(projectId)) {
       setProjectId(ids[0]);
     }
-    // intentional: only re-run when project list changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects.data]);
 
   const list = projects.data?.data ?? [];
+  const current = list.find((p) => p.project_id === projectId) ?? null;
 
   if (projects.isLoading) {
     return <span className="text-xs text-slate-400">loading projects…</span>;
   }
 
-  if (list.length === 0 || creating) {
-    return <CreateProjectInline onDone={() => { setCreating(false); qc.invalidateQueries({ queryKey: ["projects"] }); }} onCancel={list.length > 0 ? () => setCreating(false) : undefined} />;
+  // Empty list → force the user to create the first one.
+  if (list.length === 0 || mode === "create") {
+    return (
+      <ProjectForm
+        title="new project"
+        onDone={(p) => {
+          setMode("view");
+          qc.invalidateQueries({ queryKey: ["projects"] });
+          if (p) setProjectId(p.project_id);
+        }}
+        onCancel={list.length > 0 ? () => setMode("view") : undefined}
+      />
+    );
+  }
+
+  if (mode === "edit" && current) {
+    return (
+      <ProjectForm
+        title="edit project"
+        initial={current}
+        onDone={() => {
+          setMode("view");
+          qc.invalidateQueries({ queryKey: ["projects"] });
+        }}
+        onCancel={() => setMode("view")}
+      />
+    );
   }
 
   return (
@@ -67,13 +96,22 @@ export function ProjectSwitcher() {
       >
         {list.map((p) => (
           <option key={p.project_id} value={p.project_id}>
-            {p.project_id}
-            {p.name && p.name !== p.project_id ? ` · ${p.name}` : ""}
+            {p.name}
+            {p.name !== p.project_id ? ` · ${p.project_id}` : ""}
           </option>
         ))}
       </select>
+      {current && (
+        <button
+          onClick={() => setMode("edit")}
+          className="text-xs text-slate-500 hover:text-slate-900"
+          title={`edit ${current.name} (base_url, credentials)`}
+        >
+          ✎
+        </button>
+      )}
       <button
-        onClick={() => setCreating(true)}
+        onClick={() => setMode("create")}
         className="text-xs text-blue-700 hover:underline"
         title="create new project"
       >
@@ -83,76 +121,125 @@ export function ProjectSwitcher() {
   );
 }
 
-function CreateProjectInline({
+/** Inline form for create + edit. The server owns project_id; the user
+ * owns name + base_url + credentials. base_url is marked required because
+ * cases without a target won't actually run; credentials are optional
+ * (some flows don't need login). */
+function ProjectForm({
+  title,
+  initial,
   onDone,
   onCancel,
 }: {
-  onDone: (id: string) => void;
+  title: string;
+  initial?: ProjectRow;
+  onDone: (p: ProjectRow | null) => void;
   onCancel?: () => void;
 }) {
-  const { setProjectId } = useCurrentProject();
-  const [id, setId] = useState("");
-  const [name, setName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
+  const [username, setUsername] = useState(initial?.default_username ?? "");
+  const [password, setPassword] = useState(initial?.default_password ?? "");
 
-  const create = useMutation({
-    mutationFn: async () => {
+  const save = useMutation({
+    mutationFn: async (): Promise<ProjectRow> => {
+      const body: Record<string, string> = {
+        name: name.trim(),
+        base_url: baseUrl.trim(),
+        default_username: username.trim(),
+        default_password: password,
+      };
+      // Sending project_id triggers update on the server; omitting it
+      // triggers create + auto-id mint.
+      if (initial?.project_id) body.project_id = initial.project_id;
       const r = await fetch("/api/projects/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: id.trim(),
-          name: name.trim() || id.trim(),
-          base_url: baseUrl.trim(),
-        }),
+        body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-      return r.json();
+      return (await r.json()).data;
     },
-    onSuccess: () => {
-      setProjectId(id.trim());
-      onDone(id.trim());
-    },
+    onSuccess: (p) => onDone(p),
   });
 
+  const required = name.trim().length > 0 && baseUrl.trim().length > 0;
+
   return (
-    <div className="flex items-center gap-1.5 text-xs">
-      <span className="text-slate-400">new project</span>
-      <input
-        className="border border-slate-200 rounded px-2 py-0.5 font-mono w-28"
-        placeholder="id (slug)"
-        value={id}
-        onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, ""))}
-      />
-      <input
-        className="border border-slate-200 rounded px-2 py-0.5 w-32"
-        placeholder="name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-      />
-      <input
-        className="border border-slate-200 rounded px-2 py-0.5 w-44"
-        placeholder="base_url (optional)"
-        value={baseUrl}
-        onChange={(e) => setBaseUrl(e.target.value)}
-      />
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-slate-500 mr-1">{title}</span>
+      <Required label="name">
+        <input
+          autoFocus
+          className="border border-slate-200 rounded px-2 py-0.5 w-36"
+          placeholder="My Web App"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </Required>
+      <Required label="base_url">
+        <input
+          className="border border-slate-200 rounded px-2 py-0.5 w-52 font-mono"
+          placeholder="http://localhost:5000/"
+          value={baseUrl}
+          onChange={(e) => setBaseUrl(e.target.value)}
+        />
+      </Required>
+      <Optional label="user">
+        <input
+          className="border border-slate-200 rounded px-2 py-0.5 w-24"
+          placeholder="admin"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+        />
+      </Optional>
+      <Optional label="password">
+        <input
+          type="password"
+          className="border border-slate-200 rounded px-2 py-0.5 w-28"
+          placeholder="••••"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </Optional>
       <button
-        disabled={!id || create.isPending}
-        onClick={() => create.mutate()}
+        disabled={!required || save.isPending}
+        onClick={() => save.mutate()}
         className="bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
       >
-        {create.isPending ? "…" : "create"}
+        {save.isPending ? "…" : initial ? "save" : "create"}
       </button>
       {onCancel && (
-        <button onClick={onCancel} className="text-slate-500 hover:text-slate-900">
+        <button onClick={onCancel} className="text-slate-500 hover:text-slate-900 px-1">
           cancel
         </button>
       )}
-      {create.error && (
-        <span className="text-red-600 ml-2">
-          {(create.error as Error).message.slice(0, 60)}
+      {save.error && (
+        <span className="text-red-600 ml-1">
+          {(save.error as Error).message.slice(0, 80)}
         </span>
       )}
     </div>
+  );
+}
+
+function Required({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex items-center gap-1">
+      <span className="text-slate-500">
+        {label}
+        <span className="text-red-500 ml-0.5">*</span>
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function Optional({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex items-center gap-1">
+      <span className="text-slate-400">{label}</span>
+      {children}
+    </label>
   );
 }

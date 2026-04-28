@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -27,12 +28,25 @@ router = APIRouter()
 
 
 class ProjectIn(BaseModel):
-    project_id: str
+    # Auto-generated when omitted on create. Required when updating.
+    project_id: str | None = None
     name: str
     base_url: str = ""
     description: str = ""
     default_username: str = ""
     default_password: str = ""
+
+
+async def _generate_unique_project_id(session: AsyncSession) -> str:
+    """Mint a short opaque project_id (`p_<6hex>`). Loops on collision —
+    cheap because the surface is tiny (1 in 16M) and bounded retries make
+    pathological cases visible instead of hanging."""
+    for _ in range(8):
+        candidate = "p_" + uuid4().hex[:6]
+        if await session.get(Project, candidate) is None:
+            return candidate
+    # Pathological: fall back to longer suffix so we still succeed.
+    return "p_" + uuid4().hex[:12]
 
 
 @router.get("/")
@@ -54,13 +68,28 @@ async def create_or_update_project(
     body: ProjectIn,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    existing = await session.get(Project, body.project_id)
+    """Create (project_id absent) or update (project_id present).
+
+    Identity is server-side: clients send `name` + optional config; the
+    server picks a stable opaque id. Client-supplied ids are accepted for
+    backwards compatibility and for the update path."""
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="name is required")
+
+    payload = body.model_dump()
+    pid = (payload.pop("project_id", None) or "").strip()
+
+    existing = await session.get(Project, pid) if pid else None
     if existing:
-        for k, v in body.model_dump().items():
+        for k, v in payload.items():
             setattr(existing, k, v)
         existing.updated_at = datetime.now(UTC)
     else:
-        existing = Project(**body.model_dump())
+        # Mint a new id when client didn't ask for a specific one. This
+        # keeps the user-facing form to "name + optional config" — the
+        # server owns identity, the user owns the label.
+        new_pid = pid or await _generate_unique_project_id(session)
+        existing = Project(project_id=new_pid, **payload)
         session.add(existing)
     await session.commit()
     # Refresh so attribute reads after commit don't trip MissingGreenlet under
