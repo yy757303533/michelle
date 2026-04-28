@@ -100,6 +100,28 @@ function PrdPage() {
     },
   });
 
+  // Cases for the current project, used to overlay "✓ N cases generated"
+  // per chapter so the user can see what was produced even after navigating
+  // away mid-generation. Polls every 5s while a PRD is open so background
+  // generation progress shows up live.
+  interface CaseRow {
+    case_id: string;
+    generated_from: string | null;
+    review_status: string;
+  }
+  const projectCases = useQuery({
+    queryKey: ["cases-for-prd-overlay", projectId],
+    enabled: Boolean(projectId && uploaded),
+    refetchInterval: 5000,
+    queryFn: async (): Promise<{ data: CaseRow[] }> => {
+      const r = await fetch(
+        `/api/cases/?project_id=${encodeURIComponent(projectId)}&limit=1000`,
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
   // Re-hydrate `uploaded` whenever `activePrdId` changes (mount, URL deep
   // link, history-table click). Doesn't run unless we have an id, so the
   // "upload first" empty state stays clean.
@@ -194,6 +216,41 @@ function PrdPage() {
     else next.add(pos);
     setSelected(next);
   };
+
+  /** Map chapter signature → count of cases that point at it. Built from
+   * /api/cases/ rather than tracked locally, so reloads, tab switches, and
+   * background generation finishing all show up the same way: as the count
+   * going up. The signature must match what `case_generator.py` writes to
+   * `generated_from`: `chapter:<level>:<normalized_title>`. We also include
+   * the legacy `chapter:<title>#<position>` form for older rows. */
+  const casesByChapter = (() => {
+    const out: Record<string, { total: number; pending: number; approved: number }> = {};
+    if (!projectCases.data || !uploaded) return out;
+    for (const c of projectCases.data.data) {
+      if (!c.generated_from) continue;
+      const bucket = (out[c.generated_from] ??= { total: 0, pending: 0, approved: 0 });
+      bucket.total += 1;
+      if (c.review_status === "pending") bucket.pending += 1;
+      else if (c.review_status === "approved") bucket.approved += 1;
+    }
+    return out;
+  })();
+
+  const chapterCount = (chapter: ChapterMeta): { total: number; pending: number; approved: number } => {
+    const sigNew = `chapter:${chapter.level}:${chapter.normalized_title}`;
+    const sigLegacy = `chapter:${chapter.normalized_title}#${chapter.position}`;
+    const a = casesByChapter[sigNew] ?? { total: 0, pending: 0, approved: 0 };
+    const b = casesByChapter[sigLegacy] ?? { total: 0, pending: 0, approved: 0 };
+    return {
+      total: a.total + b.total,
+      pending: a.pending + b.pending,
+      approved: a.approved + b.approved,
+    };
+  };
+
+  const totalCasesForPrd = uploaded
+    ? uploaded.chapters.reduce((sum, c) => sum + chapterCount(c).total, 0)
+    : 0;
 
   const onFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -326,6 +383,28 @@ function PrdPage() {
             )}
           </div>
 
+          {/* Generation status banner — visible regardless of whether the
+              user clicked Generate this session. Pulls live from /api/cases
+              so background generation finishing shows up here even if the
+              page was unmounted when the request returned. */}
+          {totalCasesForPrd > 0 && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded p-2 text-xs flex items-center gap-2">
+              <span className="text-emerald-700 font-medium">
+                ✓ {totalCasesForPrd} cases generated for this PRD
+              </span>
+              <span className="text-slate-500">
+                (live count, refreshes every 5s — background generation will
+                update this number as it completes)
+              </span>
+              <a
+                href={`/cases?project_id=${encodeURIComponent(projectId)}`}
+                className="ml-auto text-blue-700 hover:underline"
+              >
+                review them →
+              </a>
+            </div>
+          )}
+
           <div className="text-sm">
             <div className="flex items-center gap-3 mb-2">
               <span className="text-slate-500">
@@ -353,30 +432,46 @@ function PrdPage() {
                   <th className="pb-1 w-16">level</th>
                   <th className="pb-1 w-20">chars</th>
                   <th className="pb-1 w-24">hash</th>
+                  <th className="pb-1 w-32">cases</th>
                 </tr>
               </thead>
               <tbody>
-                {uploaded.chapters.map((c) => (
-                  <tr key={c.position} className="border-t border-slate-100">
-                    <td className="py-1">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(c.position)}
-                        onChange={() => toggleChapter(c.position)}
-                      />
-                    </td>
-                    <td className="text-slate-400 font-mono text-xs">{c.position}</td>
-                    <td>
-                      <code>{c.title}</code>{" "}
-                      <span className="text-xs text-slate-400">
-                        ({c.normalized_title})
-                      </span>
-                    </td>
-                    <td className="text-slate-500">H{c.level}</td>
-                    <td className="text-slate-500 font-mono text-xs">{c.body_chars}</td>
-                    <td className="text-slate-400 font-mono text-xs">{c.hash}</td>
-                  </tr>
-                ))}
+                {uploaded.chapters.map((c) => {
+                  const counts = chapterCount(c);
+                  return (
+                    <tr key={c.position} className="border-t border-slate-100">
+                      <td className="py-1">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(c.position)}
+                          onChange={() => toggleChapter(c.position)}
+                        />
+                      </td>
+                      <td className="text-slate-400 font-mono text-xs">{c.position}</td>
+                      <td>
+                        <code>{c.title}</code>{" "}
+                        <span className="text-xs text-slate-400">
+                          ({c.normalized_title})
+                        </span>
+                      </td>
+                      <td className="text-slate-500">H{c.level}</td>
+                      <td className="text-slate-500 font-mono text-xs">{c.body_chars}</td>
+                      <td className="text-slate-400 font-mono text-xs">{c.hash}</td>
+                      <td className="text-xs">
+                        {counts.total === 0 ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <span
+                            className="text-emerald-700"
+                            title={`${counts.pending} pending, ${counts.approved} approved`}
+                          >
+                            ✓ {counts.total}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
