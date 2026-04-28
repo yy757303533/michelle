@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCurrentProject } from "../lib/useCurrentProject";
 
 export const Route = createFileRoute("/runs/")({
   component: RunsListPage,
@@ -28,12 +29,14 @@ interface RunsResponse {
 const STATUSES = ["", "pending", "running", "passed", "failed", "flaky", "aborted"];
 
 function RunsListPage() {
+  const { projectId } = useCurrentProject();
   const [filter, setFilter] = useState<string>("");
 
   const runs = useQuery({
-    queryKey: ["runs", filter],
+    queryKey: ["runs", projectId, filter],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
-      const r = await fetch("/api/runs/?limit=200");
+      const r = await fetch(`/api/runs/?limit=200&project_id=${encodeURIComponent(projectId)}`);
       const body = await r.json();
       if (!filter) return body;
       return {
@@ -48,10 +51,20 @@ function RunsListPage() {
   const grouped: Record<string, number> = {};
   for (const r of runs.data?.data ?? []) grouped[r.status] = (grouped[r.status] ?? 0) + 1;
 
+  if (!projectId) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-sm text-slate-500">
+        Pick a project from the header dropdown to see its runs.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Runs</h1>
+        <h1 className="text-2xl font-semibold">
+          Runs <span className="text-slate-400 text-base font-normal">/ {projectId}</span>
+        </h1>
         <p className="text-slate-500 text-sm mt-1">
           Every execution of a test case lives here. Click a row for the live timeline.
         </p>

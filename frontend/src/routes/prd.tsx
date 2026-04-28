@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCurrentProject } from "../lib/useCurrentProject";
 
 export const Route = createFileRoute("/prd")({
   component: PrdPage,
@@ -52,7 +53,10 @@ interface PRDListItem {
 
 function PrdPage() {
   const qc = useQueryClient();
-  const [projectId, setProjectId] = useState("michelle");
+  // Project comes from the global header selector — single source of truth.
+  // The page no longer owns a `projectId` state; that lived here only because
+  // the original UX hard-coded "michelle".
+  const { projectId } = useCurrentProject();
   const [name, setName] = useState("");
   const [markdown, setMarkdown] = useState("");
   const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
@@ -61,6 +65,7 @@ function PrdPage() {
 
   const list = useQuery({
     queryKey: ["prd-list", projectId],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<{ data: PRDListItem[] }> => {
       const r = await fetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
       return r.json();
@@ -157,25 +162,25 @@ function PrdPage() {
         </p>
       </div>
 
-      {/* Upload form */}
-      <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="project_id">
-            <input
-              className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
-              value={projectId}
-              onChange={(e) => setProjectId(e.target.value)}
-            />
-          </Field>
-          <Field label="name (optional, defaults to first H1)">
-            <input
-              className="border border-slate-200 rounded px-2 py-1 w-full text-sm"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Michelle PRD v0.5"
-            />
-          </Field>
+      {!projectId ? (
+        <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-sm text-slate-500">
+          Pick a project from the header dropdown to upload PRDs.
         </div>
+      ) : null}
+
+      {/* Upload form */}
+      <div className={"bg-white border border-slate-200 rounded-lg p-4 space-y-3 " + (projectId ? "" : "opacity-50 pointer-events-none")}>
+        <div className="text-xs text-slate-500">
+          uploading to project <code className="font-mono">{projectId || "—"}</code>
+        </div>
+        <Field label="name (optional, defaults to first H1)">
+          <input
+            className="border border-slate-200 rounded px-2 py-1 w-full text-sm"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Michelle PRD v0.5"
+          />
+        </Field>
         <Field label="markdown">
           <div className="flex items-center gap-2 mb-1.5 text-xs text-slate-500">
             <label className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded cursor-pointer">

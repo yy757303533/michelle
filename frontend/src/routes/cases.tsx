@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCurrentProject } from "../lib/useCurrentProject";
 
 export const Route = createFileRoute("/cases")({
   component: CasesPage,
@@ -44,16 +45,20 @@ const STATUS_FILTERS: Array<{ key: string; label: string }> = [
 function CasesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { projectId } = useCurrentProject();
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const cases = useQuery({
-    queryKey: ["cases", filter],
+    // Re-key on project so swapping the global selector re-fetches.
+    queryKey: ["cases", projectId, filter],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<CasesResponse> => {
-      const u = filter ? `/api/cases/?status=${encodeURIComponent(filter)}` : "/api/cases/";
-      const r = await fetch(u);
+      const params = new URLSearchParams({ project_id: projectId, limit: "200" });
+      if (filter) params.set("status", filter);
+      const r = await fetch(`/api/cases/?${params}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       return r.json();
     },
@@ -135,10 +140,20 @@ function CasesPage() {
     else setSelected(new Set(visible.map((c) => c.case_id)));
   };
 
+  if (!projectId) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-sm text-slate-500">
+        Pick a project from the header dropdown to see its cases.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold">Test cases</h1>
+        <h1 className="text-2xl font-semibold">
+          Test cases <span className="text-slate-400 text-base font-normal">/ {projectId}</span>
+        </h1>
         <p className="text-slate-500 text-sm mt-1">
           AI drafts → review → run. Edits to approved cases re-open them as pending.
           {runMut.error && (

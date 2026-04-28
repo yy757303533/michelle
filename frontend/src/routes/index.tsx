@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useCurrentProject } from "../lib/useCurrentProject";
 
 export const Route = createFileRoute("/")({
   component: Dashboard,
@@ -59,10 +60,16 @@ interface ProbeResult {
 }
 
 function Dashboard() {
+  const { projectId } = useCurrentProject();
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
+        <h1 className="text-2xl font-semibold">
+          Dashboard
+          {projectId && (
+            <span className="text-slate-400 text-base font-normal"> / {projectId}</span>
+          )}
+        </h1>
         <p className="text-slate-500 text-sm mt-1">
           PRD → AI cases → review → autonomous run → AI diagnosis (Day 11) → sediment.
         </p>
@@ -71,9 +78,9 @@ function Dashboard() {
       <BackendHealth />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <CasesWidget />
-        <RecentRunsWidget />
-        <PRDsWidget />
+        <CasesWidget projectId={projectId} />
+        <RecentRunsWidget projectId={projectId} />
+        <PRDsWidget projectId={projectId} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -114,11 +121,12 @@ function BackendHealth() {
   );
 }
 
-function CasesWidget() {
+function CasesWidget({ projectId }: { projectId: string }) {
   const cases = useQuery({
-    queryKey: ["cases-summary"],
+    queryKey: ["cases-summary", projectId],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<CasesResponse> => {
-      const r = await fetch("/api/cases/?limit=200");
+      const r = await fetch(`/api/cases/?limit=200&project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 10000,
@@ -157,11 +165,12 @@ function CasesWidget() {
   );
 }
 
-function RecentRunsWidget() {
+function RecentRunsWidget({ projectId }: { projectId: string }) {
   const runs = useQuery({
-    queryKey: ["runs-recent"],
+    queryKey: ["runs-recent", projectId],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
-      const r = await fetch("/api/runs/?limit=5");
+      const r = await fetch(`/api/runs/?limit=5&project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 3000,
@@ -194,11 +203,12 @@ function RecentRunsWidget() {
   );
 }
 
-function PRDsWidget() {
+function PRDsWidget({ projectId }: { projectId: string }) {
   const prds = useQuery({
-    queryKey: ["prds-recent"],
+    queryKey: ["prds-recent", projectId],
+    enabled: Boolean(projectId),
     queryFn: async (): Promise<PRDsResponse> => {
-      const r = await fetch("/api/prd/?project_id=michelle");
+      const r = await fetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 30000,
