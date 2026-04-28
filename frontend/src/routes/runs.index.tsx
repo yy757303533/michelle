@@ -89,17 +89,41 @@ function RunsListPage() {
 
   const allRuns = runs.data?.data ?? [];
 
-  // Counts come from the full set so pills stay stable when the user
-  // toggles between filters.
-  const grouped = useMemo(() => {
-    const out: Record<string, number> = {};
-    for (const r of allRuns) out[r.status] = (out[r.status] ?? 0) + 1;
-    return out;
+  // List shows the LATEST run per case (1 row per case_id) — historical
+  // runs of the same case live behind the row's "× N" badge and on the
+  // detail page's history section. Without dedup, a case that's been
+  // rerun 5 times floods the list with 5 rows that all say roughly the
+  // same thing, and bulk operations need awkward dedup math afterward.
+  const { latestRows, historyCounts } = useMemo(() => {
+    const byCase = new Map<string, RunRow>();
+    const counts = new Map<string, number>();
+    for (const r of allRuns) {
+      counts.set(r.case_id, (counts.get(r.case_id) ?? 0) + 1);
+      const prev = byCase.get(r.case_id);
+      // allRuns is desc by created_at from the backend, so the first
+      // row we see for a case_id is its latest.
+      if (!prev) byCase.set(r.case_id, r);
+    }
+    return {
+      latestRows: [...byCase.values()].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      ),
+      historyCounts: counts,
+    };
   }, [allRuns]);
 
+  // Counts on filter pills reflect the deduped set so "failed (3)" means
+  // "3 cases whose latest run failed" — which is what you actually want
+  // to act on. Total run rows in DB are visible only via the × N badges.
+  const grouped = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const r of latestRows) out[r.status] = (out[r.status] ?? 0) + 1;
+    return out;
+  }, [latestRows]);
+
   const visible = useMemo(
-    () => (filter ? allRuns.filter((r) => r.status === filter) : allRuns),
-    [allRuns, filter],
+    () => (filter ? latestRows.filter((r) => r.status === filter) : latestRows),
+    [latestRows, filter],
   );
 
   const visibleRerunnable = useMemo(
@@ -149,7 +173,7 @@ function RunsListPage() {
 
       <div className="flex items-center gap-2">
         {STATUSES.map((s) => {
-          const n = s ? (grouped[s] ?? 0) : allRuns.length;
+          const n = s ? (grouped[s] ?? 0) : latestRows.length;
           const active = filter === s;
           return (
             <button
@@ -267,6 +291,14 @@ function RunsListPage() {
         );
       })()}
 
+      <p className="text-xs text-slate-400 -mt-3">
+        Showing the latest run per case. {allRuns.length > latestRows.length && (
+          <>
+            {allRuns.length - latestRows.length} earlier run{allRuns.length - latestRows.length > 1 ? "s" : ""} hidden — open a row to see its history.
+          </>
+        )}
+      </p>
+
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {runs.isLoading ? (
           <div className="p-6 text-slate-400 text-sm">loading…</div>
@@ -332,6 +364,16 @@ function RunsListPage() {
                     <Link to="/cases" className="hover:underline">
                       {r.case_id}
                     </Link>
+                    {(historyCounts.get(r.case_id) ?? 0) > 1 && (
+                      <Link
+                        to="/runs/$id"
+                        params={{ id: r.run_id }}
+                        className="ml-2 inline-block text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        title={`${historyCounts.get(r.case_id)} total runs for this case — click to open detail page with full history`}
+                      >
+                        × {historyCounts.get(r.case_id)}
+                      </Link>
+                    )}
                   </td>
                   <td className="p-2 text-xs text-slate-500">{r.env}</td>
                   <td className="p-2">

@@ -243,6 +243,12 @@ function RunDetailPage() {
         )}
       </div>
 
+      <RunHistorySection
+        currentRunId={run.run_id}
+        caseId={run.case_id}
+        projectId={run.project_id}
+      />
+
       {otherImages.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-lg p-4">
           <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
@@ -281,6 +287,93 @@ function RunDetailPage() {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+interface SiblingRun {
+  run_id: string;
+  status: string;
+  duration_ms: number | null;
+  started_at: string | null;
+  created_at: string;
+  error_message: string | null;
+}
+
+/** Cross-links between runs of the same case_id. Without this, navigating
+ * from "this case failed 5 times — show me the previous attempt" required
+ * going back to /runs, finding the case, and there'd be no row for the
+ * older run anymore (the list dedupes to latest). The detail page is the
+ * right place to surface history because it's already case-scoped. */
+function RunHistorySection({
+  currentRunId,
+  caseId,
+  projectId,
+}: {
+  currentRunId: string;
+  caseId: string;
+  projectId: string;
+}) {
+  const siblings = useQuery({
+    queryKey: ["case-run-history", projectId, caseId],
+    queryFn: async (): Promise<{ data: SiblingRun[] }> => {
+      const r = await fetch(
+        `/api/runs/?project_id=${encodeURIComponent(projectId)}&case_id=${encodeURIComponent(caseId)}&limit=50`,
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  if (siblings.isLoading) return null;
+  const rows = siblings.data?.data ?? [];
+  if (rows.length <= 1) return null; // only this run; nothing to link
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+        Run history for <code className="font-mono">{caseId}</code> ·{" "}
+        <span className="text-slate-500 normal-case">{rows.length} total run{rows.length > 1 ? "s" : ""}</span>
+      </div>
+      <ol className="space-y-1.5 text-sm">
+        {rows.map((r, i) => {
+          const isCurrent = r.run_id === currentRunId;
+          return (
+            <li key={r.run_id} className="flex items-center gap-3">
+              <span className="text-xs text-slate-400 font-mono w-6 text-right">
+                #{rows.length - i}
+              </span>
+              {isCurrent ? (
+                <span className="font-mono text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">
+                  {r.run_id.slice(0, 8)} (this run)
+                </span>
+              ) : (
+                <Link
+                  to="/runs/$id"
+                  params={{ id: r.run_id }}
+                  className="font-mono text-xs text-blue-700 hover:underline"
+                >
+                  {r.run_id.slice(0, 8)}
+                </Link>
+              )}
+              <StatusBadge status={r.status} live={false} />
+              <span className="text-xs text-slate-500 font-mono">
+                {fmtMs(r.duration_ms)}
+              </span>
+              <span className="text-xs text-slate-400">
+                {r.started_at
+                  ? new Date(r.started_at).toLocaleString()
+                  : new Date(r.created_at).toLocaleString()}
+              </span>
+              {r.error_message && (
+                <span className="text-xs text-red-600 truncate max-w-md" title={r.error_message}>
+                  {r.error_message.split("\n")[0].slice(0, 80)}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
