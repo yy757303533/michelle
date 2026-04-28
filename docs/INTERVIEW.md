@@ -23,7 +23,7 @@ For me, the candidate. Bring this open in a side window during interviews.
 > deterministic via ARIA tree.
 >
 > I built it in twelve days, dogfooding from day four — the platform's own PRD
-> generated its own tests against ZStack AIOS. The proof is one screenshot:
+> generated its own tests against the demo Web app. The proof is one screenshot:
 > a deliberately-failed run, diagnosed as `data_issue` with 0.80 confidence,
 > human-confirmed, sediment match `hits: 3`. The whole loop closes there.
 
@@ -39,7 +39,7 @@ Open `docs/STORY.md` and click through. Hit these beats in order:
 4. **Run timeline** (60s) — open TC-20260427-0001's most recent run. "Every step has the tool name, the natural-language intent, the page URL after the action, and a screenshot thumbnail. Click for fullscreen."
 5. **AI diagnosis** (60s) — show the failed-password run. **This is the killer screenshot.** "MiniMax-Text-01 read the trace + screenshot, returned `data_issue` with confidence 0.80. I clicked confirmed. Pattern row went into the library. Re-fetching the same run shows `hits: 3` — that's the sediment loop closed."
 6. **Three surfaces, one capability** (30s) — "everything you just saw via the UI also works as REST, as a Claude Code slash command (`/michelle-run`), and as MCP tools that Cursor or Windsurf can call. Anything a human can do, an agent can too."
-7. **Numbers** (30s) — 12 days · 12 commits on `main` · 152 unit tests passing · 10 LLM channels with auto-fallback · 1 real ZStack login walked end-to-end at 65 seconds for $0 (subscription).
+7. **Numbers** (30s) — 12 days · 12 commits on `main` · 152 unit tests passing · 10 LLM channels with auto-fallback · 1 real the demo login walked end-to-end at 65 seconds for $0 (subscription).
 
 ---
 
@@ -61,7 +61,7 @@ step and burns ~6.5k tokens. `@playwright/mcp` uses ARIA tree, runs at
 ~100ms per step, costs zero per-step LLM. **The AI value is in deciding
 *what* to test and *why* it failed — not in clicking the button.** I keep
 MiniMax in the gateway as a vision fallback for sites with thin ARIA, but
-ZStack didn't need it.
+the demo target didn't need it.
 
 ### 3. "What happens when the LLM is rate-limited?"
 
@@ -278,7 +278,7 @@ PILLARS
 
 NUMBERS
   12 days · 12 commits · 152 unit tests passing · 10 LLM channels
-  65s end-to-end ZStack login · 0.80 conf data_issue diagnosis · $0 (subscription)
+  65s end-to-end the demo login · 0.80 conf data_issue diagnosis · $0 (subscription)
 
 KILLER SCREENSHOT
   docs/day12-demo/diagnosis.png · single image tells the whole story

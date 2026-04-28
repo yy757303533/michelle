@@ -45,18 +45,42 @@ interface UploadResponse {
   };
 }
 
-interface GenerateResponse {
+interface ChapterResult {
+  chapter_index: number;
+  chapter_title: string;
+  saved_count: number;
+  saved_case_ids?: string[];
+  coverage_notes?: string;
+  error?: string;
+  skipped?: boolean;
+  skip_reason?: string;
+}
+
+/** POST /generate now returns 202 + a job_id; results stream into the
+ * job row over the next several minutes via background work. The page
+ * polls `/api/prd/jobs/<job_id>` to surface progress. */
+interface GenerateAcceptResponse {
   data: {
+    job_id: string;
     prd_id: string;
-    total_cases: number;
-    results: Array<{
-      chapter_index: number;
-      chapter_title: string;
-      saved_count: number;
-      saved_case_ids?: string[];
-      coverage_notes?: string;
-      error?: string;
-    }>;
+    status: "pending" | "running" | "done" | "failed";
+    total_chapters: number;
+  };
+}
+
+interface GenerationJob {
+  data: {
+    job_id: string;
+    prd_id: string;
+    project_id: string;
+    status: "pending" | "running" | "done" | "failed";
+    total_chapters: number;
+    completed_chapters: number;
+    saved_cases: number;
+    results: ChapterResult[];
+    error: string | null;
+    started_at: string | null;
+    finished_at: string | null;
   };
 }
 
@@ -78,7 +102,7 @@ function PrdPage() {
   const [name, setName] = useState("");
   const [markdown, setMarkdown] = useState("");
   const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
-  const [genResult, setGenResult] = useState<GenerateResponse["data"] | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // `?prd_id=` survives navigation away and back. Without it, the
   // user uploads a 90-chapter PRD, hops to /cases to check a result,
@@ -140,12 +164,12 @@ function PrdPage() {
     if (hydrate.data) {
       setUploaded(hydrate.data.data);
       setSelected(new Set(hydrate.data.data.chapters.map((c) => c.position)));
-      setGenResult(null);
+      setActiveJobId(null);
     }
     if (!activePrdId) {
       setUploaded(null);
       setSelected(new Set());
-      setGenResult(null);
+      setActiveJobId(null);
     }
   }, [hydrate.data, activePrdId]);
 
@@ -165,7 +189,7 @@ function PrdPage() {
     },
     onSuccess: (resp) => {
       setUploaded(resp.data);
-      setGenResult(null);
+      setActiveJobId(null);
       setSelected(new Set(resp.data.chapters.map((c) => c.position)));
       setActivePrdId(resp.data.prd_id);
       qc.invalidateQueries({ queryKey: ["prd-list"] });
@@ -186,7 +210,7 @@ function PrdPage() {
   });
 
   const generate = useMutation({
-    mutationFn: async (): Promise<GenerateResponse> => {
+    mutationFn: async (): Promise<GenerateAcceptResponse> => {
       if (!uploaded) throw new Error("upload first");
       const r = await fetch(`/api/prd/${uploaded.prd_id}/generate`, {
         method: "POST",
@@ -203,11 +227,24 @@ function PrdPage() {
       return r.json();
     },
     onSuccess: (resp) => {
-      setGenResult(resp.data);
+      setActiveJobId(resp.data.job_id);
       qc.invalidateQueries({ queryKey: ["cases"] });
-      // Dashboard widget keys on ["cases-summary"] — invalidate explicitly so
-      // the home page reflects the new generated cases without a manual reload.
       qc.invalidateQueries({ queryKey: ["cases-summary"] });
+    },
+  });
+
+  /** Poll the active generation job until it reaches a terminal state. */
+  const job = useQuery({
+    queryKey: ["prd-job", activeJobId],
+    enabled: Boolean(activeJobId),
+    refetchInterval: (q) => {
+      const status = (q.state.data as GenerationJob | undefined)?.data?.status;
+      return status === "done" || status === "failed" ? false : 2000;
+    },
+    queryFn: async (): Promise<GenerationJob> => {
+      const r = await fetch(`/api/prd/jobs/${activeJobId}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
     },
   });
 
@@ -222,8 +259,7 @@ function PrdPage() {
    * /api/cases/ rather than tracked locally, so reloads, tab switches, and
    * background generation finishing all show up the same way: as the count
    * going up. The signature must match what `case_generator.py` writes to
-   * `generated_from`: `chapter:<level>:<normalized_title>`. We also include
-   * the legacy `chapter:<title>#<position>` form for older rows. */
+   * `generated_from`: `chapter:<level>:<normalized_title>`. */
   const casesByChapter = (() => {
     const out: Record<string, { total: number; pending: number; approved: number }> = {};
     if (!projectCases.data || !uploaded) return out;
@@ -238,15 +274,8 @@ function PrdPage() {
   })();
 
   const chapterCount = (chapter: ChapterMeta): { total: number; pending: number; approved: number } => {
-    const sigNew = `chapter:${chapter.level}:${chapter.normalized_title}`;
-    const sigLegacy = `chapter:${chapter.normalized_title}#${chapter.position}`;
-    const a = casesByChapter[sigNew] ?? { total: 0, pending: 0, approved: 0 };
-    const b = casesByChapter[sigLegacy] ?? { total: 0, pending: 0, approved: 0 };
-    return {
-      total: a.total + b.total,
-      pending: a.pending + b.pending,
-      approved: a.approved + b.approved,
-    };
+    const sig = `chapter:${chapter.level}:${chapter.normalized_title}`;
+    return casesByChapter[sig] ?? { total: 0, pending: 0, approved: 0 };
   };
 
   const totalCasesForPrd = uploaded
@@ -490,12 +519,19 @@ function PrdPage() {
           <div>
             <button
               className="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50"
-              disabled={selected.size === 0 || generate.isPending}
+              disabled={
+                selected.size === 0 ||
+                generate.isPending ||
+                job.data?.data.status === "running" ||
+                job.data?.data.status === "pending"
+              }
               onClick={() => generate.mutate()}
             >
               {generate.isPending
-                ? "generating (≤5 min)…"
-                : `Generate cases for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
+                ? "scheduling…"
+                : job.data?.data.status === "running" || job.data?.data.status === "pending"
+                  ? `generating ${job.data.data.completed_chapters}/${job.data.data.total_chapters}…`
+                  : `Generate cases for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
             </button>
             {generate.error && (
               <pre className="text-xs text-red-600 whitespace-pre-wrap mt-2">
@@ -504,29 +540,14 @@ function PrdPage() {
             )}
           </div>
 
-          {genResult && (
-            <div className="bg-slate-50 rounded p-3 text-sm">
-              <div className="font-medium mb-1">
-                Generated <span className="text-emerald-700">{genResult.total_cases}</span> cases.
-              </div>
-              <ul className="space-y-1">
-                {genResult.results.map((r) => (
-                  <li key={r.chapter_index} className="text-xs">
-                    <code>#{r.chapter_index}</code> {r.chapter_title}: {" "}
-                    {r.error ? (
-                      <span className="text-red-600">error: {r.error}</span>
-                    ) : (
-                      <span className="text-slate-600">
-                        {r.saved_count} cases saved → review them on{" "}
-                        <a className="text-blue-700 underline" href="/cases">
-                          Cases
-                        </a>
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {/* Live job progress. Survives page reload because activeJobId is
+              in React state populated from the mutation; could be promoted
+              to URL/localStorage if "stay informed across reloads" is
+              required, but for now reload = lose the visible progress
+              (the chapter overlay above still shows real cases as they
+              save, so no information is actually lost). */}
+          {job.data && (
+            <JobProgressPanel job={job.data.data} />
           )}
         </div>
       )}
@@ -619,5 +640,78 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       </span>
       {children}
     </label>
+  );
+}
+
+function JobProgressPanel({ job }: { job: GenerationJob["data"] }) {
+  const isTerminal = job.status === "done" || job.status === "failed";
+  const pct = job.total_chapters
+    ? Math.round((job.completed_chapters / job.total_chapters) * 100)
+    : 0;
+  const colour =
+    job.status === "failed"
+      ? "bg-red-50 border-red-200"
+      : job.status === "done"
+        ? "bg-emerald-50 border-emerald-200"
+        : "bg-blue-50 border-blue-200";
+
+  return (
+    <div className={`rounded p-3 text-sm border ${colour}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-medium">
+          {job.status === "pending" && "Job queued…"}
+          {job.status === "running" && (
+            <>
+              Generating {job.completed_chapters}/{job.total_chapters} chapters
+              {" · "}
+              <span className="text-emerald-700">{job.saved_cases} cases saved</span>
+            </>
+          )}
+          {job.status === "done" && (
+            <>
+              ✓ Generated <span className="text-emerald-700">{job.saved_cases}</span> cases
+              across {job.total_chapters} chapter{job.total_chapters > 1 ? "s" : ""}
+            </>
+          )}
+          {job.status === "failed" && (
+            <span className="text-red-700">✗ Job failed: {job.error || "unknown error"}</span>
+          )}
+        </div>
+        {!isTerminal && (
+          <span className="text-xs text-slate-500 font-mono tabular-nums">{pct}%</span>
+        )}
+      </div>
+      {!isTerminal && (
+        <div className="w-full h-1.5 bg-slate-200/60 rounded-full overflow-hidden mb-2">
+          <div
+            className="h-full bg-blue-500 transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+      {job.results.length > 0 && (
+        <ul className="space-y-1 mt-2 max-h-60 overflow-y-auto">
+          {job.results
+            .slice()
+            .reverse()
+            .map((r) => (
+              <li key={r.chapter_index} className="text-xs">
+                <code>#{r.chapter_index}</code> {r.chapter_title}:{" "}
+                {r.error ? (
+                  <span className="text-red-600">error: {r.error}</span>
+                ) : r.skipped ? (
+                  <span className="text-slate-500">
+                    skipped ({r.skip_reason || "no change"})
+                  </span>
+                ) : (
+                  <span className="text-slate-600">
+                    {r.saved_count} cases saved
+                  </span>
+                )}
+              </li>
+            ))}
+        </ul>
+      )}
+    </div>
   );
 }

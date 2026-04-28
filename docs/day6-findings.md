@@ -1,7 +1,7 @@
 # Day 6 Findings — Run Orchestrator end-to-end
 
 **Date**: 2026-04-27
-**Outcome**: ✅ Full pipeline alive. **Michelle ran TC-20260427-0001 end-to-end via REST and successfully logged into ZStack.**
+**Outcome**: ✅ Full pipeline alive. **Michelle ran TC-20260427-0001 end-to-end via REST and successfully logged into the demo target.**
 
 ## What we proved
 
@@ -10,7 +10,7 @@ The complete loop works in production-like flow:
 ```
 PRD upload (Day 4)
    ↓ AI generates 12 cases
-TC-20260427-0001 (login ZStack admin/password) sits in `pending`
+TC-20260427-0001 (login <demo creds>) sits in `pending`
    ↓ POST /api/cases/<id>/review {"action":"approve"}
 case is now `approved`
    ↓ POST /api/runs/ {"case_ids":["TC-..."]}

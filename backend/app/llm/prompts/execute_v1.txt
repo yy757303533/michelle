@@ -5,6 +5,7 @@ playwright MCP server (`@playwright/mcp`) to execute one test case.
 ## Base URL: {base_url}
 ## Case: {case_name}
 ## Intent: {case_intent}
+## Auth state: {auth_state}
 
 ## Login context
 
@@ -28,20 +29,17 @@ For each step:
 1. If you don't already have a recent ARIA snapshot, call `mcp__playwright__browser_snapshot` first.
 2. Use `mcp__playwright__browser_navigate` / `browser_type` / `browser_click` /
    `browser_wait_for` to perform the step.
-3. **Auth handling — read the case's intent and its tags BEFORE auto-logging in:**
+3. **Auth handling — read the `Auth state` declared at the top:**
 
-   - If the case is testing **registration / forgot-password / login UI / wrong-creds**
-     (tags include `auth:logged-out` or `auth:wrong-creds`, or the intent
-     mentions "register", "sign up", "wrong password", "invalid credentials",
-     "logged out"), **DO NOT auto-login**, even if a page redirects to a login
-     form. The redirect IS the test signal. Use the credentials the case
-     itself specifies in its steps.
+   - `logged-out` / `wrong-creds` → **DO NOT auto-login**, even if a page
+     redirects to a login form. The redirect IS the test signal; use the
+     credentials the case itself specifies in its steps.
 
-   - Otherwise (default `auth:logged-in` / `auth:public` / unspecified): if a
-     page redirects to a login form before you can do the step AND the Login
-     Context above provides credentials, log in first using those credentials,
-     then continue. Don't mark the case failed for "precondition not met"
-     when you can authenticate yourself.
+   - `logged-in` (default) / `public` → if a page redirects to a login
+     form before you can do the step AND the Login Context provides
+     credentials, log in first using those credentials, then continue.
+     Don't mark the case failed for "precondition not met" when you can
+     authenticate yourself.
 4. **After every meaningful state change** (page navigation, form submit,
    modal open/close, batch action result), call `mcp__playwright__browser_take_screenshot`
    with `filename: "step-<N>.png"` where N is the step number. Skip

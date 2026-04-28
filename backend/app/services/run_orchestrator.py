@@ -31,6 +31,7 @@ from app.db import async_session_maker
 from app.llm import render
 from app.models import Project, Run, StepEvent, TestCase
 from app.obs import EVENTS, bind_request_context, get_logger
+from app.services._concurrency import ResizableLimiter
 from app.services.report_html import run_to_report_input, write_report_files
 from app.storage import run_dir as run_dir_for
 
@@ -98,6 +99,7 @@ def render_execute_prompt(case: TestCase, project: Project) -> str:
         base_url=project.base_url or "(not configured)",
         case_name=case.name,
         case_intent=case.intent,
+        auth_state=case.auth_state,
         login_context=_format_login_context(project),
         preconditions=_format_preconditions(case),
         numbered_steps=_format_steps(case),
@@ -294,7 +296,7 @@ async def execute_case(
 
         # Read live headless preference. Operator can toggle from the
         # dashboard to watch the agent drive Chromium during debugging.
-        from app.api.settings import get_headless
+        from app.runtime_config import get_headless
 
         headless = await get_headless(session)
 
@@ -444,38 +446,32 @@ async def create_run_row(
 # Max simultaneous browser sessions. Each session = 1 Chromium + 1 claude CLI
 # subprocess + ~250MB RAM. 2 is comfortable on a dev laptop. The .env value
 # is just the bootstrap default — `runtime_settings.max_concurrent_runs`
-# (Settings panel on the dashboard) overrides it at runtime.
+# (Settings panel on the dashboard) overrides it at runtime via _resync_limiter.
 MAX_CONCURRENT_RUNS = max(1, int(getattr(settings, "max_concurrent_runs", 2)))
-_run_semaphore: asyncio.Semaphore | None = None
-_run_semaphore_capacity: int = 0
+_run_limiter: ResizableLimiter | None = None
 
 
 async def _resolve_concurrency() -> int:
-    """Read the live concurrency cap from runtime_settings; fall back to the
-    bootstrap default if the table or row isn't there yet (fresh DB, tests
-    using in-memory SQLite without the migration)."""
     try:
-        from app.api.settings import get_max_concurrent_runs
+        from app.runtime_config import get_max_concurrent_runs
 
-        async with async_session_maker() as session:
-            return await get_max_concurrent_runs(session)
+        return await get_max_concurrent_runs()
     except Exception:
         return MAX_CONCURRENT_RUNS
 
 
-async def _semaphore() -> asyncio.Semaphore:
-    """Lazy + dynamic. The semaphore is bound to the current event loop AND
-    to the current concurrency cap — when the operator changes the cap from
-    the dashboard, we recreate the semaphore so newly-launched runs see the
-    new ceiling. Already-acquired slots stay valid; they just don't return
-    capacity to the new semaphore (acceptable since runs eventually finish
-    and the new semaphore stabilises)."""
-    global _run_semaphore, _run_semaphore_capacity
+async def _limiter() -> ResizableLimiter:
+    """Live-resizable concurrency limiter. Reads the current cap on every
+    acquire so changes from the Settings panel take effect immediately
+    for the next-launched run (and for waiters when the cap is raised),
+    without recreating the limiter and stranding the in-flight count."""
+    global _run_limiter
     capacity = await _resolve_concurrency()
-    if _run_semaphore is None or _run_semaphore_capacity != capacity:
-        _run_semaphore = asyncio.Semaphore(capacity)
-        _run_semaphore_capacity = capacity
-    return _run_semaphore
+    if _run_limiter is None:
+        _run_limiter = ResizableLimiter(capacity)
+    elif _run_limiter.capacity != capacity:
+        await _run_limiter.set_capacity(capacity)
+    return _run_limiter
 
 
 def kick_off(case_id: str, run_id: str, env: str, *, timeout_seconds: int = 300) -> asyncio.Task:
@@ -484,63 +480,6 @@ def kick_off(case_id: str, run_id: str, env: str, *, timeout_seconds: int = 300)
     return asyncio.create_task(
         _safe_execute(case_id=case_id, run_id=run_id, env=env, timeout_seconds=timeout_seconds)
     )
-
-
-# ── Failure heuristics ─────────────────────────────────────────────────────
-
-_ENV_HINTS = (
-    "econnrefused",
-    "connection refused",
-    "connection reset",
-    "name not resolved",
-    "nxdomain",
-    "getaddrinfo enotfound",
-    "net::err_connection",
-    "net::err_name",
-    "net::err_address",
-    "timeout exceeded",
-    "navigation timeout",
-    "tcp connect",
-    "ssl_error",
-    "certificate",
-    "503 service unavailable",
-    "502 bad gateway",
-    "504 gateway",
-)
-_FLAKY_HINTS = (
-    "stale element",
-    "detached from dom",
-    "click was intercepted",
-    "element is not visible",
-    "element is not stable",
-    "wait_for timeout",
-    "race condition",
-)
-
-
-def heuristic_classify(parsed: ParsedRun, error_message: str | None) -> str | None:
-    """Best-effort failure category. Returns one of:
-      - 'real_bug' / 'flaky' / 'env_issue' / None (insufficient evidence)
-
-    This is a Day-9 quick triage before the real AI diagnoser lands on Day 11.
-    Day 11's diagnoser will replace this with a proper LLM judgement; for now
-    we just look for obvious string patterns.
-    """
-    blobs: list[str] = []
-    if error_message:
-        blobs.append(error_message.lower())
-    for s in parsed.steps:
-        if s.result_is_error and s.result_text:
-            blobs.append(s.result_text.lower()[:1000])
-    if not blobs:
-        return None
-    blob = " ".join(blobs)
-
-    if any(h in blob for h in _ENV_HINTS):
-        return "env_issue"
-    if any(h in blob for h in _FLAKY_HINTS):
-        return "flaky"
-    return "real_bug"
 
 
 # ── Run with retry + classification ────────────────────────────────────────
@@ -576,8 +515,8 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
     appends step events from the second attempt with step_index continuing).
     The second attempt's terminal status is what sticks.
     """
-    sem = await _semaphore()
-    async with sem:
+    limiter = await _limiter()
+    async with limiter:
         attempt = 1
         try:
             run = await execute_case(
@@ -689,47 +628,14 @@ async def _emit_failure_hook(*, run_id: str) -> None:
 
 
 async def _classify_and_persist(*, run_id: str) -> None:
-    """After a final-failed run, attach a heuristic category to error_message
-    and fire the run.failed hook (auto-diagnose lives there)."""
-    async with async_session_maker() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
-            return
-        # Synthesize a fake ParsedRun-like object from DB for classification
-        from types import SimpleNamespace
+    """Fire the run.failed hook (auto-diagnose lives there).
 
-        from sqlmodel import select
-
-        steps = (
-            (await session.execute(select(StepEvent).where(StepEvent.run_id == run_id)))
-            .scalars()
-            .all()
-        )
-
-        shim_steps = [
-            SimpleNamespace(
-                result_is_error=s.status == "failed",
-                result_text=(s.tool_result or {}).get("result_text") or s.error_message,
-            )
-            for s in steps
-        ]
-        parsed_shim = SimpleNamespace(steps=shim_steps)
-        category = heuristic_classify(parsed_shim, run.error_message)  # type: ignore[arg-type]
-        if category:
-            existing = run.error_message or ""
-            tag = f"[heuristic:{category}]"
-            if tag not in existing:
-                run.error_message = (existing + ("\n" if existing else "") + tag)[:500]
-            await session.commit()
-            _log.info(
-                "orchestrator.classified",
-                run_id=run_id,
-                category=category,
-                final_status=run.status,
-            )
-
-    # Fire the failure hook (auto-diagnose) outside the session — diagnose_run
-    # opens its own AsyncSession.
+    Previously this also attached a `[heuristic:<category>]` tag to
+    error_message based on string-matching keywords. That heuristic
+    routinely mis-classified — e.g. "Precondition not met: user is not
+    logged in" was tagged `real_bug` even though the case itself was
+    poorly designed. The diagnoser produces a proper category, we don't
+    need a noisy second source of truth."""
     await _emit_failure_hook(run_id=run_id)
 
 

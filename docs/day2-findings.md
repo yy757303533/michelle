@@ -1,7 +1,7 @@
 # Day 2 Findings — claude CLI + `@playwright/mcp` viability
 
 **Date**: 2026-04-27
-**Outcome**: ✅ Core architecture viable. ZStack admin login fully driven via the agent stack.
+**Outcome**: ✅ Core architecture viable. the demo login flow fully driven via the agent stack.
 
 ## What we proved
 
@@ -12,7 +12,7 @@ Python orchestrator (run_claude_with_playwright)
   └─ subprocess: claude -p --mcp-config <our-config>
        └─ MCP stdio session with @playwright/mcp 0.0.70
             └─ Playwright Chromium (headless, isolated)
-                 └─ ZStack AIOS (http://172.25.17.105:5000/)
+                 └─ the demo Web app (http://localhost:5000/)
 ```
 
 Real run captured in `backend/artifacts/day2-smoke/`:
@@ -88,7 +88,7 @@ The model writes a `RESULT={json}` line at the very end of its final message. Ou
 
 ## Gotcha: session persistence across runs
 
-Without `--isolated`, Chromium kept the ZStack session cookie between runs — the second invocation went straight to `/dashboard` without filling the login form. This is real. We default `--isolated` on in `mcp_config.build_playwright_mcp_config()`. For "verify already-logged-in user can do X" scenarios, callers can opt out.
+Without `--isolated`, Chromium kept the the demo target session cookie between runs — the second invocation went straight to `/dashboard` without filling the login form. This is real. We default `--isolated` on in `mcp_config.build_playwright_mcp_config()`. For "verify already-logged-in user can do X" scenarios, callers can opt out.
 
 ## Gotcha: Claude uses ToolSearch first
 
@@ -117,7 +117,7 @@ The DIY DOM-augmented vision agent (designed in earlier rounds) is unnecessary. 
 
 ## Risks confirmed (mitigation strategy unchanged)
 
-- ZStack is React with passable but minimal ARIA labels (`textbox` without name/label). Claude reasons about adjacency to icons. Works on this site, but a less semantic site might struggle. Fallback strategy from PRD §12 stands.
+- the demo target is React with passable but minimal ARIA labels (`textbox` without name/label). Claude reasons about adjacency to icons. Works on this site, but a less semantic site might struggle. Fallback strategy from PRD §12 stands.
 
 ## Day 3 reading list
 

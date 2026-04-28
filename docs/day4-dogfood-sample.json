@@ -1,7 +1,7 @@
 [
   {
     "case_id": "TC-20260427-0001",
-    "name": "使用确认账号 admin/password 成功登录 ZStack AIOS",
+    "name": "使用确认账号 admin/password 成功登录 the demo Web app",
     "intent": "验证 PRD A3 中确认的 Staging 环境 URL 与账号可正常登录并进入控制台",
     "module": "0. 已确认事项",
     "tags": [
@@ -9,13 +9,13 @@
     ],
     "priority": "P0",
     "preconditions": [
-      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "Staging 环境 http://localhost:5000/ 可访问",
       "账号 admin / password 仍然有效"
     ],
     "steps": [
       {
-        "intent": "在浏览器地址栏打开 http://172.25.17.105:5000/",
-        "expected": "页面加载完成,显示 ZStack 登录界面"
+        "intent": "在浏览器地址栏打开 http://localhost:5000/",
+        "expected": "页面加载完成,显示 the demo target 登录界面"
       },
       {
         "intent": "在用户名输入框中输入 admin",
@@ -59,11 +59,11 @@
     ],
     "priority": "P1",
     "preconditions": [
-      "Staging 环境 http://172.25.17.105:5000/ 可访问"
+      "Staging 环境 http://localhost:5000/ 可访问"
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/",
+        "intent": "打开 http://localhost:5000/",
         "expected": "登录页面加载完成"
       },
       {
@@ -76,7 +76,7 @@
       },
       {
         "intent": "观察浏览器标签页标题",
-        "expected": "标题包含 ZStack 或产品中文名"
+        "expected": "标题包含 the demo target 或产品中文名"
       },
       {
         "intent": "在不点击登录的情况下,刷新页面",
@@ -108,12 +108,12 @@
     ],
     "priority": "P0",
     "preconditions": [
-      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "Staging 环境 http://localhost:5000/ 可访问",
       "存在 admin 账号"
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/",
+        "intent": "打开 http://localhost:5000/",
         "expected": "显示登录页面"
       },
       {
@@ -151,7 +151,7 @@
   {
     "case_id": "TC-20260427-0004",
     "name": "未登录时直接访问受保护页面应被重定向到登录页",
-    "intent": "验证 ZStack AIOS 对未授权访问的拦截能力(隐含的鉴权约束)",
+    "intent": "验证 the demo Web app 对未授权访问的拦截能力(隐含的鉴权约束)",
     "module": "0. 已确认事项",
     "tags": [
       "security",
@@ -159,7 +159,7 @@
     ],
     "priority": "P1",
     "preconditions": [
-      "Staging 环境 http://172.25.17.105:5000/ 可访问",
+      "Staging 环境 http://localhost:5000/ 可访问",
       "当前浏览器会话未登录(必要时清除站点 cookies / 使用隔离会话)"
     ],
     "steps": [
@@ -168,7 +168,7 @@
         "expected": "当前会话处于未登录状态"
       },
       {
-        "intent": "直接访问 http://172.25.17.105:5000/",
+        "intent": "直接访问 http://localhost:5000/",
         "expected": "页面加载"
       },
       {
@@ -176,7 +176,7 @@
         "expected": "出现必填校验或登录失败提示,且未进入控制台"
       },
       {
-        "intent": "尝试在地址栏直接输入一个登录后才能访问的路径(例如 http://172.25.17.105:5000/web/)",
+        "intent": "尝试在地址栏直接输入一个登录后才能访问的路径(例如 http://localhost:5000/web/)",
         "expected": "页面被路由回登录界面,而非展示受保护内容"
       },
       {
@@ -209,11 +209,11 @@
     ],
     "priority": "P0",
     "preconditions": [
-      "浏览器可访问 http://172.25.17.105:5000/"
+      "浏览器可访问 http://localhost:5000/"
     ],
     "steps": [
       {
-        "intent": "在浏览器地址栏打开 http://172.25.17.105:5000/",
+        "intent": "在浏览器地址栏打开 http://localhost:5000/",
         "expected": "页面成功加载,无 5xx/连接拒绝错误"
       },
       {
@@ -258,7 +258,7 @@
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/",
+        "intent": "打开 http://localhost:5000/",
         "expected": "首页加载完成"
       },
       {
@@ -309,7 +309,7 @@
     ],
     "steps": [
       {
-        "intent": "在浏览器地址栏访问 http://172.25.17.105:5000/this-route-definitely-does-not-exist-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "intent": "在浏览器地址栏访问 http://localhost:5000/this-route-definitely-does-not-exist-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "expected": "页面返回响应,而非浏览器级连接错误"
       },
       {
@@ -326,7 +326,7 @@
       },
       {
         "intent": "点击返回首页的链接",
-        "expected": "浏览器导航至 http://172.25.17.105:5000/ 且首页正常加载"
+        "expected": "浏览器导航至 http://localhost:5000/ 且首页正常加载"
       }
     ],
     "assertions": [
@@ -359,7 +359,7 @@
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/",
+        "intent": "打开 http://localhost:5000/",
         "expected": "首页加载完成"
       },
       {
@@ -401,12 +401,12 @@
     ],
     "priority": "P0",
     "preconditions": [
-      "已部署的 Michelle Web 站点 http://172.25.17.105:5000/ 可访问",
+      "已部署的 Michelle Web 站点 http://localhost:5000/ 可访问",
       "本地准备好一份至少包含 2 个章节的 PRD markdown 文件"
     ],
     "steps": [
       {
-        "intent": "在浏览器打开 http://172.25.17.105:5000/",
+        "intent": "在浏览器打开 http://localhost:5000/",
         "expected": "看到 Michelle 首页,顶部导航包含 'PRD' 与 '用例' 入口"
       },
       {
@@ -460,7 +460,7 @@
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/ 并进入 'PRD' 页面",
+        "intent": "打开 http://localhost:5000/ 并进入 'PRD' 页面",
         "expected": "看到 '上传 PRD' 按钮"
       },
       {
@@ -514,7 +514,7 @@
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/ 并进入 '用例' 列表页",
+        "intent": "打开 http://localhost:5000/ 并进入 '用例' 列表页",
         "expected": "看到用例列表,部分用例标记为失败状态"
       },
       {
@@ -565,7 +565,7 @@
     ],
     "steps": [
       {
-        "intent": "打开 http://172.25.17.105:5000/ 并进入 'PRD' 页面",
+        "intent": "打开 http://localhost:5000/ 并进入 'PRD' 页面",
         "expected": "看到 '上传 PRD' 按钮"
       },
       {

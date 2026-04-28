@@ -127,11 +127,11 @@ Open `http://localhost:5173`. Upload a PRD on the PRD page, generate cases,
 approve, ▶ Run. When something fails, the AI diagnose button on the run
 page wires the rest.
 
-End-to-end smoke scripts (real LLM, real browser, real ZStack target):
+End-to-end smoke scripts (real LLM, real browser, real target Web app):
 
 ```bash
 cd backend
-uv run python ../scripts/day2_smoke.py            # claude + @playwright/mcp drives ZStack login
+uv run python ../scripts/day2_smoke.py            # claude + @playwright/mcp drives a real login
 uv run python ../scripts/day4_dogfood.py          # generate cases from Michelle's own PRD
 uv run python ../scripts/day7_visual_smoke.py     # screenshot every page
 uv run python ../scripts/day12_demo_capture.py    # full walkthrough video
@@ -182,7 +182,7 @@ CLAUDE.md           orientation for any future Claude Code session
 | Day | What | Tests |
 |---|---|---|
 | 1 | Project skeleton + agent-native surface | 6 |
-| 2 | claude + `@playwright/mcp` drives ZStack login | 10 |
+| 2 | claude + `@playwright/mcp` drives a real login | 10 |
 | 3 | LLM Gateway with auto-fallback | 34 |
 | 4 | PRD ingest + AI case generation + dogfood (12 cases) | 59 |
 | 5 | Alembic + HTML report generator | 74 |

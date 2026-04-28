@@ -47,23 +47,21 @@ class Settings(BaseSettings):
     minimax_model_text: str = "MiniMax-Text-01"
     minimax_model_reasoning: str = "MiniMax-M2.7"
 
-    # ── LLM: Flywheel proxy (premium upgrade) ──
+    # ── LLM: Flywheel-style multi-model proxy (premium upgrade) ──
     flywheel_token: str = ""
-    flywheel_base_url: str = "https://flywheel.zstack.io/v1/chat/completions"
+    flywheel_base_url: str = ""
+    """Base URL of an OpenAI-compatible (or Anthropic-native bare-name)
+    multi-model proxy. Set in .env to enable; left empty disables the
+    provider entirely. Example: `https://your-proxy.example.com/v1/chat/completions`."""
     flywheel_model_premium: str = "claude-opus-4-7"
-    """Default model for the Flywheel proxy.
-
-    Two naming conventions exist on Flywheel:
-      - `anthropic/claude-opus-4.7` — OpenAI-compat response, but the `default`
-        token group has no quota for the namespaced route (HTTP 402 quote_exceeded)
-      - `claude-opus-4-7` — bare name, routes to a different distributor that
-        DOES have capacity. Returns native Anthropic shape, which our client
-        parses transparently.
-
-    Opus 4.7 wins informal vision A/B against GPT-5.5 (less hallucination,
-    catches more small UI details) so it's the default for diagnosis-with-
-    screenshot routing. When quota runs out, the gateway falls through to
-    MiniMax. Override via FLYWHEEL_MODEL_PREMIUM."""
+    """Default model identifier on the proxy. Two naming conventions are
+    common:
+      - `anthropic/claude-opus-4.7` — OpenAI-compat response shape
+      - `claude-opus-4-7` — bare name, routes to native Anthropic shape;
+        our client parses both transparently.
+    Override via FLYWHEEL_MODEL_PREMIUM in .env. The diagnoser prefers
+    Opus 4.7 for vision because it catches more UI details and
+    hallucinates less than peer models."""
 
     # ── LLM: Kimi / Moonshot (OpenAI-compatible) ──
     kimi_api_key: str = ""
@@ -105,10 +103,10 @@ class Settings(BaseSettings):
     logfire_project: str = "michelle"
     otel_service_name: str = "michelle-backend"
 
-    # ── Default test target (Day 2 verification) ──
-    default_target_url: str = "http://172.25.17.105:5000/"
-    default_target_username: str = "admin"
-    default_target_password: str = "password"
+    # ── Default test target (smoke-test fallback) ──
+    default_target_url: str = ""
+    default_target_username: str = ""
+    default_target_password: str = ""
 
     @property
     def artifacts_path(self) -> Path:

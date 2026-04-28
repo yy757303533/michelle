@@ -32,6 +32,19 @@ class TestCase(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     priority: str = "P1"
 
+    auth_state: str = "logged-in"
+    """Auth precondition for this case. One of:
+      - logged-in    feature behind login wall (most common)
+      - logged-out   feature MUST run with no session (registration,
+                     forgot password, login UI rendering)
+      - wrong-creds  testing rejection / error message with bad creds
+      - public       auth-irrelevant (marketing, docs, public search)
+
+    The runtime executor reads this and skips auto-login for the last
+    three. Validated on insert/edit by Pydantic Literal types in the
+    API layer; persisted as a plain string for forward-compat (new
+    states don't need a schema migration)."""
+
     preconditions: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     steps: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     assertions: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))

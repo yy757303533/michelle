@@ -25,6 +25,7 @@ EDITABLE_FIELDS = {
     "module",
     "tags",
     "priority",
+    "auth_state",
     "preconditions",
     "steps",
     "assertions",
@@ -32,6 +33,7 @@ EDITABLE_FIELDS = {
 
 
 ReviewVerb = Literal["approve", "reject"]
+AuthState = Literal["logged-in", "logged-out", "wrong-creds", "public"]
 
 
 class ReviewAction(BaseModel):
@@ -52,6 +54,7 @@ class CaseEdit(BaseModel):
     module: str | None = None
     tags: list[str] | None = None
     priority: str | None = None
+    auth_state: AuthState | None = None
     preconditions: list[str] | None = None
     steps: list[dict[str, Any]] | None = None
     assertions: list[dict[str, Any]] | None = None
@@ -67,6 +70,7 @@ class CaseCreate(BaseModel):
     module: str = ""
     tags: list[str] = Field(default_factory=list)
     priority: Literal["P0", "P1", "P2"] = "P1"
+    auth_state: AuthState = "logged-in"
     preconditions: list[str] = Field(default_factory=list)
     steps: list[dict[str, Any]] = Field(default_factory=list)
     assertions: list[dict[str, Any]] = Field(default_factory=list)
@@ -129,6 +133,7 @@ async def create_case(
         module=body.module[:60],
         tags=body.tags,
         priority=body.priority,
+        auth_state=body.auth_state,
         preconditions=body.preconditions,
         steps=body.steps,
         assertions=body.assertions,

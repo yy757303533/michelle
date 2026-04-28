@@ -39,6 +39,7 @@ this chapter does not justify it; document why in `coverage_notes`):
       "module": "{module_hint}",
       "tags": ["happy" | "edge" | "error" | "security", ...],
       "priority": "P0" | "P1" | "P2",
+      "auth_state": "logged-in" | "logged-out" | "wrong-creds" | "public",
       "preconditions": ["..."],
       "steps": [
         {{ "intent": "<自然语言一步操作>", "expected": "<可选: 这一步后期望可见>" }}
@@ -104,10 +105,9 @@ E.g. 测试 "密码错误时显示提示" / "邮箱不存在时跳转".
   visible UI elements ("点击 '保存' 按钮"), not to internal API or DB state.
 - Prefer 4-10 steps per case. Pad obvious wait/verify steps if needed.
 - Assertion descriptions must be falsifiable. Avoid vague words like "正常".
-- **Tag each case with its auth state**: include one of `auth:logged-in` /
-  `auth:logged-out` / `auth:wrong-creds` / `auth:public` in `tags` so the
-  human reviewer + the runtime executor can both see what the case
-  intends. Without this tag the executor falls back to "auto-login if
-  redirected to login form", which is wrong for B and C.
+- **Set `auth_state` on every case** to exactly one of `logged-in` /
+  `logged-out` / `wrong-creds` / `public` (the four classes above).
+  This is a top-level field, NOT a string inside `tags`. The runtime
+  executor reads it to decide whether to auto-login.
 - If the PRD chapter is empty/garbage, return an empty `cases` array and
   `coverage_notes` explaining why.

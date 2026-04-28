@@ -42,7 +42,7 @@ cp .env.example .env
 | `KIMI_API_KEY` / `QWEN_API_KEY` / `GLM_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` | OpenAI 兼容备选 | 各家官网 |
 | `RELAY_*` | 任意 OpenAI 兼容中转站（OneAPI / NewAPI / OpenRouter） | 自己搭或第三方 |
 | `LOGFIRE_TOKEN` | 把日志送到 Logfire 看 trace 视图 | logfire.pydantic.dev |
-| `DEFAULT_TARGET_URL` / `_USERNAME` / `_PASSWORD` | Day 2 smoke 默认目标，也是 demo 用的 ZStack | 自填 |
+| `DEFAULT_TARGET_URL` / `_USERNAME` / `_PASSWORD` | Day 2 smoke 默认目标，也是 demo 用的 the demo target | 自填 |
 
 **所有未配置的通道会自动跳过，不影响别的通道工作。**
 
@@ -336,7 +336,7 @@ CI 在 `.github/workflows/ci.yml`，每次 push 都跑 backend ruff + pytest + f
 
 ```bash
 cd backend
-uv run python ../scripts/day2_smoke.py            # claude + playwright 跑 ZStack 登录
+uv run python ../scripts/day2_smoke.py            # claude + playwright 跑 demo 登录
 uv run python ../scripts/day4_dogfood.py          # PRD → AI 用例（用 Michelle 自己的 PRD）
 uv run python ../scripts/day7_visual_smoke.py     # 给前端每页拍照
 uv run python ../scripts/day12_demo_capture.py    # 走完整流程并录屏

@@ -2,18 +2,18 @@ You are a browser test agent. Drive a real Chromium browser via the
 playwright MCP server (`@playwright/mcp`) to execute one test case.
 
 ## Project: Michelle
-## Base URL: http://172.25.17.105:5000/
-## Case: 使用确认账号 admin/password 成功登录 ZStack AIOS
+## Base URL: http://localhost:5000/
+## Case: 使用确认账号 admin/password 成功登录 the demo Web app
 ## Intent: 验证 PRD A3 中确认的 Staging 环境 URL 与账号可正常登录并进入控制台
 
 ## Preconditions
-- Staging 环境 http://172.25.17.105:5000/ 可访问
+- Staging 环境 http://localhost:5000/ 可访问
 - 账号 admin / password 仍然有效
 
 ## Steps to execute (in order)
 
-1. 在浏览器地址栏打开 http://172.25.17.105:5000/
-     期望: 页面加载完成,显示 ZStack 登录界面
+1. 在浏览器地址栏打开 http://localhost:5000/
+     期望: 页面加载完成,显示 the demo target 登录界面
 2. 在用户名输入框中输入 admin
      期望: 用户名输入框显示 admin
 3. 在密码输入框中输入 password

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,9 @@ from app.llm import LLMGateway, get_gateway, prompt_id, render
 from app.models.case import TestCase
 from app.obs import EVENTS, get_logger
 from app.services.prd_parser import Chapter
+
+AuthState = Literal["logged-in", "logged-out", "wrong-creds", "public"]
+VALID_AUTH_STATES: tuple[str, ...] = ("logged-in", "logged-out", "wrong-creds", "public")
 
 _log = get_logger(__name__)
 
@@ -53,6 +57,7 @@ class GeneratedCase(BaseModel):
     module: str = ""
     tags: list[str] = Field(default_factory=list)
     priority: str = "P1"
+    auth_state: AuthState = "logged-in"
     preconditions: list[str] = Field(default_factory=list)
     steps: list[GeneratedStep] = Field(default_factory=list)
     assertions: list[GeneratedAssertion] = Field(default_factory=list)
@@ -139,6 +144,7 @@ async def generate_cases_for_chapter(
             module=gc.module or chapter.title[:60],
             tags=gc.tags,
             priority=gc.priority if gc.priority in {"P0", "P1", "P2"} else "P1",
+            auth_state=gc.auth_state,
             preconditions=gc.preconditions,
             steps=[s.model_dump() for s in gc.steps],
             assertions=[a.model_dump() for a in gc.assertions],

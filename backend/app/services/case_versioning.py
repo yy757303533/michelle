@@ -47,45 +47,25 @@ class ChapterDecision:
 
 
 def _chapter_signature(c: Chapter | dict[str, Any]) -> str:
-    """generated_from = chapter:<level>:<normalized_title> (matches case_generator.py).
+    """generated_from = chapter:<level>:<normalized_title>.
 
-    `position` was previously part of the signature but caused orphaned cases
-    when chapters were reordered without content change: the diff would say
-    `moved` (skip_unchanged) yet the new signature wouldn't find the old cases
-    living under the previous position. Using only level + normalized_title
-    keeps the signature stable across reorderings."""
+    Stable across chapter reordering — `position` is intentionally NOT
+    part of the signature, otherwise a chapter that just moved would
+    orphan its cases."""
     if isinstance(c, dict):
         return f"chapter:{c['level']}:{c['normalized_title']}"
     return f"chapter:{c.level}:{c.normalized_title}"
 
 
-def _legacy_chapter_signature(c: Chapter | dict[str, Any]) -> str:
-    """The pre-fix signature format `chapter:<title>#<position>`. Kept here
-    purely so we can still find cases generated under the old format and
-    enforce the approved-never-overwritten invariant against historical data."""
-    if isinstance(c, dict):
-        return f"chapter:{c['normalized_title']}#{c['position']}"
-    return f"chapter:{c.normalized_title}#{c.position}"
-
-
 async def _cases_from_chapter(
-    session: AsyncSession,
-    project_id: str,
-    signature: str,
-    legacy_signature: str | None = None,
+    session: AsyncSession, project_id: str, signature: str
 ) -> list[TestCase]:
-    """Find cases by chapter signature, accepting BOTH the current and the
-    pre-fix legacy format so existing approved cases (generated before the
-    signature change) keep matching after upgrade."""
-    sigs = [signature]
-    if legacy_signature and legacy_signature != signature:
-        sigs.append(legacy_signature)
     rows = (
         (
             await session.execute(
                 select(TestCase)
                 .where(TestCase.project_id == project_id)
-                .where(TestCase.generated_from.in_(sigs))
+                .where(TestCase.generated_from == signature)
             )
         )
         .scalars()
@@ -125,10 +105,7 @@ async def plan_regeneration(
         for idx in indices:
             chap = new_chapters[idx]
             existing = await _cases_from_chapter(
-                session,
-                new_prd.project_id,
-                _chapter_signature(chap),
-                legacy_signature=_legacy_chapter_signature(chap),
+                session, new_prd.project_id, _chapter_signature(chap)
             )
             if any(c.review_status == "approved" for c in existing):
                 decisions.append(
@@ -180,10 +157,8 @@ async def plan_regeneration(
 
     for idx in indices:
         chap = new_chapters[idx]
-        sig = _chapter_signature(chap)
-        legacy_sig = _legacy_chapter_signature(chap)
         existing = await _cases_from_chapter(
-            session, new_prd.project_id, sig, legacy_signature=legacy_sig
+            session, new_prd.project_id, _chapter_signature(chap)
         )
 
         # Approved cases? leave alone regardless of diff status
@@ -261,10 +236,8 @@ async def mark_stale_for_removed_chapters(
 
     touched: list[str] = []
     for chap in removed_chapters:
-        sig = _chapter_signature(chap)
-        legacy_sig = _legacy_chapter_signature(chap)
         existing = await _cases_from_chapter(
-            session, new_prd.project_id, sig, legacy_signature=legacy_sig
+            session, new_prd.project_id, _chapter_signature(chap)
         )
         for c in existing:
             if c.review_status in {"approved", "stale"}:

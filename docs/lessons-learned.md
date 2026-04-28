@@ -29,7 +29,7 @@ errors. Worth it.
 ### Day 2 as a feasibility gate, not a sprint
 
 I spent Day 2 entirely on "does claude CLI + `@playwright/mcp` actually drive
-ZStack?" instead of building features. The win wasn't the working login —
+the demo?" instead of building features. The win wasn't the working login —
 it was the trace-parser and the gotchas (`--isolated`, `--verbose`,
 `ToolSearch` first turn, session-persistence) captured in
 `docs/day2-findings.md`. Day 6's Run Orchestrator was 250 lines of glue
@@ -142,7 +142,7 @@ version is cheapest on average" becomes one SQL query.
 ### `@playwright/mcp` works better than I expected
 
 I budgeted 2-3 days for fallback handling when ARIA didn't cover an element.
-On ZStack AIOS specifically, ARIA was good enough that I never wrote the
+On the demo Web app specifically, ARIA was good enough that I never wrote the
 fallback. The vision-LLM-as-execution-engine plan was over-engineered for
 this site. (It might still be needed for canvas-heavy UIs.)
 

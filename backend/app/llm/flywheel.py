@@ -1,17 +1,18 @@
-"""Flywheel client — premium upgrade channel.
+"""Flywheel-style multi-model proxy client.
 
-ZStack Flywheel network gateway, OpenAI-compatible at
-`https://flywheel.zstack.io/v1/chat/completions`. Models available include
-`anthropic/claude-opus-4.7`, `openai/gpt-5.4-pro`, `openai/gpt-5.4`, plus a
-catalog of others (`openai/gpt-4o`, `deepseek/deepseek-v3.2`, ...).
+Talks to any OpenAI-compatible (or Anthropic-native bare-name) proxy
+that fronts multiple upstream LLMs behind a single token, e.g. a
+self-hosted gateway exposing `anthropic/claude-opus-4.7`, `openai/gpt-5.4`,
+`openai/gpt-4o`, etc. The base URL + token come from `.env`
+(`FLYWHEEL_BASE_URL`, `FLYWHEEL_TOKEN`); leave the URL empty to disable.
 
-As of 2026-04-27 the user's Flywheel token is **quota-exhausted** (HTTP 402
-across all models). Code is in place so the moment quota resets, callers
-get free access to top-tier reasoning models with no other change.
+Two response shapes handled transparently:
+  - namespaced model (`anthropic/...`, `openai/...`) → OpenAI chat-completions shape
+  - bare model name (`claude-opus-4-7`, `gpt-5.5`)   → upstream's native shape
 
-Use cases (when quota recovers):
-  - Failure diagnosis on the hardest cases (Opus 4.7 reasoning)
-  - Prompt iteration A/B (compare Claude vs GPT-5.4 on the same case)
+Use cases:
+  - Failure diagnosis on the hardest cases (frontier reasoning)
+  - Prompt iteration A/B (compare different models on the same case)
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ class FlywheelClient(BaseChatClient):
 
         log = _log.bind(provider=self.name, prompt_version=prompt_version, model=self.model)
 
-        # Flywheel forwards two different request shapes depending on the
+        # The proxy forwards two different request shapes depending on the
         # model name we send:
         #
         #   namespaced (`anthropic/...`, `openai/...`)

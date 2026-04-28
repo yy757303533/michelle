@@ -12,13 +12,13 @@ and AI-written `coverage_notes` explaining why each bucket was filled or skipped
 Sample (full file at `docs/day4-dogfood-sample.json`):
 
 ```
-TC-20260427-0001 [P0] 使用确认账号 admin/password 成功登录 ZStack AIOS
+TC-20260427-0001 [P0] 使用确认账号 admin/password 成功登录 the demo Web app
   steps: 5 (open URL → type admin → type password → click 登录 → wait for dashboard)
   assertions: 3 (URL changed, user badge visible, post-login menu present)
 ```
 
 Notice the LLM correctly read `A3 Staging 目标` from the confirmed-items table,
-extracted the URL `http://172.25.17.105:5000/` and credentials `admin / password`,
+extracted the URL `http://localhost:5000/` and credentials `admin / password`,
 and produced an executable case anchored on those facts.
 
 ## Numbers
@@ -76,7 +76,7 @@ and produced an executable case anchored on those facts.
 ## What this unlocks for the demo
 
 - **Dogfood story**: "I fed Michelle's own PRD to Michelle and got 12 cases —
-  one of which was 'verify admin/password logs into ZStack', exactly what
+  one of which was 'verify admin/password logs into the demo target', exactly what
   I need to test the platform." This is a complete narrative loop.
 
 - **Real seed for Day 6**: when execution lands, we have 12 real cases waiting

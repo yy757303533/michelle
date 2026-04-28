@@ -1,10 +1,10 @@
-"""Day 2 smoke: drive ZStack login through Michelle's agent modules.
+"""Smoke: drive a login flow through Michelle's agent modules.
 
-Run from the repo root:
+Run from the repo root with credentials configured in `.env`:
 
     cd backend && uv run python ../scripts/day2_smoke.py
 
-Verifies the full Day 2 contract:
+Verifies the full execution contract:
 
     [Python orchestrator]
         ↓ spawn
@@ -12,7 +12,7 @@ Verifies the full Day 2 contract:
         ↓ MCP stdio
     [@playwright/mcp]
         ↓ Playwright API
-    [Chromium → ZStack AIOS]
+    [Chromium → target Web app from DEFAULT_TARGET_URL]
 
 Outputs:
     backend/artifacts/day2-smoke/

@@ -12,7 +12,7 @@
   "results": [
     {
       "case_id": "TC-20260427-0001",
-      "title": "使用确认账号 admin/password 成功登录 ZStack AIOS",
+      "title": "使用确认账号 admin/password 成功登录 the demo Web app",
       "module": "0. 已确认事项",
       "status": "pass",
       "error": "",

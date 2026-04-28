@@ -19,7 +19,8 @@ class Project(SQLModel, table=True):
     __tablename__ = "projects"
 
     project_id: str = Field(primary_key=True)
-    """Stable slug, e.g. 'michelle' or 'zstack-aios'."""
+    """Stable opaque id, e.g. 'p_abc123' (server-minted) or a slug like
+    'michelle' (legacy / hand-set)."""
 
     name: str
     base_url: str = ""

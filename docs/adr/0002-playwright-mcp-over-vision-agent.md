@@ -6,7 +6,7 @@
 
 The execution engine needs to drive a real browser and follow natural-language test steps.
 
-We initially planned a DIY agent: take screenshot → send screenshot + DOM elements list to a vision LLM (MiniMax-Text-01) → LLM picks element index → Playwright clicks. We benchmarked this and it works (3/3 intents on the ZStack login page).
+We initially planned a DIY agent: take screenshot → send screenshot + DOM elements list to a vision LLM (MiniMax-Text-01) → LLM picks element index → Playwright clicks. We benchmarked this and it works (3/3 intents on the the demo login page).
 
 But shortly after that, the user pointed at their own prior project `webtest-mcp-server`, which uses `@playwright/mcp` (Microsoft's official Playwright MCP) — ARIA-tree based, deterministic, no per-step LLM call.
 

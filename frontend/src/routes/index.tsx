@@ -71,7 +71,7 @@ function Dashboard() {
           )}
         </h1>
         <p className="text-slate-500 text-sm mt-1">
-          PRD → AI cases → review → autonomous run → AI diagnosis (Day 11) → sediment.
+          PRD → AI cases → review → autonomous run → AI diagnosis → sediment.
         </p>
       </div>
 

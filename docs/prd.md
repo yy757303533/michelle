@@ -16,7 +16,7 @@
 |---|------|-------|
 | A1 | 项目名 | **Michelle**(代号 + 正式名) |
 | A2 | 投入强度 | **全力投入,2 周交付 MVP** |
-| A3 | Staging 目标 | **已具备** —— ZStack AIOS at `http://172.25.17.105:5000/`,账号 admin/password,中文 SPA |
+| A3 | Staging 目标 | **已具备** —— the demo Web app at `http://localhost:5000/`,账号 admin/password,中文 SPA |
 | A4 | LLM 接入 | **Claude Max 订阅**(主),`api.minimax.chat` MiniMax 模型(备)。Flywheel 网关(Opus 4.7 / GPT-5.4-pro)配额恢复后作高端备份。无 API key 路径必需,但 MiniMax 作为 rate-limit fallback。 |
 | A5 | 前端框架 | **Vite + React 19 + TypeScript**(由 Next.js 改为 Vite,见 §16.1 决策记录) |
 | A6 | **执行引擎** | **`@playwright/mcp`**(微软官方 Playwright MCP,ARIA tree)由 Claude CLI 子进程驱动。**fork webtest-mcp-server 作为执行内核** —— 复用其 Excel schema、HTML 报告生成、`@playwright/mcp` 集成、`projects/<key>/` 多项目目录。Michelle 在其上加 Web UI、Review 工作流、SQLite 版本化、AI 诊断、可观测性、沉淀闭环。 |
@@ -401,7 +401,7 @@ human_feedback: null  # confirmed / wrong / partially_correct
                         │
                         ▼
                 ┌────────────────────┐
-                │   ZStack AIOS     │
+                │   the demo Web app     │
                 │  172.25.17.105:5000│
                 └────────────────────┘
 ```
@@ -441,7 +441,7 @@ human_feedback: null  # confirmed / wrong / partially_correct
 
 **选 `@playwright/mcp` 的核心理由**:14 天 MVP + 真实 demo 场景,**稳定性 > 故事炫技**。AI 算力集中在真正决策的两端 —— **生成**(创造性)和 **诊断**(深度推理),执行层确定性化。
 
-**抗 UI 变更**:ARIA tree 在 React + Ant Design 等主流框架上覆盖良好;ZStack AIOS 已实测可用。如局部 ARIA 缺失,可用 MiniMax-Text-01 视觉作为退路(architecture 已预留)。
+**抗 UI 变更**:ARIA tree 在 React + Ant Design 等主流框架上覆盖良好;the demo Web app 已实测可用。如局部 ARIA 缺失,可用 MiniMax-Text-01 视觉作为退路(architecture 已预留)。
 
 ### D1.5. 为什么 fork webtest-mcp-server 而非重写?
 
@@ -507,7 +507,7 @@ LLM Gateway 设计为 provider-agnostic,新增通道只需实现 `BaseChatClient
 | 用户对 AI 诊断不信任 | 中 | 显示推理过程 + 置信度 + 反馈入口,渐进建立信任 |
 | MVP 范围过大 2 周做不完 | 中 | 已严格砍到 6 个 P0 模块,任何 P1 推后 |
 | `@playwright/mcp` 升级破坏接口 | 低 | 钉版本(`@playwright/mcp@<sha>`)+ 抽象 ExecutorEngine 接口,必要时回滚版本或换 Midscene |
-| ZStack 页面 ARIA 标签不全 | 中 | 验证用 `browser_snapshot` 看 ARIA 树覆盖度;局部缺失时用 MiniMax 视觉作步骤级 fallback |
+| 目标页面 ARIA 标签不全 | 中 | 验证用 `browser_snapshot` 看 ARIA 树覆盖度;局部缺失时用 MiniMax 视觉作步骤级 fallback |
 | 截图/DOM 存储爆炸 | 低 | 默认保留 30 天,失败用例延长至 90 天,过期自动清理 |
 
 ---
@@ -519,7 +519,7 @@ LLM Gateway 设计为 provider-agnostic,新增通道只需实现 `BaseChatClient
 ```
 Week 1: 骨架 + 核心可行性 + 生成链路
   Day 1: 项目骨架 + make dev + ADR
-  Day 2: claude CLI + @playwright/mcp 登录 ZStack(可行性闸门)
+  Day 2: claude CLI + @playwright/mcp 登录 the demo target(可行性闸门)
   Day 3: LLM Gateway 三件套 + 可观测性
   Day 4: PRD 上传/diff/生成
   Day 5: Vendor webtest-mcp + SQLite + 报告生成
@@ -683,7 +683,7 @@ Week 2: 用户体验 + AI 诊断 + Demo
 | Claude Code CLI | `claude -p ... --output-format json [--mcp-config X]` | 主通道,所有正常路径 | P0 主 |
 | MiniMax-Text-01 | `https://api.minimax.chat/v1/text/chatcompletion_v2` | 备用,Claude rate-limit 时降级,视觉 fallback | P1 备 |
 | MiniMax-M2.7 | 同上 | reasoning 模型,可选用于诊断阶段升级 | P2 可选 |
-| Flywheel 网关 | `https://flywheel.zstack.io/v1/chat/completions` | 配额恢复后接入,Opus 4.7 / GPT-5.4-pro 用于诊断升级 | P3 升级 |
+| Flywheel 网关 | `https://your-proxy.example.com/v1/chat/completions` | 配额恢复后接入,Opus 4.7 / GPT-5.4-pro 用于诊断升级 | P3 升级 |
 | ~~Codex CLI~~ | ~~`codex exec`~~ | 不再使用 | - |
 
 #### 部署 / DX
@@ -1177,21 +1177,21 @@ Phase 2 当需要 MinIO / Postgres / Redis Queue 时再加 `docker-compose.yml`�
 | Day | 交付物 | 验收 |
 |-----|--------|------|
 | 1 | 项目骨架(`michelle/`) + uv/pnpm 依赖装好 + `make dev` 起前后端 + git init + ADR 0001-0004 落地 | 访问 :5173(Vite) + :8000(FastAPI) 都正常,`/healthz` 返回 200 |
-| 2 | **核心可行性验证**:claude CLI + `@playwright/mcp` 跑通 ZStack admin/password 登录 + 截图 + 输出步骤 trace | 手工跑一条 prompt,Claude 调 `@playwright/mcp` 工具登录成功,得到一份步骤 JSON |
+| 2 | **核心可行性验证**:claude CLI + `@playwright/mcp` 跑通 <demo creds> 登录 + 截图 + 输出步骤 trace | 手工跑一条 prompt,Claude 调 `@playwright/mcp` 工具登录成功,得到一份步骤 JSON |
 | 3 | LLM Gateway 三件套(claude_cli + minimax + gateway 路由 + 单测覆盖 fallback) + Event Catalog 定义 + structlog/Logfire 接通 | gateway 单测全过(包括 mock rate-limit 自动降级);Logfire 看到事件流 |
 | 4 | PRD 上传 + 章节切分 + 二次 diff + 用例生成 prompt v1 | 喂 Michelle 自己的 PRD,产出 ≥ 8 条 schema 合法 case(dogfooding 强故事) |
 | 5 | Vendor webtest-mcp 集成:loader / report HTML 复用,SQLite 模型 + Alembic 初始迁移 | 后端能从 SQLite 读用例,能生成累计 HTML 报告 |
 | 6 | Run Orchestrator:`claude_runner.py` 把 case 转 prompt → spawn claude → 解析 tool_use → 落 trace.jsonl | 一条 case 能从后端 API 触发,跑完得到 pass/fail 结果 |
 | 7 | 前端 5 页面骨架 + TanStack Query hooks + 与后端联调 | 端到端点点点能走完 P0 主链路 |
 | 8 | Review 工作流(pending/approved/rejected 状态机 + 用例版本 + 人工编辑保护) | 草稿用例可批量审核,改过的字段下次重生成不被覆盖 |
-| 9 | 真实跑 ZStack 场景 + 失败重试 + 错误分类(env/flaky/real_bug) | 跑 10+ 条 case,生成报告 |
+| 9 | 真实跑 目标场景 + 失败重试 + 错误分类(env/flaky/real_bug) | 跑 10+ 条 case,生成报告 |
 | 10 | Trace Viewer 页(失败回放,时间线 + 截图缩略图) | 任一失败 case 能看到每步截图 + Claude 的 tool_use 决策 |
 | 11 | **AI 诊断**(diagnoser.py + 反馈入口) + 沉淀模式库 schema + 黄金回归集 | 5 条历史失败诊断准确 ≥ 3 条;诊断 prompt 改版前后能在黄金集对比 |
 | 12 | Demo 视频(≤ 90s) + README(架构图 + 决策摘要) + ADR 完善 | 视频展示完整闭环;README 5 分钟内让面试官看懂 |
 | 13 | 面试话术 + Q&A 演练 + cleanup(dead code / 临时文件 / TODO) | 5 个核心问题各有 30s pitch |
 | 14 | Buffer | 修 demo 阶段发现的问题 |
 
-**关键变化**:Day 2 不再是"写自己的 vision agent",而是"验证 Claude + `@playwright/mcp` 能驱动 ZStack"——**风险更低、价值更高**(直接证明可行性)。
+**关键变化**:Day 2 不再是"写自己的 vision agent",而是"验证 Claude + `@playwright/mcp` 能驱动 the demo target"——**风险更低、价值更高**(直接证明可行性)。
 
 ---
 

@@ -34,7 +34,7 @@ buckets, with a written `coverage_notes` per chapter).
 
 Day-4 example: feeding Michelle's own PRD (1198 lines, 60 chapters) gave us
 12 schema-valid cases anchored on facts in the document — including the
-ZStack login URL and admin credentials lifted straight from the
+the demo login URL and admin credentials lifted straight from the
 "已确认事项" table.
 
 ## 3. Cases — review queue
