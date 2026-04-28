@@ -72,12 +72,22 @@ class FlywheelClient(BaseChatClient):
 
         log = _log.bind(provider=self.name, prompt_version=prompt_version, model=self.model)
 
-        # Flywheel speaks OpenAI-compatible chat completions. When the
-        # downstream model is multimodal (anthropic/claude-opus-4.7,
-        # openai/gpt-5.5-*, openai/gpt-4o, etc.) we relay images via
-        # the standard {type: image_url, image_url: {url: data:...;base64,...}}
-        # block. Models that don't accept images will simply ignore the block
-        # at the proxy / model level.
+        # Flywheel forwards two different request shapes depending on the
+        # model name we send:
+        #
+        #   namespaced (`anthropic/...`, `openai/...`)
+        #     → upstream is OpenAI-compatible; images are
+        #       {type: "image_url", image_url: {url: "data:...;base64,..."}}
+        #
+        #   bare (`claude-opus-4-7`, `gpt-5.5`, ...)
+        #     → upstream is the model's *native* API; for Anthropic models
+        #       images must be {type: "image", source: {type: "base64",
+        #       media_type: "image/png", data: "..."}}.
+        #
+        # Detection rule: a "/" in the model name means namespaced/OpenAI-compat;
+        # otherwise we send Anthropic-native image blocks (the bare names we've
+        # observed in the catalog are all Claude variants).
+        is_namespaced = "/" in self.model
         messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -85,20 +95,28 @@ class FlywheelClient(BaseChatClient):
             import base64
 
             b64 = base64.b64encode(image).decode("ascii")
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{b64}"
-                            },
+            if is_namespaced:
+                content_blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ]
+            else:
+                # Anthropic-native shape
+                content_blocks = [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": b64,
                         },
-                    ],
-                }
-            )
+                    },
+                ]
+            messages.append({"role": "user", "content": content_blocks})
         else:
             messages.append({"role": "user", "content": prompt})
 
@@ -109,7 +127,10 @@ class FlywheelClient(BaseChatClient):
         }
         if temperature is not None:
             body["temperature"] = temperature
-        if json_mode:
+        if json_mode and is_namespaced:
+            # `response_format: {type: "json_object"}` is OpenAI-only.
+            # Native Anthropic 400s on it. We rely on the prompt to ask
+            # for strict JSON in either case.
             body["response_format"] = {"type": "json_object"}
 
         timeout = timeout_seconds or 120
@@ -166,25 +187,55 @@ class FlywheelClient(BaseChatClient):
                 provider=self.name,
             )
 
-        choices = data.get("choices") or []
-        if not choices:
-            raise LLMResponseFormatError(
-                "Flywheel returned no choices", provider=self.name, detail=data
-            )
-        msg = choices[0].get("message") or {}
-        text = msg.get("content") or ""
-
+        # Flywheel forwards to whichever upstream backs the requested model.
+        # When the model is namespaced like `anthropic/...` it returns
+        # OpenAI-compatible {choices:[{message:{content:...}}]}.
+        # When the model is bare like `claude-opus-4-7` it returns the native
+        # Anthropic shape {content:[{type:"text", text:...}], stop_reason}.
+        # We handle both.
+        text = ""
+        finish_reason: str | None = None
         usage = data.get("usage") or {}
+        prompt_tokens = (
+            usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        )
+        completion_tokens = (
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        )
+
+        if "choices" in data and data["choices"]:
+            # OpenAI-compatible shape
+            choice = data["choices"][0]
+            msg = choice.get("message") or {}
+            text = msg.get("content") or ""
+            # Some upstreams (reasoning models like gpt-5.5) put output into
+            # reasoning tokens with empty content — surface that in metadata.
+            finish_reason = choice.get("finish_reason")
+        elif "content" in data and isinstance(data["content"], list):
+            # Anthropic-native shape: {content:[{type:"text", text:"..."}]}
+            blocks = data["content"]
+            text = "".join(
+                b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+            )
+            finish_reason = data.get("stop_reason")
+        else:
+            raise LLMResponseFormatError(
+                "Flywheel returned unrecognised response shape "
+                "(no `choices` and no `content` array)",
+                provider=self.name,
+                detail=data,
+            )
+
         result = LLMResult(
             text=text,
             model=data.get("model") or self.model,
             provider=self.name,
-            input_tokens=usage.get("prompt_tokens", 0) or 0,
-            output_tokens=usage.get("completion_tokens", 0) or 0,
+            input_tokens=int(prompt_tokens or 0),
+            output_tokens=int(completion_tokens or 0),
             latency_ms=latency,
             metadata={
                 "id": data.get("id"),
-                "finish_reason": choices[0].get("finish_reason"),
+                "finish_reason": finish_reason,
             },
         )
         log.info(

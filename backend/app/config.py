@@ -46,12 +46,20 @@ class Settings(BaseSettings):
     # ── LLM: Flywheel proxy (premium upgrade) ──
     flywheel_token: str = ""
     flywheel_base_url: str = "https://flywheel.zstack.io/v1/chat/completions"
-    flywheel_model_premium: str = "anthropic/claude-opus-4.7"
-    """Default model for the Flywheel proxy. Opus 4.7 wins informal vision A/B
-    against GPT-5.5 (less hallucination, catches more small UI details) so
-    it's the default for diagnosis-with-screenshot routing. When quota runs
-    out, the gateway falls through to MiniMax automatically. Override to
-    `openai/gpt-5.5-2026-04-23` or any model from `/v1/models` if you prefer."""
+    flywheel_model_premium: str = "claude-opus-4-7"
+    """Default model for the Flywheel proxy.
+
+    Two naming conventions exist on Flywheel:
+      - `anthropic/claude-opus-4.7` — OpenAI-compat response, but the `default`
+        token group has no quota for the namespaced route (HTTP 402 quote_exceeded)
+      - `claude-opus-4-7` — bare name, routes to a different distributor that
+        DOES have capacity. Returns native Anthropic shape, which our client
+        parses transparently.
+
+    Opus 4.7 wins informal vision A/B against GPT-5.5 (less hallucination,
+    catches more small UI details) so it's the default for diagnosis-with-
+    screenshot routing. When quota runs out, the gateway falls through to
+    MiniMax. Override via FLYWHEEL_MODEL_PREMIUM."""
 
     # ── LLM: Kimi / Moonshot (OpenAI-compatible) ──
     kimi_api_key: str = ""
