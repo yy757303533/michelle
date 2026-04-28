@@ -69,7 +69,10 @@ const TERMINAL = new Set(["passed", "failed", "flaky", "aborted"]);
 
 function RunDetailPage() {
   const { id } = Route.useParams();
-  const [lightbox, setLightbox] = useState<string | null>(null);
+  // Lightbox tracks an index into `allImages` rather than a raw URL so we
+  // can do arrow-key + button navigation between adjacent screenshots
+  // without closing and reopening the modal each time.
+  const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["run", id],
@@ -139,6 +142,60 @@ function RunDetailPage() {
       )
       .map((f) => ({ name: f.name, url: artifactUrl(id, f.name) }));
   }, [artifacts.data, id]);
+
+  /** Unified, ordered image list for the lightbox: step screenshots first
+   * (in step order), then "other" screenshots. Indexing into this list is
+   * what `lightboxIdx` refers to. Order matters because arrow-key
+   * navigation should feel like reading a sequence — not jumping around. */
+  const allImages = useMemo<Array<{ name: string; url: string }>>(() => {
+    if (!data) return [];
+    const out: Array<{ name: string; url: string }> = [];
+    for (const s of data.data.steps) {
+      const url = s.screenshot_after
+        ? artifactUrl(id, s.screenshot_after)
+        : screenshotByStep[s.step_index];
+      if (url) out.push({ name: `step-${s.step_index}`, url });
+    }
+    for (const o of otherImages) {
+      out.push(o);
+    }
+    return out;
+  }, [data, screenshotByStep, otherImages, id]);
+
+  const openImage = (url: string) => {
+    const idx = allImages.findIndex((im) => im.url === url);
+    setLightboxIdx(idx >= 0 ? idx : null);
+  };
+  const closeLightbox = () => setLightboxIdx(null);
+  const stepLightbox = (delta: number) => {
+    setLightboxIdx((prev) => {
+      if (prev == null || allImages.length === 0) return prev;
+      const next = prev + delta;
+      if (next < 0 || next >= allImages.length) return prev;
+      return next;
+    });
+  };
+
+  // Keyboard navigation: ← prev · → next · Esc close. Only attaches the
+  // listener while the lightbox is actually open so we don't intercept
+  // arrow keys for users scrolling the page.
+  useEffect(() => {
+    if (lightboxIdx == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeLightbox();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        stepLightbox(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        stepLightbox(1);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightboxIdx, allImages.length]);
 
   if (isLoading) return <div className="text-slate-400">loading…</div>;
   if (error)
@@ -237,7 +294,7 @@ function RunDetailPage() {
                     ? artifactUrl(id, s.screenshot_after)
                     : (screenshotByStep[s.step_index] ?? null)
                 }
-                onShowImage={(url) => setLightbox(url)}
+                onShowImage={openImage}
               />
             ))}
           </ol>
@@ -259,7 +316,7 @@ function RunDetailPage() {
             {otherImages.map((img) => (
               <button
                 key={img.name}
-                onClick={() => setLightbox(img.url)}
+                onClick={() => openImage(img.url)}
                 className="text-left"
               >
                 <img
@@ -276,18 +333,62 @@ function RunDetailPage() {
         </div>
       )}
 
-      {lightbox && (
-        <div
-          className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 cursor-zoom-out"
-          onClick={() => setLightbox(null)}
-        >
-          <img
-            src={lightbox}
-            alt="screenshot"
-            className="max-w-[92vw] max-h-[92vh] rounded shadow-2xl"
-          />
-        </div>
-      )}
+      {lightboxIdx != null && allImages[lightboxIdx] && (() => {
+        const cur = allImages[lightboxIdx];
+        const prevDisabled = lightboxIdx === 0;
+        const nextDisabled = lightboxIdx >= allImages.length - 1;
+        return (
+          <div
+            className="fixed inset-0 bg-black/85 flex flex-col items-center justify-center z-50"
+            onClick={closeLightbox}
+          >
+            {/* Stop the click-through-to-close on the image area + chrome
+                so users can interact with prev/next without dismissing. */}
+            <div
+              className="relative max-w-[94vw] max-h-[88vh] flex items-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => stepLightbox(-1)}
+                disabled={prevDisabled}
+                className="absolute left-[-3rem] top-1/2 -translate-y-1/2 text-white/80 hover:text-white text-4xl px-2 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="previous (←)"
+              >
+                ‹
+              </button>
+              <img
+                src={cur.url}
+                alt={cur.name}
+                className="max-w-[90vw] max-h-[80vh] rounded shadow-2xl object-contain"
+              />
+              <button
+                onClick={() => stepLightbox(1)}
+                disabled={nextDisabled}
+                className="absolute right-[-3rem] top-1/2 -translate-y-1/2 text-white/80 hover:text-white text-4xl px-2 disabled:opacity-30 disabled:cursor-not-allowed"
+                title="next (→)"
+              >
+                ›
+              </button>
+            </div>
+            <div
+              className="mt-3 flex items-center gap-4 text-white/80 text-xs"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <span className="font-mono">
+                {lightboxIdx + 1} / {allImages.length}
+              </span>
+              <span className="font-mono">{cur.name}</span>
+              <span className="text-white/50">←/→ navigate · Esc close</span>
+              <button
+                onClick={closeLightbox}
+                className="ml-2 px-2 py-0.5 rounded bg-white/10 hover:bg-white/20"
+              >
+                close
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
