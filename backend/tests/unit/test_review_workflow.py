@@ -367,3 +367,166 @@ async def test_mark_stale_no_prev_is_noop(session):
     session.add(new)
     await session.commit()
     assert await mark_stale_for_removed_chapters(session=session, new_prd=new, prev_prd=None) == []
+
+
+# ── DELETE /api/cases/{id} ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_pending_case(session, app_client):
+    session.add(_case("TC-DEL-1"))
+    await session.commit()
+
+    r = await app_client.delete("/api/cases/TC-DEL-1")
+    assert r.status_code == 204
+    rows = (await session.execute(select(TestCase))).scalars().all()
+    assert all(c.case_id != "TC-DEL-1" for c in rows)
+
+
+@pytest.mark.asyncio
+async def test_delete_approved_case_blocked(session, app_client):
+    session.add(_case("TC-APP", review_status="approved"))
+    await session.commit()
+
+    r = await app_client.delete("/api/cases/TC-APP")
+    assert r.status_code == 409
+    # Row still there
+    row = await session.get(TestCase, "TC-APP")
+    assert row is not None and row.review_status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_case_404(app_client):
+    r = await app_client.delete("/api/cases/TC-DOES-NOT-EXIST")
+    assert r.status_code == 404
+
+
+# ── POST /api/cases/bulk-delete ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_skips_approved_and_reports(session, app_client):
+    session.add(_case("TC-PEND-1"))
+    session.add(_case("TC-PEND-2"))
+    session.add(_case("TC-APP", review_status="approved"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/bulk-delete",
+        json={"case_ids": ["TC-PEND-1", "TC-PEND-2", "TC-APP", "TC-MISS"]},
+    )
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert sorted(data["deleted"]) == ["TC-PEND-1", "TC-PEND-2"]
+    assert data["skipped_approved"] == ["TC-APP"]
+    assert data["missing"] == ["TC-MISS"]
+    # Approved row survives
+    assert (await session.get(TestCase, "TC-APP")) is not None
+
+
+# ── POST /api/cases/ (manual create) ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_manual_create_lands_pending(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/",
+        json={
+            "project_id": "demo",
+            "name": "manual login",
+            "intent": "user logs in",
+            "priority": "P0",
+            "auth_state": "logged-out",
+            "steps": [{"intent": "open /login"}],
+        },
+    )
+    assert r.status_code == 201
+    data = r.json()["data"]
+    assert data["source"] == "manual"
+    assert data["review_status"] == "pending"
+    assert data["auth_state"] == "logged-out"
+    assert data["priority"] == "P0"
+
+
+@pytest.mark.asyncio
+async def test_manual_create_rejects_unknown_project(app_client):
+    r = await app_client.post(
+        "/api/cases/",
+        json={"project_id": "ghost", "name": "x"},
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_manual_create_rejects_invalid_auth_state(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    await session.commit()
+    r = await app_client.post(
+        "/api/cases/",
+        json={"project_id": "demo", "name": "x", "auth_state": "bogus"},
+    )
+    assert r.status_code == 422
+
+
+# ── auth_state column behaviour ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_auth_state_default_logged_in(session):
+    """Cases that don't specify auth_state get the secure default (logged-in)."""
+    session.add(_case("TC-DEFAULT"))
+    await session.commit()
+    row = await session.get(TestCase, "TC-DEFAULT")
+    assert row is not None
+    assert row.auth_state == "logged-in"
+
+
+@pytest.mark.asyncio
+async def test_patch_auth_state_round_trip(session, app_client):
+    session.add(_case("TC-AUTH", review_status="pending"))
+    await session.commit()
+
+    r = await app_client.patch(
+        "/api/cases/TC-AUTH", json={"auth_state": "wrong-creds"}
+    )
+    assert r.status_code == 200
+    await session.refresh(await session.get(TestCase, "TC-AUTH"))
+    row = await session.get(TestCase, "TC-AUTH")
+    assert row is not None
+    assert row.auth_state == "wrong-creds"
+    assert "auth_state" in row.manual_edited_fields
+
+
+# ── Bulk run preflight (POST /api/runs/) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bulk_run_creates_one_run_per_case_id(session, app_client, monkeypatch):
+    """POST /api/runs/ with N case_ids spawns N Run rows. Background
+    `kick_off` is monkeypatched to a no-op so the test doesn't actually
+    start Chromium."""
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(_case("TC-A", review_status="approved"))
+    session.add(_case("TC-B", review_status="approved"))
+    await session.commit()
+
+    # Stub out background runner so HTTP returns immediately
+    from app.api import runs as runs_api
+
+    monkeypatch.setattr(runs_api, "kick_off", lambda **kw: None)
+
+    r = await app_client.post(
+        "/api/runs/", json={"case_ids": ["TC-A", "TC-B"], "env": "default"}
+    )
+    assert r.status_code == 200
+    run_ids = r.json()["data"]["run_ids"]
+    assert len(run_ids) == 2
+
+    from app.models import Run
+
+    rows = (await session.execute(select(Run))).scalars().all()
+    assert {r.case_id for r in rows} == {"TC-A", "TC-B"}
+    assert all(r.status == "pending" for r in rows)

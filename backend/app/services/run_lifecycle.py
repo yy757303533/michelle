@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 
 from sqlmodel import select
 
-from app.db import async_session_maker
+from app import db as _db
 from app.models import Run
 from app.obs import get_logger
 
@@ -46,7 +46,7 @@ async def heal_stale_runs(*, reason: str) -> int:
     `reason` is appended to a stable prefix so the error_message column
     can be grepped/filtered later (e.g. to distinguish startup heals from
     real failures the heuristic classifier sees)."""
-    async with async_session_maker() as session:
+    async with _db.async_session_maker() as session:
         rows = (
             (await session.execute(select(Run).where(Run.status.in_(_STALE_STATUSES))))
             .scalars()

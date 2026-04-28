@@ -23,8 +23,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import db as _db
 from app.config import settings
-from app.db import async_session_maker
 from app.models import RuntimeSetting
 
 
@@ -94,7 +94,7 @@ async def get_max_concurrent_runs(session: AsyncSession | None = None) -> int:
     transaction; otherwise opens its own."""
     if session is not None:
         return int(await _read_raw(session, "max_concurrent_runs"))
-    async with async_session_maker() as s:
+    async with _db.async_session_maker() as s:
         return int(await _read_raw(s, "max_concurrent_runs"))
 
 
@@ -102,7 +102,7 @@ async def get_headless(session: AsyncSession | None = None) -> bool:
     """Whether new browser sessions should run without a visible window."""
     if session is not None:
         return bool(await _read_raw(session, "headless"))
-    async with async_session_maker() as s:
+    async with _db.async_session_maker() as s:
         return bool(await _read_raw(s, "headless"))
 
 

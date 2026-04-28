@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from app.db import async_session_maker
+from app import db as _db
 from app.models import PRD, PRDGenerationJob, Project
 from app.obs import get_logger
 from app.services.case_generator import generate_cases_for_chapter
@@ -40,7 +40,7 @@ async def create_job(
     """Insert a `pending` job row, return its id. The caller schedules
     `run_job(job_id)` as an asyncio task once the row is committed."""
     job_id = "gen_" + uuid4().hex[:12]
-    async with async_session_maker() as session:
+    async with _db.async_session_maker() as session:
         job = PRDGenerationJob(
             job_id=job_id,
             prd_id=prd_id,
@@ -79,7 +79,7 @@ async def run_job(job_id: str) -> None:
     `run_lifecycle.heal_stale_runs` for the pattern); jobs left in
     running across a restart are marked failed with reason."""
     log = _log.bind(job_id=job_id)
-    async with async_session_maker() as session:
+    async with _db.async_session_maker() as session:
         job = await session.get(PRDGenerationJob, job_id)
         if job is None:
             log.error("prd.generation.job_missing")
