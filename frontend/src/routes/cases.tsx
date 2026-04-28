@@ -94,6 +94,38 @@ function CasesPage() {
     },
   });
 
+  const bulkDelete = useMutation({
+    mutationFn: async (
+      ids: string[],
+    ): Promise<{
+      data: { deleted: string[]; skipped_approved: string[]; missing: string[] };
+    }> => {
+      const r = await fetch("/api/cases/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_ids: ids }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      const skipped = resp.data.skipped_approved.length;
+      // Tell the user when approved cases were spared so they don't think
+      // the action lied. The deleted count is already obvious from the
+      // shrunken list.
+      if (skipped > 0) {
+        window.alert(
+          `Deleted ${resp.data.deleted.length} cases. ` +
+            `${skipped} approved case${skipped > 1 ? "s were" : " was"} skipped — ` +
+            `reject ${skipped > 1 ? "them" : "it"} first if you really want ${skipped > 1 ? "them" : "it"} removed.`,
+        );
+      }
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases-summary"] });
+    },
+  });
+
   const editMut = useMutation({
     mutationFn: async ({ id, patch }: { id: string; patch: Partial<CaseRow> }) => {
       const r = await fetch(`/api/cases/${id}`, {
@@ -255,18 +287,37 @@ function CasesPage() {
         <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
           <span>{selected.size} selected</span>
           <button
-            disabled={bulk.isPending}
+            disabled={bulk.isPending || bulkDelete.isPending}
             onClick={() => bulk.mutate("approve")}
             className="bg-emerald-600 px-3 py-0.5 rounded hover:bg-emerald-500 disabled:opacity-50"
           >
             ✓ Approve
           </button>
           <button
-            disabled={bulk.isPending}
+            disabled={bulk.isPending || bulkDelete.isPending}
             onClick={() => bulk.mutate("reject")}
             className="bg-red-600 px-3 py-0.5 rounded hover:bg-red-500 disabled:opacity-50"
           >
             ✗ Reject
+          </button>
+          <button
+            disabled={bulk.isPending || bulkDelete.isPending}
+            onClick={() => {
+              const ids = [...selected];
+              if (
+                window.confirm(
+                  `Delete ${ids.length} selected case${ids.length > 1 ? "s" : ""}?\n\n` +
+                    `Approved cases will be skipped — reject them first if you want them gone too.\n` +
+                    `This cannot be undone.`,
+                )
+              ) {
+                bulkDelete.mutate(ids);
+              }
+            }}
+            className="bg-slate-700 hover:bg-slate-600 px-3 py-0.5 rounded disabled:opacity-50"
+            title="approved cases will be skipped"
+          >
+            🗑 Delete
           </button>
           <button
             onClick={() => setSelected(new Set())}

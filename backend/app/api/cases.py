@@ -77,6 +77,10 @@ class BulkReview(BaseModel):
     action: ReviewVerb
 
 
+class BulkDelete(BaseModel):
+    case_ids: list[str] = Field(min_length=1, max_length=500)
+
+
 @router.get("/")
 async def list_cases(
     status: Literal["pending", "approved", "rejected", "stale"] | None = None,
@@ -233,6 +237,46 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
             ],
             "missing": missing,
             "target_state": target,
+        }
+    }
+
+
+@router.post("/bulk-delete")
+async def bulk_delete(
+    body: BulkDelete, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Delete many cases in one transaction. Approved cases are skipped
+    (same guard as DELETE /<id>) and surfaced in the response so the UI
+    can tell the user "we deleted N, kept M approved ones — reject those
+    first if you want them gone too" rather than silently no-op."""
+    rows = (
+        (await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids))))
+        .scalars()
+        .all()
+    )
+    found_ids = {r.case_id for r in rows}
+    missing = [cid for cid in body.case_ids if cid not in found_ids]
+
+    deleted: list[str] = []
+    skipped_approved: list[str] = []
+    for r in rows:
+        if r.review_status == "approved":
+            skipped_approved.append(r.case_id)
+            continue
+        await session.delete(r)
+        deleted.append(r.case_id)
+    await session.commit()
+    log.info(
+        "case.bulk_deleted",
+        deleted_count=len(deleted),
+        skipped_approved_count=len(skipped_approved),
+        missing_count=len(missing),
+    )
+    return {
+        "data": {
+            "deleted": deleted,
+            "skipped_approved": skipped_approved,
+            "missing": missing,
         }
     }
 
