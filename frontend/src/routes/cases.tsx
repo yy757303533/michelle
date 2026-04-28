@@ -50,6 +50,7 @@ function CasesPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [creating, setCreating] = useState(false);
 
   const cases = useQuery({
     // Re-key on project so swapping the global selector re-fetches.
@@ -106,6 +107,34 @@ function CasesPage() {
     onSuccess: () => {
       setEditing(null);
       qc.invalidateQueries({ queryKey: ["cases"] });
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: async (id: string) => {
+      const r = await fetch(`/api/cases/${id}`, { method: "DELETE" });
+      if (!r.ok && r.status !== 204) {
+        // 409 = approved-protection guard from backend; surface verbatim.
+        throw new Error(await r.text());
+      }
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cases"] }),
+  });
+
+  const createMut = useMutation({
+    mutationFn: async (body: NewCaseDraft): Promise<{ data: CaseRow }> => {
+      const r = await fetch("/api/cases/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, project_id: projectId }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      setCreating(false);
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases-summary"] });
     },
   });
 
@@ -174,11 +203,11 @@ function CasesPage() {
         </p>
       </div>
 
-      {/* Filter pills */}
+      {/* Filter pills + new case */}
       <div className="flex items-center gap-2">
         {STATUS_FILTERS.map((f) => {
           const n = f.key
-            ? counts[f.key] ?? 0
+            ? (counts[f.key] ?? 0)
             : Object.values(counts).reduce((a, b) => a + b, 0);
           const active = filter === f.key;
           return (
@@ -202,7 +231,24 @@ function CasesPage() {
             </button>
           );
         })}
+        <div className="ml-auto">
+          <button
+            onClick={() => setCreating((v) => !v)}
+            className="text-sm px-3 py-1 rounded bg-blue-700 text-white hover:bg-blue-800"
+          >
+            {creating ? "× cancel" : "+ new case"}
+          </button>
+        </div>
       </div>
+
+      {creating && (
+        <NewCaseFormPanel
+          busy={createMut.isPending}
+          error={createMut.error as Error | null}
+          onSubmit={(draft) => createMut.mutate(draft)}
+          onCancel={() => setCreating(false)}
+        />
+      )}
 
       {/* Bulk action bar */}
       {selected.size > 0 && (
@@ -278,16 +324,183 @@ function CasesPage() {
                   onSubmitEdit={(patch) =>
                     editMut.mutate({ id: c.case_id, patch })
                   }
+                  onDelete={() => {
+                    if (window.confirm(`Delete ${c.case_id}? This cannot be undone.`)) {
+                      deleteMut.mutate(c.case_id);
+                    }
+                  }}
                   busy={review.isPending && review.variables?.id === c.case_id}
                   runBusy={runMut.isPending && runMut.variables === c.case_id}
                   editBusy={editMut.isPending && editMut.variables?.id === c.case_id}
+                  deleteBusy={deleteMut.isPending && deleteMut.variables === c.case_id}
                 />
               ))}
             </tbody>
           </table>
         )}
+        {deleteMut.error && (
+          <div className="text-xs text-red-600 px-3 py-2 border-t border-red-100 bg-red-50">
+            delete error: {(deleteMut.error as Error).message}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+interface NewCaseDraft {
+  name: string;
+  intent: string;
+  module: string;
+  priority: "P0" | "P1" | "P2";
+  steps: Array<{ intent: string; expected?: string }>;
+  assertions: Array<{ description: string }>;
+  preconditions: string[];
+  tags: string[];
+}
+
+/** Inline panel for hand-authoring a case. Same `intent | expected` line
+ * format as the row-level edit form so users only learn one mini-DSL. */
+function NewCaseFormPanel({
+  busy,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  busy: boolean;
+  error: Error | null;
+  onSubmit: (d: NewCaseDraft) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [intent, setIntent] = useState("");
+  const [module, setModule] = useState("");
+  const [priority, setPriority] = useState<"P0" | "P1" | "P2">("P1");
+  const [stepsRaw, setStepsRaw] = useState("");
+  const [assertionsRaw, setAssertionsRaw] = useState("");
+
+  const submit = () => {
+    if (!name.trim()) return;
+    const steps = stepsRaw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const idx = line.indexOf("|");
+        if (idx === -1) return { intent: line.trim() };
+        const i = line.slice(0, idx).trim();
+        const e = line.slice(idx + 1).trim();
+        return e ? { intent: i, expected: e } : { intent: i };
+      });
+    const assertions = assertionsRaw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((d) => ({ description: d }));
+    onSubmit({
+      name: name.trim(),
+      intent: intent.trim(),
+      module: module.trim(),
+      priority,
+      steps,
+      assertions,
+      preconditions: [],
+      tags: [],
+    });
+  };
+
+  const required = name.trim().length > 0;
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded p-4 space-y-3">
+      <div className="text-xs uppercase tracking-wide text-amber-700">
+        new case · lands in pending so it still goes through review
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <Field label="name *">
+          <input
+            autoFocus
+            className="border border-slate-200 rounded px-2 py-1 w-full"
+            placeholder="user can log in with valid credentials"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        <Field label="priority">
+          <select
+            className="border border-slate-200 rounded px-2 py-1 w-full"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value as "P0" | "P1" | "P2")}
+          >
+            <option>P0</option>
+            <option>P1</option>
+            <option>P2</option>
+          </select>
+        </Field>
+        <Field label="module">
+          <input
+            className="border border-slate-200 rounded px-2 py-1 w-full"
+            placeholder="auth"
+            value={module}
+            onChange={(e) => setModule(e.target.value)}
+          />
+        </Field>
+        <Field label="intent (one-liner)">
+          <input
+            className="border border-slate-200 rounded px-2 py-1 w-full"
+            placeholder="verify login redirects to dashboard"
+            value={intent}
+            onChange={(e) => setIntent(e.target.value)}
+          />
+        </Field>
+        <Field label="steps (one per line: `intent | expected`)" full>
+          <textarea
+            className="border border-slate-200 rounded p-2 w-full font-mono text-xs"
+            rows={4}
+            placeholder={`open /login | login form visible\ntype "admin" into username\nclick submit | redirected to /home`}
+            value={stepsRaw}
+            onChange={(e) => setStepsRaw(e.target.value)}
+          />
+        </Field>
+        <Field label="assertions (one per line)" full>
+          <textarea
+            className="border border-slate-200 rounded p-2 w-full font-mono text-xs"
+            rows={2}
+            placeholder={`URL contains /home\nuser badge is visible`}
+            value={assertionsRaw}
+            onChange={(e) => setAssertionsRaw(e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          disabled={!required || busy}
+          onClick={submit}
+          className="bg-slate-900 text-white text-sm px-3 py-1 rounded hover:bg-slate-700 disabled:opacity-50"
+        >
+          {busy ? "creating…" : "Create"}
+        </button>
+        <button onClick={onCancel} className="text-sm text-slate-600 hover:text-slate-900 px-2">
+          Cancel
+        </button>
+        {error && (
+          <span className="text-red-600 text-xs ml-2">{error.message}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DeleteBtn({ busy, onDelete }: { busy: boolean; onDelete: () => void }) {
+  return (
+    <button
+      disabled={busy}
+      onClick={onDelete}
+      className="text-xs px-2 py-0.5 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+      title="delete this case"
+    >
+      🗑
+    </button>
   );
 }
 
@@ -304,9 +517,11 @@ function CaseRowView({
   onEdit,
   onCancelEdit,
   onSubmitEdit,
+  onDelete,
   busy,
   runBusy,
   editBusy,
+  deleteBusy,
 }: {
   c: CaseRow;
   expanded: boolean;
@@ -320,9 +535,11 @@ function CaseRowView({
   onEdit: () => void;
   onCancelEdit: () => void;
   onSubmitEdit: (patch: Partial<CaseRow>) => void;
+  onDelete: () => void;
   busy: boolean;
   runBusy: boolean;
   editBusy: boolean;
+  deleteBusy: boolean;
 }) {
   return (
     <>
@@ -369,7 +586,7 @@ function CaseRowView({
             </span>
           )}
         </td>
-        <td className="p-2" onClick={(e) => e.stopPropagation()}>
+        <td className="p-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
           {c.review_status === "pending" || c.review_status === "stale" ? (
             <>
               <button
@@ -387,7 +604,7 @@ function CaseRowView({
                 reject
               </button>
               <button
-                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 mr-1"
                 onClick={() => {
                   if (!expanded) onToggle();
                   onEdit();
@@ -395,6 +612,7 @@ function CaseRowView({
               >
                 edit
               </button>
+              <DeleteBtn busy={deleteBusy} onDelete={onDelete} />
             </>
           ) : c.review_status === "approved" ? (
             <>
@@ -415,9 +633,26 @@ function CaseRowView({
               >
                 edit
               </button>
+              {/* No delete on approved — user must reject first. The
+                  contract is that approved == human-confirmed, and one
+                  click shouldn't be able to drop that signal. */}
+            </>
+          ) : c.review_status === "rejected" ? (
+            <>
+              <button
+                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 mr-1"
+                onClick={() => {
+                  if (!expanded) onToggle();
+                  onEdit();
+                }}
+                title="edit re-opens the case as pending"
+              >
+                edit
+              </button>
+              <DeleteBtn busy={deleteBusy} onDelete={onDelete} />
             </>
           ) : (
-            <span className="text-xs text-slate-400">—</span>
+            <DeleteBtn busy={deleteBusy} onDelete={onDelete} />
           )}
         </td>
       </tr>

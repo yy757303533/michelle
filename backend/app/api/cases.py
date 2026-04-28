@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
 from app.db import get_session
-from app.models import TestCase
+from app.models import Project, TestCase
 from app.obs import EVENTS, get_logger
+from app.services.case_generator import _mint_case_id, _next_seq
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -56,6 +57,21 @@ class CaseEdit(BaseModel):
     assertions: list[dict[str, Any]] | None = None
 
 
+class CaseCreate(BaseModel):
+    """Manually-authored test case. Goes straight to `pending` review so a
+    human still confirms it before the platform runs it."""
+
+    project_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    intent: str = ""
+    module: str = ""
+    tags: list[str] = Field(default_factory=list)
+    priority: Literal["P0", "P1", "P2"] = "P1"
+    preconditions: list[str] = Field(default_factory=list)
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+    assertions: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class BulkReview(BaseModel):
     case_ids: list[str] = Field(min_length=1)
     action: ReviewVerb
@@ -86,6 +102,63 @@ async def list_cases(
         "count": len(rows),
         "counts_by_status": counts,
     }
+
+
+@router.post("/", status_code=201)
+async def create_case(
+    body: CaseCreate,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Hand-author a case. Lands in `pending` so it still goes through the
+    same review gate AI-generated cases do."""
+    proj = await session.get(Project, body.project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail=f"project {body.project_id} not found")
+
+    seq = await _next_seq(session, body.project_id)
+    case_id = _mint_case_id(seq)
+    row = TestCase(
+        case_id=case_id,
+        project_id=body.project_id,
+        name=body.name[:200],
+        intent=body.intent[:1000],
+        module=body.module[:60],
+        tags=body.tags,
+        priority=body.priority,
+        preconditions=body.preconditions,
+        steps=body.steps,
+        assertions=body.assertions,
+        source="manual",
+        prompt_version="manual",
+        model_version="manual",
+        generated_from=None,
+        review_status="pending",
+        version=1,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    log.info("case.created.manual", case_id=case_id, project_id=body.project_id)
+    return {"data": row.model_dump()}
+
+
+@router.delete("/{case_id}", status_code=204)
+async def delete_case(case_id: str, session: AsyncSession = Depends(get_session)) -> None:
+    """Hard-delete a case. Approved cases are protected — the contract is
+    that approved == human-confirmed, and one accidental click shouldn't
+    erase that signal. Reject the case first if you really need it gone."""
+    row = await session.get(TestCase, case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    if row.review_status == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="approved cases cannot be deleted; reject it first if you really mean to remove",
+        )
+    prior = row.review_status
+    await session.delete(row)
+    await session.commit()
+    log.info("case.deleted", case_id=case_id, prior_status=prior)
 
 
 @router.get("/{case_id}")
