@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
+
+from app.models._types import TZDateTime
 
 
 def _utcnow() -> datetime:
@@ -29,6 +32,11 @@ class Diagnosis(SQLModel, table=True):
     # Human feedback (key for sediment loop)
     human_feedback: str | None = None  # confirmed | wrong | partially_correct
     feedback_note: str = ""
-    feedback_at: datetime | None = None
+    feedback_at: datetime | None = Field(
+        default=None, sa_column=Column(TZDateTime(), nullable=True)
+    )
 
-    created_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

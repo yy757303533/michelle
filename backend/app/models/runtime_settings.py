@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import Column
 from sqlmodel import Field, SQLModel
+
+from app.models._types import TZDateTime
 
 
 def _utcnow() -> datetime:
@@ -24,4 +27,7 @@ class RuntimeSetting(SQLModel, table=True):
 
     key: str = Field(primary_key=True, max_length=100)
     value: str
-    updated_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

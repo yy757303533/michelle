@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.models._types import TZDateTime
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -25,9 +27,17 @@ class Pattern(SQLModel, table=True):
 
     suggested_action: str = ""
     hit_count: int = 0
-    last_hit_at: datetime | None = None
+    last_hit_at: datetime | None = Field(
+        default=None, sa_column=Column(TZDateTime(), nullable=True)
+    )
 
     confirmed_by_diag_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

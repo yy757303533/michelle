@@ -12,6 +12,8 @@ from typing import Any
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.models._types import TZDateTime
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -48,5 +50,11 @@ class TestCase(SQLModel, table=True):
     version: int = 1
     prev_version_id: str | None = None
 
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

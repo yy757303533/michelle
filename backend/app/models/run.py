@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.models._types import TZDateTime
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -24,8 +26,12 @@ class Run(SQLModel, table=True):
     env: str = "default"
 
     status: str = "pending"  # pending | running | passed | failed | flaky | aborted
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
+    started_at: datetime | None = Field(
+        default=None, sa_column=Column(TZDateTime(), nullable=True)
+    )
+    ended_at: datetime | None = Field(
+        default=None, sa_column=Column(TZDateTime(), nullable=True)
+    )
     duration_ms: int | None = None
 
     # Aggregated artifact paths (resolved relative to artifacts root)
@@ -38,7 +44,10 @@ class Run(SQLModel, table=True):
     output_tokens: int = 0
 
     error_message: str | None = None
-    created_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
 
 
 class StepEvent(SQLModel, table=True):
@@ -63,4 +72,7 @@ class StepEvent(SQLModel, table=True):
     latency_ms: int | None = None
     error_message: str | None = None
 
-    occurred_at: datetime = Field(default_factory=_utcnow)
+    occurred_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

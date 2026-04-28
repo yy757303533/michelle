@@ -8,6 +8,8 @@ from typing import Any
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
+from app.models._types import TZDateTime
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -27,8 +29,14 @@ class Project(SQLModel, table=True):
     default_username: str = ""
     default_password: str = ""
 
-    created_at: datetime = Field(default_factory=_utcnow)
-    updated_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
 
 
 class PRD(SQLModel, table=True):
@@ -51,4 +59,7 @@ class PRD(SQLModel, table=True):
     prev_version_id: str | None = None
     """Chain of versions; latest is canonical."""
 
-    uploaded_at: datetime = Field(default_factory=_utcnow)
+    uploaded_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
