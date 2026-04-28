@@ -69,21 +69,38 @@ class FlywheelClient(BaseChatClient):
             raise LLMAuthError(
                 "Flywheel token is empty (set FLYWHEEL_TOKEN)", provider=self.name
             )
-        if image:
-            # Flywheel proxies OpenAI-compatible chat completion; vision input
-            # depends on which downstream model is selected. We don't currently
-            # support image input here; route image-bearing calls to MiniMax.
-            raise LLMResponseFormatError(
-                "Flywheel client does not handle image input in MVP; route to MiniMax",
-                provider=self.name,
-            )
 
         log = _log.bind(provider=self.name, prompt_version=prompt_version, model=self.model)
 
+        # Flywheel speaks OpenAI-compatible chat completions. When the
+        # downstream model is multimodal (anthropic/claude-opus-4.7,
+        # openai/gpt-5.5-*, openai/gpt-4o, etc.) we relay images via
+        # the standard {type: image_url, image_url: {url: data:...;base64,...}}
+        # block. Models that don't accept images will simply ignore the block
+        # at the proxy / model level.
         messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        if image:
+            import base64
+
+            b64 = base64.b64encode(image).decode("ascii")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64}"
+                            },
+                        },
+                    ],
+                }
+            )
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         body: dict[str, Any] = {
             "model": self.model,

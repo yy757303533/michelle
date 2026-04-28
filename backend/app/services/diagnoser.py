@@ -107,21 +107,31 @@ async def diagnose_run(
     )
     gw = get_gateway()
 
-    # Provider routing:
-    #  - With an image → prefer a vision-capable HTTP provider (minimax / kimi / gemini /
-    #    qwen / glm). Claude CLI in subscription/`-p` mode can't accept images
-    #    without CLAUDE_CODE_SESSION_ACCESS_TOKEN, which we don't ship.
-    #  - Without an image → use whatever the caller asked for, default routing.
+    # Provider routing for diagnosis:
+    #
+    # If we have a screenshot, prefer the strongest vision model available.
+    # Empirically (informal A/B): claude-opus-4.7 > GPT-5.5 > MiniMax-Text-01
+    # on UI screenshot reasoning — opus catches small details (text in
+    # screenshots, layout cues) that the others miss and hallucinates less.
+    #
+    # We can't route to local `claude-cli` because subscription `-p` mode
+    # rejects --image without CLAUDE_CODE_SESSION_ACCESS_TOKEN. So instead
+    # we route to Flywheel using anthropic/claude-opus-4.7 — same model,
+    # via API, gateway-billed.
+    #
+    # Order:
+    #   1. flywheel  — Opus 4.7 (or whatever FLYWHEEL_MODEL_PREMIUM is) ← preferred
+    #   2. minimax   — fast & cheap, native multimodal
+    #   3. kimi / gemini / qwen / glm — OpenAI-compat multimodal channels
     chosen_prefer = prefer_provider
     skip_for_image: list[str] = []
     if image_bytes and chosen_prefer is None:
-        for cand in ("minimax", "kimi", "gemini", "qwen", "glm"):
+        for cand in ("flywheel", "minimax", "kimi", "gemini", "qwen", "glm"):
             if gw.get(cand) is not None:
                 chosen_prefer = cand
                 break
     if image_bytes:
-        # Even if user picked claude-cli explicitly, we can't send the image
-        # there. Strip it gracefully and skip claude-cli.
+        # claude-cli / codex-cli can't relay images in -p mode; skip them.
         skip_for_image = ["claude-cli", "codex-cli"]
         if chosen_prefer in skip_for_image:
             chosen_prefer = None
