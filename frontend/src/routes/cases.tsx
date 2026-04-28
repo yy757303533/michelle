@@ -416,61 +416,84 @@ function CasesPage() {
 
       {/* Bulk action bar */}
       {selected.size > 0 && (() => {
-        // Each verb only makes sense for some review_statuses, so we count
-        // the actionable subset up front and show it on the button. Without
-        // this, "200 selected · ▶ Run (7)" looks like a bug — the user can't
-        // tell that approve/reject would also no-op on most of the 200.
+        // The selection partitions cleanly into review_status buckets
+        // (pending+stale | approved | rejected). We show that partition on
+        // the top line — those four numbers DO sum to `selected.size`.
+        // The action buttons below show their target-set cardinality, which
+        // can overlap (Approve and Reject both target pending; Run is a
+        // subset of Revert), so they intentionally don't sum to anything.
         const selectedRows = visible.filter((c) => selected.has(c.case_id));
-        const approvedSelected = selectedRows.filter((c) => c.review_status === "approved");
-        const pendingSelected = selectedRows.filter(
-          (c) => c.review_status === "pending" || c.review_status === "stale",
-        );
-        const reviewedSelected = selectedRows.filter(
-          (c) => c.review_status === "approved" || c.review_status === "rejected",
-        );
-        const nonApprovedCount = selected.size - approvedSelected.length;
+        const pendingCount = selectedRows.filter((c) => c.review_status === "pending").length;
+        const staleCount = selectedRows.filter((c) => c.review_status === "stale").length;
+        const approvedCount = selectedRows.filter((c) => c.review_status === "approved").length;
+        const rejectedCount = selectedRows.filter((c) => c.review_status === "rejected").length;
+        const reviewableCount = pendingCount + staleCount;          // approve/reject target
+        const reviewedCount = approvedCount + rejectedCount;        // revert target
+        const deletableCount = selected.size - approvedCount;       // delete target (approved are protected)
         return (
-        <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
-          <span>{selected.size} selected</span>
+        <div className="bg-slate-900 text-white rounded px-3 py-2 text-sm space-y-1">
+          {/* Top row: explicit partition that sums to `selected.size` */}
+          <div className="flex items-center gap-3 text-slate-300">
+            <span className="text-white font-medium">{selected.size} selected</span>
+            <span className="text-slate-500">=</span>
+            {pendingCount > 0 && <span>{pendingCount} pending</span>}
+            {staleCount > 0 && <span>+ {staleCount} stale</span>}
+            {approvedCount > 0 && (
+              <span>{pendingCount + staleCount > 0 ? "+ " : ""}{approvedCount} approved</span>
+            )}
+            {rejectedCount > 0 && (
+              <span>{pendingCount + staleCount + approvedCount > 0 ? "+ " : ""}{rejectedCount} rejected</span>
+            )}
+            <button
+              onClick={() => setSelected(new Set())}
+              className="text-slate-400 hover:text-white ml-auto"
+            >
+              clear
+            </button>
+          </div>
+
+          {/* Bottom row: actions. Each number is the cardinality of THAT
+              button's target set; numbers may overlap across buttons. */}
+          <div className="flex items-center gap-3">
           <button
             disabled={
-              pendingSelected.length === 0 ||
+              reviewableCount === 0 ||
               bulk.isPending || bulkDelete.isPending || bulkRun.isPending
             }
             onClick={() => bulk.mutate("approve")}
             className="bg-emerald-600 px-3 py-0.5 rounded hover:bg-emerald-500 disabled:opacity-50"
             title={
-              pendingSelected.length === 0
+              reviewableCount === 0
                 ? "no pending/stale cases in selection"
-                : `${pendingSelected.length} pending case${pendingSelected.length > 1 ? "s" : ""} → approved`
+                : `${reviewableCount} pending/stale → approved`
             }
           >
-            ✓ Approve {pendingSelected.length > 0 ? `(${pendingSelected.length})` : ""}
+            ✓ Approve {reviewableCount > 0 ? `(${reviewableCount})` : ""}
           </button>
           <button
             disabled={
-              pendingSelected.length === 0 ||
+              reviewableCount === 0 ||
               bulk.isPending || bulkDelete.isPending || bulkRun.isPending
             }
             onClick={() => bulk.mutate("reject")}
             className="bg-red-600 px-3 py-0.5 rounded hover:bg-red-500 disabled:opacity-50"
             title={
-              pendingSelected.length === 0
+              reviewableCount === 0
                 ? "no pending/stale cases in selection"
-                : `${pendingSelected.length} pending case${pendingSelected.length > 1 ? "s" : ""} → rejected`
+                : `${reviewableCount} pending/stale → rejected`
             }
           >
-            ✗ Reject {pendingSelected.length > 0 ? `(${pendingSelected.length})` : ""}
+            ✗ Reject {reviewableCount > 0 ? `(${reviewableCount})` : ""}
           </button>
           <button
             disabled={
-              reviewedSelected.length === 0 ||
+              reviewedCount === 0 ||
               bulk.isPending || bulkDelete.isPending || bulkRun.isPending
             }
             onClick={() => {
               if (
                 window.confirm(
-                  `Revert ${reviewedSelected.length} case${reviewedSelected.length > 1 ? "s" : ""} back to pending?\n\n` +
+                  `Revert ${reviewedCount} case${reviewedCount > 1 ? "s" : ""} back to pending?\n\n` +
                     `This undoes the approve/reject verdict so they re-enter the review queue.`,
                 )
               ) {
@@ -479,25 +502,28 @@ function CasesPage() {
             }}
             className="bg-amber-600 px-3 py-0.5 rounded hover:bg-amber-500 disabled:opacity-50"
             title={
-              reviewedSelected.length === 0
+              reviewedCount === 0
                 ? "no approved/rejected cases in selection"
-                : `${reviewedSelected.length} approved/rejected case${reviewedSelected.length > 1 ? "s" : ""} → pending`
+                : `${approvedCount} approved + ${rejectedCount} rejected → pending`
             }
           >
-            ↺ Revert {reviewedSelected.length > 0 ? `(${reviewedSelected.length})` : ""}
+            ↺ Revert {reviewedCount > 0 ? `(${reviewedCount})` : ""}
           </button>
           <button
             disabled={
-              approvedSelected.length === 0 ||
+              approvedCount === 0 ||
               bulkRun.isPending ||
               bulk.isPending ||
               bulkDelete.isPending
             }
             onClick={() => {
-              const ids = approvedSelected.map((c) => c.case_id);
+              const ids = selectedRows
+                .filter((c) => c.review_status === "approved")
+                .map((c) => c.case_id);
+              const skipped = selected.size - ids.length;
               const note =
-                nonApprovedCount > 0
-                  ? `\n\n${nonApprovedCount} non-approved case${nonApprovedCount > 1 ? "s" : ""} in selection will be skipped — only approved cases run.`
+                skipped > 0
+                  ? `\n\n${skipped} non-approved case${skipped > 1 ? "s" : ""} in selection will be skipped — only approved cases run.`
                   : "";
               if (
                 window.confirm(
@@ -511,21 +537,23 @@ function CasesPage() {
             }}
             className="bg-blue-600 px-3 py-0.5 rounded hover:bg-blue-500 disabled:opacity-50"
             title={
-              approvedSelected.length === 0
+              approvedCount === 0
                 ? "no approved cases in selection"
-                : `${approvedSelected.length} approved case${approvedSelected.length > 1 ? "s" : ""} will run; ${nonApprovedCount} skipped`
+                : `${approvedCount} approved → run`
             }
           >
-            ▶ Run {approvedSelected.length > 0 ? `(${approvedSelected.length})` : ""}
+            ▶ Run {approvedCount > 0 ? `(${approvedCount})` : ""}
           </button>
           <button
-            disabled={bulk.isPending || bulkDelete.isPending}
+            disabled={deletableCount === 0 || bulk.isPending || bulkDelete.isPending}
             onClick={() => {
               const ids = [...selected];
               if (
                 window.confirm(
-                  `Delete ${ids.length} selected case${ids.length > 1 ? "s" : ""}?\n\n` +
-                    `Approved cases will be skipped — reject them first if you want them gone too.\n` +
+                  `Delete ${deletableCount} case${deletableCount > 1 ? "s" : ""}?\n\n` +
+                    (approvedCount > 0
+                      ? `${approvedCount} approved case${approvedCount > 1 ? "s" : ""} in selection will be skipped — reject ${approvedCount > 1 ? "them" : "it"} first if you want ${approvedCount > 1 ? "them" : "it"} gone too.\n`
+                      : "") +
                     `This cannot be undone.`,
                 )
               ) {
@@ -533,16 +561,17 @@ function CasesPage() {
               }
             }}
             className="bg-slate-700 hover:bg-slate-600 px-3 py-0.5 rounded disabled:opacity-50"
-            title="approved cases will be skipped"
+            title={
+              deletableCount === 0
+                ? "selection contains only approved cases — reject first to delete"
+                : approvedCount > 0
+                  ? `${deletableCount} deletable; ${approvedCount} approved skipped`
+                  : `${deletableCount} → deleted`
+            }
           >
-            🗑 Delete
+            🗑 Delete {deletableCount > 0 ? `(${deletableCount})` : ""}
           </button>
-          <button
-            onClick={() => setSelected(new Set())}
-            className="text-slate-300 px-3 py-0.5 rounded hover:text-white ml-auto"
-          >
-            clear
-          </button>
+          </div>
         </div>
         );
       })()}
