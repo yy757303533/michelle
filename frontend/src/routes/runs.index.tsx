@@ -36,6 +36,10 @@ function RunsListPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [filter, setFilter] = useState<string>("");
+  // Track per-row selection by run_id so the user can pick exactly which
+  // failures to rerun. Cleared on filter change so a hidden run can't sneak
+  // into the next bulk action (same guard as the cases page).
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Always fetch the full set for this project — filtering happens at
   // render time only. The previous version filtered inside `queryFn`,
@@ -98,6 +102,29 @@ function RunsListPage() {
     [allRuns, filter],
   );
 
+  const visibleRerunnable = useMemo(
+    () => visible.filter((r) => RERUNNABLE.has(r.status)),
+    [visible],
+  );
+  const allRerunnableSelected =
+    visibleRerunnable.length > 0 &&
+    visibleRerunnable.every((r) => selected.has(r.run_id));
+
+  const toggleRow = (runId: string) => {
+    const next = new Set(selected);
+    if (next.has(runId)) next.delete(runId);
+    else next.add(runId);
+    setSelected(next);
+  };
+  const toggleSelectAll = () => {
+    if (allRerunnableSelected) setSelected(new Set());
+    else setSelected(new Set(visibleRerunnable.map((r) => r.run_id)));
+  };
+
+  const selectedRows = visible.filter((r) => selected.has(r.run_id));
+  const selectedRerunnable = selectedRows.filter((r) => RERUNNABLE.has(r.status));
+  const selectedUniqueCases = new Set(selectedRerunnable.map((r) => r.case_id));
+
   if (!projectId) {
     return (
       <div className="bg-white border border-slate-200 rounded-lg p-8 text-center text-sm text-slate-500">
@@ -127,7 +154,10 @@ function RunsListPage() {
           return (
             <button
               key={s || "all"}
-              onClick={() => setFilter(s)}
+              onClick={() => {
+                setFilter(s);
+                setSelected(new Set());
+              }}
               className={
                 "text-sm px-3 py-1 rounded border " +
                 (active
@@ -143,7 +173,10 @@ function RunsListPage() {
             out of the currently-rendered set so the filter pills double as
             scope selectors — pick "failed" then click rerun to retry just
             those, or "all" to retry every non-terminal-success run. */}
-        {(() => {
+        {/* "All visible failed" rerun, only when nothing is selected.
+            Switches to per-selection rerun in the bulk bar below once
+            the user picks rows — having both at once was confusing. */}
+        {selected.size === 0 && (() => {
           const rerunable = visible.filter((r) => RERUNNABLE.has(r.status));
           const uniqueCases = new Set(rerunable.map((r) => r.case_id));
           if (uniqueCases.size === 0) return null;
@@ -171,6 +204,49 @@ function RunsListPage() {
         })()}
       </div>
 
+      {/* Bulk action bar — only shows when at least one row is checked */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
+          <span>{selected.size} selected</span>
+          {selectedRows.length !== selectedRerunnable.length && (
+            <span className="text-xs text-amber-300">
+              ({selectedRows.length - selectedRerunnable.length} skipped: only failed/aborted/flaky can rerun)
+            </span>
+          )}
+          <button
+            disabled={selectedUniqueCases.size === 0 || rerun.isPending}
+            onClick={() => {
+              const ids = [...selectedUniqueCases];
+              if (
+                window.confirm(
+                  `Rerun ${ids.length} unique case${ids.length > 1 ? "s" : ""} from ${selectedRerunnable.length} selected run${selectedRerunnable.length > 1 ? "s" : ""}?\n\n` +
+                    `Originals stay untouched.`,
+                )
+              ) {
+                rerun.mutate(ids);
+                setSelected(new Set());
+              }
+            }}
+            className="bg-amber-600 px-3 py-0.5 rounded hover:bg-amber-500 disabled:opacity-50"
+            title={
+              selectedUniqueCases.size === 0
+                ? "no rerunnable rows in selection (only failed/aborted/flaky can rerun)"
+                : `${selectedUniqueCases.size} unique cases will be rerun`
+            }
+          >
+            {rerun.isPending
+              ? "scheduling…"
+              : `↻ Rerun ${selectedUniqueCases.size > 0 ? `(${selectedUniqueCases.size})` : ""}`}
+          </button>
+          <button
+            onClick={() => setSelected(new Set())}
+            className="text-slate-300 px-3 py-0.5 rounded hover:text-white ml-auto"
+          >
+            clear
+          </button>
+        </div>
+      )}
+
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {runs.isLoading ? (
           <div className="p-6 text-slate-400 text-sm">loading…</div>
@@ -191,6 +267,20 @@ function RunsListPage() {
           <table className="w-full text-sm">
             <thead className="text-left text-slate-400 border-b border-slate-100">
               <tr>
+                <th className="p-2 w-8">
+                  {visibleRerunnable.length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={allRerunnableSelected}
+                      onChange={toggleSelectAll}
+                      title={
+                        allRerunnableSelected
+                          ? "deselect all"
+                          : `select all ${visibleRerunnable.length} rerunnable run${visibleRerunnable.length > 1 ? "s" : ""}`
+                      }
+                    />
+                  )}
+                </th>
                 <th className="p-2">run_id</th>
                 <th className="p-2">case</th>
                 <th className="p-2 w-20">env</th>
@@ -204,6 +294,15 @@ function RunsListPage() {
             <tbody>
               {visible.map((r) => (
                 <tr key={r.run_id} className="border-t border-slate-100 hover:bg-slate-50">
+                  <td className="p-2">
+                    {RERUNNABLE.has(r.status) && (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.run_id)}
+                        onChange={() => toggleRow(r.run_id)}
+                      />
+                    )}
+                  </td>
                   <td className="p-2 font-mono text-xs">
                     <Link to="/runs/$id" params={{ id: r.run_id }} className="text-blue-700 hover:underline">
                       {r.run_id.slice(0, 12)}…
