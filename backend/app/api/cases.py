@@ -106,7 +106,7 @@ class BulkDelete(BaseModel):
 async def list_cases(
     status: Literal["pending", "approved", "rejected", "stale"] | None = None,
     project_id: str | None = None,
-    limit: int = Query(default=200, ge=1, le=1000),
+    limit: int = Query(default=200, ge=1, le=5000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(TestCase).order_by(desc(TestCase.created_at)).limit(limit)
@@ -120,12 +120,19 @@ async def list_cases(
     if project_id:
         counts_stmt = counts_stmt.where(TestCase.project_id == project_id)
     counts_rows = (await session.execute(counts_stmt)).all()
-    counts = {row[0]: row[1] for row in counts_rows}
+    counts: dict[str, int] = {row[0]: row[1] for row in counts_rows}
 
+    # `total` is the full-table count for this project (matching what
+    # `counts_by_status` sums to) so the UI can detect "we returned 200
+    # rows but the project has 264" — that gap was the cause of the
+    # "all (264) / 200 selected" inconsistency users hit before.
+    total = sum(counts.values()) if status is None else counts.get(status, 0)
     return {
         "data": [r.model_dump() for r in rows],
         "count": len(rows),
         "counts_by_status": counts,
+        "total": total,
+        "truncated": len(rows) < total,
     }
 
 

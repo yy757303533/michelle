@@ -315,6 +315,29 @@ async def test_bulk_reset_skips_pending_as_already_at_state(session, app_client)
 
 
 @pytest.mark.asyncio
+async def test_list_cases_reports_total_and_truncated(session, app_client):
+    """`total` reflects the full table; `truncated` flips on once limit
+    drops a real row. This is what the UI uses to detect the silent-drop
+    case that confused users with "all (264) / 200 selected" mismatches."""
+    for i in range(15):
+        session.add(_case(f"TC-T{i:02d}"))
+    await session.commit()
+
+    r = await app_client.get("/api/cases/?limit=10")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 10
+    assert body["total"] == 15
+    assert body["truncated"] is True
+
+    r2 = await app_client.get("/api/cases/?limit=100")
+    body2 = r2.json()
+    assert body2["count"] == 15
+    assert body2["total"] == 15
+    assert body2["truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_bulk_review_reset_mixed_selection(session, app_client):
     """Reset reverts approved+rejected back to pending; leaves already-pending alone."""
     session.add(_case("TC-RA", review_status="approved"))

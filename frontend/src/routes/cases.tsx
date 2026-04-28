@@ -35,6 +35,8 @@ interface CasesResponse {
   data: CaseRow[];
   count: number;
   counts_by_status: Record<string, number>;
+  total: number;
+  truncated: boolean;
 }
 
 const STATUS_FILTERS: Array<{ key: string; label: string }> = [
@@ -65,7 +67,12 @@ function CasesPage() {
     queryKey: ["cases", projectId, filter],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<CasesResponse> => {
-      const params = new URLSearchParams({ project_id: projectId, limit: "200" });
+      // limit=5000 because the filter pills' count_by_status reflects the
+      // full table, but `data` is hard-capped server-side. If they don't
+      // match, "all (264)" + "200 selected" looks like a bug — actually 64
+      // cases were silently dropped before the page even rendered. With
+      // ~few-hundred-case scale per project this is plenty.
+      const params = new URLSearchParams({ project_id: projectId, limit: "5000" });
       if (filter) params.set("status", filter);
       const r = await fetch(`/api/cases/?${params}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
@@ -390,6 +397,14 @@ function CasesPage() {
           </button>
         </div>
       </div>
+
+      {cases.data?.truncated && (
+        <div className="text-xs px-3 py-2 rounded bg-amber-50 border border-amber-200 text-amber-900">
+          ⚠ Loaded {cases.data.count} of {cases.data.total} cases — older
+          cases are hidden by the server-side limit. Bulk actions only see
+          the loaded subset.
+        </div>
+      )}
 
       {/* Search summary line — only when actually searching */}
       {searchQuery && (
