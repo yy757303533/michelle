@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 
@@ -87,6 +87,8 @@ function Dashboard() {
         <LLMProvidersWidget />
         <ProbePanel />
       </div>
+
+      <RuntimeSettingsPanel />
     </div>
   );
 }
@@ -348,6 +350,98 @@ function ProbePanel() {
               <Row label="type" value={<code className="text-red-700">{last.error_type}</code>} />
               <Row label="msg" value={<code className="break-all">{last.error}</code>} />
             </>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+interface RuntimeKnob {
+  value: number;
+  default: number;
+  min: number;
+  max: number;
+  describe: string;
+}
+interface RuntimeSettingsResponse {
+  data: { max_concurrent_runs: RuntimeKnob };
+}
+
+/** Live-tunable platform knobs. Currently just `max_concurrent_runs`,
+ * exposed as a number input + Save button. The new value affects runs
+ * launched after save; in-flight runs keep their original semaphore slot. */
+function RuntimeSettingsPanel() {
+  const qc = useQueryClient();
+  const settings = useQuery({
+    queryKey: ["runtime-settings"],
+    queryFn: async (): Promise<RuntimeSettingsResponse> => {
+      const r = await fetch("/api/settings/runtime");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  const knob = settings.data?.data.max_concurrent_runs;
+  const [draft, setDraft] = useState<number | null>(null);
+  const value = draft ?? knob?.value ?? 2;
+
+  const save = useMutation({
+    mutationFn: async (v: number) => {
+      const r = await fetch("/api/settings/runtime", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ max_concurrent_runs: v }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      setDraft(null);
+      qc.invalidateQueries({ queryKey: ["runtime-settings"] });
+    },
+  });
+
+  return (
+    <Panel title="Platform settings">
+      {settings.isLoading || !knob ? (
+        <span className="text-slate-400 text-sm">…</span>
+      ) : (
+        <div className="space-y-2 text-sm">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <code className="text-xs text-slate-500">max_concurrent_runs</code>
+              <input
+                type="number"
+                min={knob.min}
+                max={knob.max}
+                value={value}
+                onChange={(e) => setDraft(parseInt(e.target.value, 10) || knob.value)}
+                className="border border-slate-200 rounded px-2 py-0.5 w-20 text-sm font-mono"
+              />
+              <button
+                disabled={save.isPending || value === knob.value}
+                onClick={() => save.mutate(value)}
+                className="text-xs bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
+              >
+                {save.isPending ? "saving…" : "save"}
+              </button>
+              {draft != null && draft !== knob.value && (
+                <button
+                  onClick={() => setDraft(null)}
+                  className="text-xs text-slate-500 hover:text-slate-900"
+                >
+                  reset
+                </button>
+              )}
+              <span className="text-xs text-slate-400">
+                env default: <code>{knob.default}</code>
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">{knob.describe}</p>
+          </div>
+          {save.error && (
+            <span className="text-red-600 text-xs">{(save.error as Error).message}</span>
           )}
         </div>
       )}

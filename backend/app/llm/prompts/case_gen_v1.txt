@@ -7,6 +7,10 @@ exercise the described behavior on a real Web app. The cases will be executed
 later by an AI browser agent driving Chromium via `@playwright/mcp` against
 {base_url}.
 
+## Login context
+
+{login_context}
+
 ## PRD chapter ({chapter_id})
 
 ```
@@ -54,5 +58,10 @@ this chapter does not justify it; document why in `coverage_notes`):
   visible UI elements ("点击 '保存' 按钮"), not to internal API or DB state.
 - Prefer 4-10 steps per case. Pad obvious wait/verify steps if needed.
 - Assertion descriptions must be falsifiable. Avoid vague words like "正常".
+- **If the chapter describes a feature behind authentication AND the Login
+  context above provides credentials**, prepend explicit login steps to each
+  such case (open login page → fill username → fill password → click submit
+  → verify post-login URL). Do NOT rely on `preconditions` alone — the agent
+  needs actionable steps.
 - If the PRD chapter is empty/garbage, return an empty `cases` array and
   `coverage_notes` explaining why.

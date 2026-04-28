@@ -66,6 +66,26 @@ class GeneratedBatch(BaseModel):
 # ── Public API ──
 
 
+def _login_context_for_gen(default_username: str | None, default_password: str | None) -> str:
+    """Tell the case-gen LLM whether the project has credentials. With them,
+    the prompt explicitly asks for inline login steps in protected-feature
+    cases; without them, the prompt asks the LLM to skip login automation
+    and rely on `preconditions` instead. Either way the LLM stops guessing."""
+    if default_username and default_password:
+        return (
+            f"This project has default test credentials configured "
+            f"(username: {default_username}). When a case targets a feature "
+            f"that requires authentication, prepend login steps using these "
+            f"credentials so the case is self-contained and runnable."
+        )
+    return (
+        "No default credentials are configured for this project. For cases "
+        "that target authenticated features, do NOT invent credentials; "
+        "describe the login requirement in `preconditions` and let a human "
+        "fill in real credentials before running."
+    )
+
+
 async def generate_cases_for_chapter(
     *,
     project_id: str,
@@ -76,6 +96,8 @@ async def generate_cases_for_chapter(
     max_cases: int = 8,
     gateway: LLMGateway | None = None,
     prefer_provider: str | None = None,
+    default_username: str | None = None,
+    default_password: str | None = None,
 ) -> tuple[list[TestCase], GeneratedBatch]:
     """Generate cases for one chapter; persist them; return (saved_cases, raw_batch).
 
@@ -90,6 +112,7 @@ async def generate_cases_for_chapter(
         "v1",
         project_name=project_name,
         base_url=base_url or "(unknown)",
+        login_context=_login_context_for_gen(default_username, default_password),
         chapter_id=f"{chapter.level}:{chapter.normalized_title}",
         chapter_text=chapter.body[:6000],  # cap to keep prompt cheap
         max_cases=max_cases,

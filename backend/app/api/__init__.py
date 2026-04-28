@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api import cases, diagnosis, llm, prd, projects, runs
+from app.api import cases, diagnosis, llm, prd, projects, runs, settings
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
@@ -11,5 +11,6 @@ api_router.include_router(cases.router, prefix="/cases", tags=["cases"])
 api_router.include_router(runs.router, prefix="/runs", tags=["runs"])
 api_router.include_router(diagnosis.router, prefix="/diagnosis", tags=["diagnosis"])
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
+api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 
 __all__ = ["api_router"]

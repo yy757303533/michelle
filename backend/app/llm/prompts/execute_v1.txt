@@ -6,6 +6,10 @@ playwright MCP server (`@playwright/mcp`) to execute one test case.
 ## Case: {case_name}
 ## Intent: {case_intent}
 
+## Login context
+
+{login_context}
+
 ## Preconditions
 {preconditions}
 
@@ -24,11 +28,16 @@ For each step:
 1. If you don't already have a recent ARIA snapshot, call `mcp__playwright__browser_snapshot` first.
 2. Use `mcp__playwright__browser_navigate` / `browser_type` / `browser_click` /
    `browser_wait_for` to perform the step.
-3. **After every meaningful state change** (page navigation, form submit,
+3. **If a page redirects to a login form before you can do the step**, and the
+   Login Context above provides credentials, log in first using those
+   credentials, then continue with the step. Do NOT mark the case failed for
+   "precondition not met" if you can authenticate yourself with the provided
+   credentials.
+4. **After every meaningful state change** (page navigation, form submit,
    modal open/close, batch action result), call `mcp__playwright__browser_take_screenshot`
    with `filename: "step-<N>.png"` where N is the step number. Skip
    pure-snapshot steps (no UI change) to keep the trace tight.
-4. If a step fails (element not found, click had no effect), do NOT panic-loop
+5. If a step fails (element not found, click had no effect), do NOT panic-loop
    — try one alternative interpretation, then proceed and let the assertion
    catch the failure.
 

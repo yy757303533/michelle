@@ -242,9 +242,7 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/bulk-delete")
-async def bulk_delete(
-    body: BulkDelete, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def bulk_delete(body: BulkDelete, session: AsyncSession = Depends(get_session)) -> dict:
     """Delete many cases in one transaction. Approved cases are skipped
     (same guard as DELETE /<id>) and surfaced in the response so the UI
     can tell the user "we deleted N, kept M approved ones — reject those

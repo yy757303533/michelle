@@ -68,6 +68,28 @@ def _format_preconditions(case: TestCase) -> str:
     return "\n".join(f"- {p}" for p in case.preconditions)
 
 
+def _format_login_context(project: Project) -> str:
+    """Surface the project's default credentials to the agent so cases that
+    were generated without explicit login steps can still authenticate when
+    a page redirects to a login form. Without this, the agent saw the
+    login page, didn't know what creds to use, and bailed with
+    "precondition not met"."""
+    if not (project.default_username or project.default_password):
+        return (
+            "(no default credentials configured for this project — if a step "
+            "requires authentication, the case must include explicit login "
+            "steps)"
+        )
+    return (
+        f"This project has default test credentials. If any step's target page "
+        f"redirects to a login form, authenticate first using:\n"
+        f"  - Username/Email: {project.default_username or '(not set)'}\n"
+        f"  - Password: {project.default_password or '(not set)'}\n"
+        f"Find the login page by clicking a 'Log in' / 'Sign in' link from the "
+        f"home page or navigating to common paths like /login, /signin, /logins."
+    )
+
+
 def render_execute_prompt(case: TestCase, project: Project) -> str:
     return render(
         "execute",
@@ -76,6 +98,7 @@ def render_execute_prompt(case: TestCase, project: Project) -> str:
         base_url=project.base_url or "(not configured)",
         case_name=case.name,
         case_intent=case.intent,
+        login_context=_format_login_context(project),
         preconditions=_format_preconditions(case),
         numbered_steps=_format_steps(case),
         numbered_assertions=_format_assertions(case),
@@ -413,18 +436,39 @@ async def create_run_row(
 # ── Concurrency control ────────────────────────────────────────────────────
 
 # Max simultaneous browser sessions. Each session = 1 Chromium + 1 claude CLI
-# subprocess + ~250MB RAM. 2 is comfortable on a dev laptop; tune via env if
-# you have headroom.
+# subprocess + ~250MB RAM. 2 is comfortable on a dev laptop. The .env value
+# is just the bootstrap default — `runtime_settings.max_concurrent_runs`
+# (Settings panel on the dashboard) overrides it at runtime.
 MAX_CONCURRENT_RUNS = max(1, int(getattr(settings, "max_concurrent_runs", 2)))
 _run_semaphore: asyncio.Semaphore | None = None
+_run_semaphore_capacity: int = 0
 
 
-def _semaphore() -> asyncio.Semaphore:
-    """Lazy singleton — `asyncio.Semaphore()` binds to the running loop and
-    we want to defer creation until inside a coroutine."""
-    global _run_semaphore
-    if _run_semaphore is None:
-        _run_semaphore = asyncio.Semaphore(MAX_CONCURRENT_RUNS)
+async def _resolve_concurrency() -> int:
+    """Read the live concurrency cap from runtime_settings; fall back to the
+    bootstrap default if the table or row isn't there yet (fresh DB, tests
+    using in-memory SQLite without the migration)."""
+    try:
+        from app.api.settings import get_max_concurrent_runs
+
+        async with async_session_maker() as session:
+            return await get_max_concurrent_runs(session)
+    except Exception:
+        return MAX_CONCURRENT_RUNS
+
+
+async def _semaphore() -> asyncio.Semaphore:
+    """Lazy + dynamic. The semaphore is bound to the current event loop AND
+    to the current concurrency cap — when the operator changes the cap from
+    the dashboard, we recreate the semaphore so newly-launched runs see the
+    new ceiling. Already-acquired slots stay valid; they just don't return
+    capacity to the new semaphore (acceptable since runs eventually finish
+    and the new semaphore stabilises)."""
+    global _run_semaphore, _run_semaphore_capacity
+    capacity = await _resolve_concurrency()
+    if _run_semaphore is None or _run_semaphore_capacity != capacity:
+        _run_semaphore = asyncio.Semaphore(capacity)
+        _run_semaphore_capacity = capacity
     return _run_semaphore
 
 
@@ -526,7 +570,7 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
     appends step events from the second attempt with step_index continuing).
     The second attempt's terminal status is what sticks.
     """
-    sem = _semaphore()
+    sem = await _semaphore()
     async with sem:
         attempt = 1
         try:

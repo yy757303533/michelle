@@ -204,9 +204,7 @@ async def delete_prd(prd_id: str, session: AsyncSession = Depends(get_session)) 
     if row is None:
         raise HTTPException(status_code=404, detail="PRD not found")
     children = (
-        (await session.execute(select(PRD).where(PRD.prev_version_id == prd_id)))
-        .scalars()
-        .all()
+        (await session.execute(select(PRD).where(PRD.prev_version_id == prd_id))).scalars().all()
     )
     for c in children:
         c.prev_version_id = None
@@ -307,6 +305,8 @@ async def generate_cases(
                 session=session,
                 max_cases=body.max_cases_per_chapter,
                 prefer_provider=body.prefer_provider,
+                default_username=proj.default_username or None,
+                default_password=proj.default_password or None,
             )
             results.append(
                 {

@@ -21,6 +21,7 @@ def test_render_substitutes_placeholders():
         project_name="Demo",
         max_cases=5,
         base_url="http://example.com",
+        login_context="(no creds)",
         chapter_id="ch1",
         chapter_text="some PRD content",
         module_hint="login",
