@@ -38,6 +38,18 @@ _VERB_TO_STATE: dict[str, str] = {
     "reject": "rejected",
     "reset": "pending",
 }
+# Status machine is intentionally one-directional from the review queue.
+# approve/reject only act on cases that are *awaiting* a verdict (pending or
+# the AI-marked stale variant); they refuse to flip an already-reviewed case.
+# To go from approved → rejected you must first `reset` back to pending —
+# this forces an explicit re-review instead of letting a single click
+# silently overwrite a prior human verdict (which is what the previous
+# "switch anything that isn't already at target" logic did).
+_ALLOWED_SOURCES: dict[str, set[str]] = {
+    "approve": {"pending", "stale"},
+    "reject": {"pending", "stale"},
+    "reset": {"approved", "rejected"},
+}
 AuthState = Literal["logged-in", "logged-out", "wrong-creds", "public"]
 
 
@@ -194,7 +206,25 @@ async def review_case(
         raise HTTPException(status_code=404, detail="case not found")
 
     before = row.review_status
-    row.review_status = _VERB_TO_STATE[body.action]
+    target = _VERB_TO_STATE[body.action]
+    if before == target:
+        # Already at target — no-op rather than 409, matches the bulk path
+        # which silently skips already-at-state rows.
+        return {"data": row.model_dump()}
+    if before not in _ALLOWED_SOURCES[body.action]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"cannot {body.action} a case in '{before}' state — "
+                + (
+                    "reset it to pending first if you want to change the verdict"
+                    if body.action in {"approve", "reject"}
+                    else "reset only applies to approved/rejected cases"
+                )
+            ),
+        )
+
+    row.review_status = target
     row.updated_at = datetime.now(UTC)
     await session.commit()
     log.info(
@@ -216,6 +246,7 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
     a reviewer wants to take back a verdict without having to edit the case
     body. (Edits already auto-reset, but that's a heavier action.)"""
     target = _VERB_TO_STATE[body.action]
+    allowed_sources = _ALLOWED_SOURCES[body.action]
 
     rows = (
         (await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids))))
@@ -227,8 +258,17 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
 
     now = datetime.now(UTC)
     updated: list[str] = []
+    skipped_already_at_state: list[str] = []
+    skipped_wrong_state: list[str] = []
     for r in rows:
         if r.review_status == target:
+            skipped_already_at_state.append(r.case_id)
+            continue
+        if r.review_status not in allowed_sources:
+            # e.g. trying to approve a `rejected` case — refuse silently in
+            # the bulk path so the rest of the batch still applies; surface
+            # the count + ids so the UI can tell the user what didn't move.
+            skipped_wrong_state.append(r.case_id)
             continue
         before = r.review_status
         r.review_status = target
@@ -246,9 +286,8 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
     return {
         "data": {
             "updated": updated,
-            "skipped_already_at_state": [
-                cid for cid in body.case_ids if cid in found_ids and cid not in updated
-            ],
+            "skipped_already_at_state": skipped_already_at_state,
+            "skipped_wrong_state": skipped_wrong_state,
             "missing": missing,
             "target_state": target,
         }

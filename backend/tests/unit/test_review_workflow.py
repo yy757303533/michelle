@@ -230,6 +230,91 @@ async def test_review_reset_single_rejected_back_to_pending(session, app_client)
 
 
 @pytest.mark.asyncio
+async def test_review_approve_rejects_already_rejected(session, app_client):
+    """Direct rejected → approved is forbidden — must reset first.
+
+    The previous implementation silently flipped the verdict, which lets a
+    single click overwrite a deliberate human decision."""
+    session.add(_case("TC-RJ", review_status="rejected"))
+    await session.commit()
+
+    r = await app_client.post("/api/cases/TC-RJ/review", json={"action": "approve"})
+    assert r.status_code == 409
+    assert "reset" in r.json()["detail"].lower()
+
+    row = await session.get(TestCase, "TC-RJ")
+    assert row is not None and row.review_status == "rejected"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_review_reject_rejects_already_approved(session, app_client):
+    session.add(_case("TC-AP", review_status="approved"))
+    await session.commit()
+
+    r = await app_client.post("/api/cases/TC-AP/review", json={"action": "reject"})
+    assert r.status_code == 409
+
+    row = await session.get(TestCase, "TC-AP")
+    assert row is not None and row.review_status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_review_reset_pending_is_noop(session, app_client):
+    """`reset` on a pending case is a no-op, not an error — the target
+    state matches, so it short-circuits before the source-state check."""
+    session.add(_case("TC-PD"))  # default = pending
+    await session.commit()
+
+    r = await app_client.post("/api/cases/TC-PD/review", json={"action": "reset"})
+    assert r.status_code == 200
+    assert r.json()["data"]["review_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_bulk_approve_skips_rejected_with_distinct_reason(session, app_client):
+    """In a mixed selection, approve only flips pending+stale; rejected
+    cases are reported under skipped_wrong_state, NOT silently approved."""
+    session.add(_case("TC-P1", review_status="pending"))
+    session.add(_case("TC-P2", review_status="stale"))
+    session.add(_case("TC-R1", review_status="rejected"))
+    session.add(_case("TC-A1", review_status="approved"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/bulk-review",
+        json={"case_ids": ["TC-P1", "TC-P2", "TC-R1", "TC-A1"], "action": "approve"},
+    )
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert sorted(body["updated"]) == ["TC-P1", "TC-P2"]
+    assert body["skipped_already_at_state"] == ["TC-A1"]
+    assert body["skipped_wrong_state"] == ["TC-R1"]
+
+    row = await session.get(TestCase, "TC-R1")
+    assert row is not None and row.review_status == "rejected"  # not flipped
+
+
+@pytest.mark.asyncio
+async def test_bulk_reset_skips_pending_as_already_at_state(session, app_client):
+    """Bulk reset target = pending; pending rows are already-at-state, NOT
+    wrong-state. (Stale rows ARE wrong-state because target is pending and
+    stale isn't in the allowed source set.)"""
+    session.add(_case("TC-A", review_status="approved"))
+    session.add(_case("TC-P", review_status="pending"))
+    session.add(_case("TC-S", review_status="stale"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/bulk-review",
+        json={"case_ids": ["TC-A", "TC-P", "TC-S"], "action": "reset"},
+    )
+    body = r.json()["data"]
+    assert body["updated"] == ["TC-A"]
+    assert body["skipped_already_at_state"] == ["TC-P"]
+    assert body["skipped_wrong_state"] == ["TC-S"]
+
+
+@pytest.mark.asyncio
 async def test_bulk_review_reset_mixed_selection(session, app_client):
     """Reset reverts approved+rejected back to pending; leaves already-pending alone."""
     session.add(_case("TC-RA", review_status="approved"))
