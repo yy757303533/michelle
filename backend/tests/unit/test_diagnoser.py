@@ -259,7 +259,7 @@ def test_matcher_from_run_extracts_failed_step_features():
         case_version=1,
         env="x",
         status="failed",
-        error_message="connection refused 172.25.17.105",
+        error_message="connection refused localhost",
     )
     steps = [
         StepEvent(

@@ -164,7 +164,7 @@
     ],
     "steps": [
       {
-        "intent": "打开浏览器隐私/无痕窗口或清除 172.25.17.105 的站点 cookies",
+        "intent": "打开浏览器隐私/无痕窗口或清除 localhost 的站点 cookies",
         "expected": "当前会话处于未登录状态"
       },
       {

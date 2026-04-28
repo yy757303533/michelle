@@ -38,7 +38,7 @@ because every hard problem was already solved.
 ### Dogfood, not synthetic test data
 
 Feeding Michelle's own PRD into Michelle on Day 4 produced 12 cases anchored
-on real facts ("admin/password against 172.25.17.105:5000"). When Day 6
+on real facts ("admin/password against localhost:5000"). When Day 6
 landed the orchestrator, that login case ran end-to-end without any
 synthetic seeding. The single screenshot of the failed-then-diagnosed run
 in `docs/day12-demo/diagnosis.png` is the demo. I never had to mock anything.

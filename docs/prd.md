@@ -402,7 +402,7 @@ human_feedback: null  # confirmed / wrong / partially_correct
                         ▼
                 ┌────────────────────┐
                 │   the demo Web app     │
-                │  172.25.17.105:5000│
+                │  localhost:5000│
                 └────────────────────┘
 ```
 

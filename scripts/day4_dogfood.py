@@ -50,7 +50,7 @@ async def main(chapter_indices: list[int]) -> int:
 
     project_id = "michelle"
     project_name = "Michelle"
-    base_url = "http://172.25.17.105:5000/"
+    base_url = "http://localhost:5000/"
 
     async with async_session_maker() as session:
         proj = await session.get(Project, project_id)
