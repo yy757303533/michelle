@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 import { fmtDateTime, fmtMs } from "../lib/datetime";
@@ -61,6 +61,12 @@ function CasesPage() {
   // name, intent, module, tags, auth_state). Pure client-side — the cases
   // query already returns the full project's set, no extra round trip.
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Client-side pagination. We deliberately keep all rows loaded (so bulk
+  // counts/select-all/search stay accurate) and only slice for rendering.
+  // `pageSize === "all"` opts out of paging entirely.
+  const [pageSize, setPageSize] = useState<number | "all">(100);
+  const [page, setPage] = useState(1);
 
   const cases = useQuery({
     // Re-key on project so swapping the global selector re-fetches.
@@ -287,6 +293,26 @@ function CasesPage() {
     });
   }, [allRows, searchQuery]);
   const allSelected = visible.length > 0 && visible.every((c) => selected.has(c.case_id));
+
+  // Pagination math. Bulk-select keeps acting on the full `visible` set —
+  // pages only affect rendering, never selection semantics.
+  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(visible.length / pageSize));
+  // Clamp page when filter/search/delete shrinks the dataset under the cursor.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+  // Snap back to page 1 when the user changes filter/search/page-size — the
+  // old offset rarely lines up with the new dataset.
+  useEffect(() => {
+    setPage(1);
+  }, [filter, searchQuery, pageSize]);
+  const pagedVisible = useMemo(() => {
+    if (pageSize === "all") return visible;
+    const start = (page - 1) * pageSize;
+    return visible.slice(start, start + pageSize);
+  }, [visible, page, pageSize]);
+  const pageStart = pageSize === "all" ? 1 : visible.length === 0 ? 0 : (page - 1) * pageSize + 1;
+  const pageEnd = pageSize === "all" ? visible.length : Math.min(page * pageSize, visible.length);
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -620,7 +646,7 @@ function CasesPage() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((c) => (
+              {pagedVisible.map((c) => (
                 <CaseRowView
                   key={c.case_id}
                   c={c}
@@ -658,6 +684,73 @@ function CasesPage() {
         {deleteMut.error && (
           <div className="text-xs text-red-600 px-3 py-2 border-t border-red-100 bg-red-50">
             delete error: {(deleteMut.error as Error).message}
+          </div>
+        )}
+
+        {/* Pagination footer — purely a render-layer concern; selection,
+            counts, and search all stay scoped to the full `visible` set so
+            flipping pages never changes what bulk actions act on. */}
+        {visible.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 px-3 py-2 border-t border-slate-100 text-xs text-slate-600">
+            <span>
+              {pageStart}–{pageEnd} of {visible.length}
+              {visible.length !== allRows.length && (
+                <span className="text-slate-400"> (filtered from {allRows.length})</span>
+              )}
+            </span>
+            <label className="flex items-center gap-1">
+              每页
+              <select
+                value={pageSize === "all" ? "all" : String(pageSize)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setPageSize(v === "all" ? "all" : Number(v));
+                }}
+                className="border border-slate-200 rounded px-1 py-0.5"
+              >
+                {[10, 20, 50, 100, 200, 500].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+                <option value="all">全部</option>
+              </select>
+            </label>
+            {pageSize !== "all" && totalPages > 1 && (
+              <div className="flex items-center gap-1 ml-auto">
+                <button
+                  disabled={page <= 1}
+                  onClick={() => setPage(1)}
+                  className="px-2 py-0.5 border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40"
+                  title="first"
+                >
+                  «
+                </button>
+                <button
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="px-2 py-0.5 border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40"
+                >
+                  ‹ prev
+                </button>
+                <span className="px-2">
+                  page {page} / {totalPages}
+                </span>
+                <button
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  className="px-2 py-0.5 border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40"
+                >
+                  next ›
+                </button>
+                <button
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(totalPages)}
+                  className="px-2 py-0.5 border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-40"
+                  title="last"
+                >
+                  »
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
