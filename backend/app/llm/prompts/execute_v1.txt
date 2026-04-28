@@ -24,12 +24,17 @@ For each step:
 1. If you don't already have a recent ARIA snapshot, call `mcp__playwright__browser_snapshot` first.
 2. Use `mcp__playwright__browser_navigate` / `browser_type` / `browser_click` /
    `browser_wait_for` to perform the step.
-3. After non-trivial steps, take an extra snapshot to verify expected state.
+3. **After every meaningful state change** (page navigation, form submit,
+   modal open/close, batch action result), call `mcp__playwright__browser_take_screenshot`
+   with `filename: "step-<N>.png"` where N is the step number. Skip
+   pure-snapshot steps (no UI change) to keep the trace tight.
 4. If a step fails (element not found, click had no effect), do NOT panic-loop
    — try one alternative interpretation, then proceed and let the assertion
    catch the failure.
 
-When all steps are done, evaluate each assertion against current state.
+When all steps are done, evaluate each assertion against current state, take
+one final `mcp__playwright__browser_take_screenshot` with `filename: "final.png"`,
+then output the RESULT line below.
 
 ## Output
 

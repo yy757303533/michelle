@@ -121,6 +121,79 @@ async def get_run_report_html(
     return FileResponse(html_path, media_type="text/html; charset=utf-8")
 
 
+@router.get("/{run_id}/artifacts/{filename:path}")
+async def get_run_artifact(
+    run_id: str,
+    filename: str,
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Serve a single artifact file (screenshot, trace.jsonl, etc.) sandboxed
+    to the run's directory. Path traversal blocked."""
+    from app.storage import run_dir as run_dir_for
+
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    base = run_dir_for(run.project_id, run_id).resolve()
+    target = (base / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="path escapes run directory") from None
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    media = "application/octet-stream"
+    suffix = target.suffix.lower()
+    if suffix == ".png":
+        media = "image/png"
+    elif suffix in {".jpg", ".jpeg"}:
+        media = "image/jpeg"
+    elif suffix == ".webp":
+        media = "image/webp"
+    elif suffix in {".html", ".htm"}:
+        media = "text/html; charset=utf-8"
+    elif suffix == ".json":
+        media = "application/json; charset=utf-8"
+    elif suffix == ".jsonl":
+        media = "application/x-ndjson; charset=utf-8"
+    elif suffix == ".txt":
+        media = "text/plain; charset=utf-8"
+    return FileResponse(target, media_type=media)
+
+
+@router.get("/{run_id}/artifacts")
+async def list_run_artifacts(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List files inside the run's artifacts dir. Used by the trace viewer
+    frontend to discover screenshots without fetching one-by-one."""
+    from app.storage import run_dir as run_dir_for
+
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    base = run_dir_for(run.project_id, run_id).resolve()
+    files: list[dict] = []
+    for p in sorted(base.rglob("*")):
+        if p.is_file() and not p.name.startswith("."):
+            try:
+                rel = p.relative_to(base)
+            except ValueError:
+                continue
+            files.append(
+                {
+                    "name": str(rel).replace("\\", "/"),
+                    "size": p.stat().st_size,
+                    "is_image": p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"},
+                }
+            )
+    return {"data": files}
+
+
 @router.get("/{run_id}/report.json")
 async def get_run_report_json(
     run_id: str, session: AsyncSession = Depends(get_session)

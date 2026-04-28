@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 
 export const Route = createFileRoute("/runs/$id")({
   component: RunDetailPage,
@@ -23,6 +24,7 @@ interface StepEvent {
   latency_ms: number | null;
   error_message: string | null;
   occurred_at: string;
+  screenshot_after?: string | null;
 }
 
 interface RunRow {
@@ -49,10 +51,16 @@ interface RunDetail {
   data: { run: RunRow; steps: StepEvent[] };
 }
 
+interface ArtifactsResponse {
+  data: Array<{ name: string; size: number; is_image: boolean }>;
+}
+
 const TERMINAL = new Set(["passed", "failed", "flaky", "aborted"]);
 
 function RunDetailPage() {
   const { id } = Route.useParams();
+  const [lightbox, setLightbox] = useState<string | null>(null);
+
   const { data, isLoading, error } = useQuery({
     queryKey: ["run", id],
     queryFn: async (): Promise<RunDetail> => {
@@ -65,6 +73,52 @@ function RunDetailPage() {
       return status && TERMINAL.has(status) ? false : 1500;
     },
   });
+
+  const artifacts = useQuery({
+    queryKey: ["run-artifacts", id],
+    queryFn: async (): Promise<ArtifactsResponse> => {
+      const r = await fetch(`/api/runs/${id}/artifacts`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: (q) => {
+      const status = (q.state.data as RunDetail | undefined)?.data?.run?.status;
+      return status && TERMINAL.has(status) ? false : 3000;
+    },
+    enabled: Boolean(data),
+  });
+
+  /** Map step_index → image URL by matching filenames like step-N.png / final.png. */
+  const screenshotByStep = useMemo<Record<number, string>>(() => {
+    const m: Record<number, string> = {};
+    if (!artifacts.data) return m;
+    for (const f of artifacts.data.data) {
+      if (!f.is_image) continue;
+      const url = `/api/runs/${id}/artifacts/${f.name}`;
+      const stepMatch = f.name.match(/step-(\d+)\.(png|jpg|jpeg|webp)$/i);
+      if (stepMatch) {
+        m[parseInt(stepMatch[1], 10)] = url;
+        continue;
+      }
+      // also accept names like "after-login.png", "final.png" — attach to last step
+      // (we backfill these into the final step in the render pass).
+    }
+    return m;
+  }, [artifacts.data, id]);
+
+  /** Loose-match images that don't follow step-N: park them on the page so the
+   * user can still see them under "other artifacts". */
+  const otherImages = useMemo<Array<{ name: string; url: string }>>(() => {
+    if (!artifacts.data) return [];
+    return artifacts.data.data
+      .filter(
+        (f) =>
+          f.is_image &&
+          !/step-\d+\./i.test(f.name) &&
+          !f.name.startsWith("screenshots/")  // already accounted for via step_event mapping
+      )
+      .map((f) => ({ name: f.name, url: `/api/runs/${id}/artifacts/${f.name}` }));
+  }, [artifacts.data, id]);
 
   if (isLoading) return <div className="text-slate-400">loading…</div>;
   if (error)
@@ -109,7 +163,11 @@ function RunDetailPage() {
       {/* Summary cards */}
       <div className="grid grid-cols-4 gap-3 text-sm">
         <Card label="duration" value={fmtMs(run.duration_ms)} />
-        <Card label="steps" value={String(steps.length)} sub={`${steps.filter(s => s.status === "ok").length} ok / ${steps.filter(s => s.status === "failed").length} failed`} />
+        <Card
+          label="steps"
+          value={String(steps.length)}
+          sub={`${steps.filter(s => s.status === "ok").length} ok / ${steps.filter(s => s.status === "failed").length} failed`}
+        />
         <Card label="tokens" value={`${run.input_tokens} in / ${run.output_tokens} out`} />
         <Card label="started" value={run.started_at ? new Date(run.started_at).toLocaleTimeString() : "—"} />
       </div>
@@ -137,16 +195,68 @@ function RunDetailPage() {
         ) : (
           <ol>
             {steps.map((s) => (
-              <StepRow key={s.step_index} s={s} />
+              <StepRow
+                key={s.step_index}
+                s={s}
+                screenshotUrl={screenshotByStep[s.step_index] ?? null}
+                onShowImage={(url) => setLightbox(url)}
+              />
             ))}
           </ol>
         )}
       </div>
+
+      {otherImages.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+            other screenshots
+          </div>
+          <div className="grid grid-cols-4 gap-3">
+            {otherImages.map((img) => (
+              <button
+                key={img.name}
+                onClick={() => setLightbox(img.url)}
+                className="text-left"
+              >
+                <img
+                  src={img.url}
+                  alt={img.name}
+                  className="w-full rounded border border-slate-200 hover:border-blue-400"
+                />
+                <div className="text-xs text-slate-500 mt-1 font-mono truncate">
+                  {img.name}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 bg-black/75 flex items-center justify-center z-50 cursor-zoom-out"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            alt="screenshot"
+            className="max-w-[92vw] max-h-[92vh] rounded shadow-2xl"
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function StepRow({ s }: { s: StepEvent }) {
+function StepRow({
+  s,
+  screenshotUrl,
+  onShowImage,
+}: {
+  s: StepEvent;
+  screenshotUrl: string | null;
+  onShowImage: (url: string) => void;
+}) {
   const ok = s.status !== "failed";
   return (
     <li
@@ -155,38 +265,51 @@ function StepRow({ s }: { s: StepEvent }) {
         (ok ? "" : "bg-red-50/30")
       }
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-start gap-3">
         <span
           className={
-            "inline-block w-6 h-6 rounded-full text-center text-xs leading-6 font-mono " +
+            "inline-block w-6 h-6 rounded-full text-center text-xs leading-6 font-mono shrink-0 " +
             (ok ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700")
           }
         >
           {s.step_index}
         </span>
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <div className="font-mono text-xs text-slate-500">{s.tool_name}</div>
           <div className="font-medium">{s.intent || "(no label)"}</div>
+          {s.tool_args && Object.keys(s.tool_args).length > 0 && (
+            <pre className="mt-1 text-xs text-slate-400 font-mono whitespace-pre-wrap break-all">
+              {JSON.stringify(s.tool_args, null, 0)}
+            </pre>
+          )}
+          {s.error_message && (
+            <pre className="mt-2 text-xs text-red-700 whitespace-pre-wrap">
+              {s.error_message}
+            </pre>
+          )}
         </div>
-        <div className="text-xs text-slate-400 font-mono">
+        <div className="text-xs text-slate-400 font-mono text-right shrink-0">
           {s.tool_result?.page_url && (
-            <span className="block max-w-[300px] truncate">{s.tool_result.page_url}</span>
+            <span className="block max-w-[260px] truncate">{s.tool_result.page_url}</span>
           )}
           {s.tool_result?.page_title && (
             <span className="block text-slate-300">{s.tool_result.page_title}</span>
           )}
         </div>
+        {screenshotUrl && (
+          <button
+            onClick={() => onShowImage(screenshotUrl)}
+            className="shrink-0"
+            title="click to enlarge"
+          >
+            <img
+              src={screenshotUrl}
+              alt={`step ${s.step_index}`}
+              className="w-32 max-h-20 rounded border border-slate-200 hover:border-blue-400 cursor-zoom-in object-cover object-top"
+            />
+          </button>
+        )}
       </div>
-      {s.error_message && (
-        <pre className="mt-2 ml-9 text-xs text-red-700 whitespace-pre-wrap">
-          {s.error_message}
-        </pre>
-      )}
-      {s.tool_args && Object.keys(s.tool_args).length > 0 && (
-        <pre className="mt-1 ml-9 text-xs text-slate-400 font-mono whitespace-pre-wrap">
-          {JSON.stringify(s.tool_args, null, 0)}
-        </pre>
-      )}
     </li>
   );
 }
