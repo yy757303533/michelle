@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,8 +19,14 @@ router = APIRouter()
 log = get_logger(__name__)
 
 EDITABLE_FIELDS = {
-    "name", "intent", "module", "tags", "priority",
-    "preconditions", "steps", "assertions",
+    "name",
+    "intent",
+    "module",
+    "tags",
+    "priority",
+    "preconditions",
+    "steps",
+    "assertions",
 }
 
 
@@ -76,9 +82,7 @@ async def list_cases(
 
 
 @router.get("/{case_id}")
-async def get_case(
-    case_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def get_case(case_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
@@ -103,7 +107,7 @@ async def review_case(
     else:
         raise HTTPException(status_code=400, detail="action must be approve|reject")
 
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = datetime.now(UTC)
     await session.commit()
     log.info(
         EVENTS.REVIEW_CASE_ACTION.name,
@@ -116,21 +120,21 @@ async def review_case(
 
 
 @router.post("/bulk-review")
-async def bulk_review(
-    body: BulkReview, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_session)) -> dict:
     """Apply approve/reject to many cases in one transaction."""
     if body.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="action must be approve|reject")
     target = "approved" if body.action == "approve" else "rejected"
 
     rows = (
-        await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids)))
-    ).scalars().all()
+        (await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids))))
+        .scalars()
+        .all()
+    )
     found_ids = {r.case_id for r in rows}
     missing = [cid for cid in body.case_ids if cid not in found_ids]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     updated: list[str] = []
     for r in rows:
         if r.review_status == target:
@@ -181,9 +185,7 @@ async def edit_case(
 
     bad_fields = set(payload) - EDITABLE_FIELDS
     if bad_fields:
-        raise HTTPException(
-            status_code=400, detail=f"non-editable fields: {sorted(bad_fields)}"
-        )
+        raise HTTPException(status_code=400, detail=f"non-editable fields: {sorted(bad_fields)}")
 
     edited: list[str] = []
     for k, v in payload.items():
@@ -198,7 +200,7 @@ async def edit_case(
         # so a human re-confirms the change. Plain field touch on a pending case stays pending.
         if row.review_status in {"approved", "rejected"}:
             row.review_status = "pending"
-        row.updated_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(UTC)
         await session.commit()
         log.info(
             "case.edited",

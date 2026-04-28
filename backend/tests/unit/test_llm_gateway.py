@@ -57,9 +57,7 @@ async def test_gateway_uses_first_provider_when_healthy():
 
 @pytest.mark.asyncio
 async def test_gateway_falls_through_on_rate_limit():
-    primary = FakeClient(
-        "primary", raises=RateLimitError("throttled", provider="primary")
-    )
+    primary = FakeClient("primary", raises=RateLimitError("throttled", provider="primary"))
     backup = FakeClient("backup")
     gw, _ = _gw(primary, backup)
 
@@ -84,9 +82,7 @@ async def test_gateway_falls_through_quota_then_rate_limit_then_succeeds():
 
 @pytest.mark.asyncio
 async def test_gateway_auth_error_does_not_fall_through():
-    primary = FakeClient(
-        "primary", raises=LLMAuthError("not logged in", provider="primary")
-    )
+    primary = FakeClient("primary", raises=LLMAuthError("not logged in", provider="primary"))
     backup = FakeClient("backup")
     gw, _ = _gw(primary, backup)
 

@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.models import PRD, Project, TestCase
+from app.models import PRD, TestCase
 from app.obs import get_logger
 from app.services.prd_diff import diff_prds
 from app.services.prd_parser import Chapter, ParsedPRD
@@ -57,12 +57,16 @@ async def _cases_from_chapter(
     session: AsyncSession, project_id: str, signature: str
 ) -> list[TestCase]:
     rows = (
-        await session.execute(
-            select(TestCase)
-            .where(TestCase.project_id == project_id)
-            .where(TestCase.generated_from == signature)
+        (
+            await session.execute(
+                select(TestCase)
+                .where(TestCase.project_id == project_id)
+                .where(TestCase.generated_from == signature)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return list(rows)
 
 
@@ -241,9 +245,7 @@ async def mark_stale_for_removed_chapters(
     return touched
 
 
-async def find_prev_prd(
-    session: AsyncSession, current: PRD
-) -> PRD | None:
+async def find_prev_prd(session: AsyncSession, current: PRD) -> PRD | None:
     """Resolve the immediate predecessor PRD via prev_version_id."""
     if not current.prev_version_id:
         return None

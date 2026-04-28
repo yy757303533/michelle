@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -219,13 +218,13 @@ def _parse_batch(text: str, log) -> GeneratedBatch:
 
 
 def _mint_case_id(seq: int) -> str:
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    today = datetime.now(UTC).strftime("%Y%m%d")
     return f"TC-{today}-{seq:04d}"
 
 
 async def _next_seq(session: AsyncSession, project_id: str) -> int:
     """Find the next case sequence for today + project."""
-    today_prefix = f"TC-{datetime.now(timezone.utc).strftime('%Y%m%d')}-"
+    today_prefix = f"TC-{datetime.now(UTC).strftime('%Y%m%d')}-"
     rows = await session.execute(
         select(TestCase.case_id).where(
             TestCase.project_id == project_id,

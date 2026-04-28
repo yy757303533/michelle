@@ -27,9 +27,7 @@ from typing import Any
 # Headings we treat as chapter boundaries. Top-level (#) is the document title.
 _HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$", re.MULTILINE)
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-_NUMBERING_RE = re.compile(
-    r"^(?:[#§]+\s*)?(?:\d+(?:\.\d+)*\.?\s+)?(?:[一-鿿]?\s*)?"
-)
+_NUMBERING_RE = re.compile(r"^(?:[#§]+\s*)?(?:\d+(?:\.\d+)*\.?\s+)?(?:[一-鿿]?\s*)?")
 
 
 @dataclass
@@ -65,17 +63,19 @@ def normalize_title(title: str) -> str:
         m = re.match(r"^([§#]+\s*|\d+(?:\.\d+)*\.?\s+|[一-鿿]\.\s*)", s)
         if not m:
             break
-        s = s[m.end():]
+        s = s[m.end() :]
     # Lowercase + collapse spaces
     s = re.sub(r"\s+", " ", s.lower()).strip()
-    # Strip surrounding punctuation
-    s = s.strip(".,;:—-—–·•(){}[]<>「」『』『』")
+    # Strip surrounding punctuation. `.strip()` is character-set, so each
+    # codepoint counts individually — `「」` etc are listed once each.
+    _PUNCT = ".,;:—-–·•(){}[]<>「」『』"
+    s = s.strip(_PUNCT)
     return s
 
 
 def _hash_chapter(level: int, normalized_title: str, body: str) -> str:
     h = hashlib.sha256()
-    h.update(f"{level}|{normalized_title}|".encode("utf-8"))
+    h.update(f"{level}|{normalized_title}|".encode())
     h.update(body.encode("utf-8"))
     return h.hexdigest()
 
@@ -99,7 +99,7 @@ def parse_prd(markdown: str) -> ParsedPRD:
     fm = ""
     if m := _FRONTMATTER_RE.match(text):
         fm = m.group(1)
-        text = text[m.end():]
+        text = text[m.end() :]
 
     # Find all H1/H2/H3 positions
     headings = []
@@ -136,7 +136,7 @@ def parse_prd(markdown: str) -> ParsedPRD:
     # Chapters = each H2/H3 + its body up to the next same-or-higher level boundary
     n_headings = len(headings)
     pos = 0
-    for i, (start, end, level, title_text) in enumerate(headings):
+    for i, (_start, end, level, title_text) in enumerate(headings):
         if level < 2:
             continue  # H1 doesn't open a chapter
         body_start = end

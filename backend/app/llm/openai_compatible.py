@@ -181,11 +181,7 @@ class OpenAICompatibleClient(BaseChatClient):
         msg = choices[0].get("message") or {}
         text = msg.get("content") or ""
         # Some providers (DeepSeek-R1, MiniMax-M2.7, Gemini thinking) attach reasoning
-        reasoning = (
-            msg.get("reasoning_content")
-            or msg.get("reasoning")
-            or ""
-        )
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
 
         usage = data.get("usage") or {}
         result = LLMResult(

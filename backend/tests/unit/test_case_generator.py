@@ -10,10 +10,11 @@ from sqlmodel import SQLModel, select
 
 from app.llm.base import LLMResult
 from app.llm.gateway import GatewayClient, LLMGateway
-from app.models import TestCase  # noqa: F401  registers tables
-from app.models import Project  # noqa: F401
+from app.models import (
+    Project,  # noqa: F401
+    TestCase,  # noqa: F401  registers tables
+)
 from app.services.case_generator import (
-    GeneratedBatch,
     _parse_batch,
     _strip_fences,
     generate_cases_for_chapter,
@@ -216,10 +217,14 @@ async def test_generate_cases_skips_cases_without_steps(session):
 
 
 class _DummyLog:
-    def warning(self, *a, **k): pass
+    def warning(self, *a, **k):
+        pass
 
-    def error(self, *a, **k): pass
+    def error(self, *a, **k):
+        pass
 
-    def info(self, *a, **k): pass
+    def info(self, *a, **k):
+        pass
 
-    def bind(self, **k): return self
+    def bind(self, **k):
+        return self

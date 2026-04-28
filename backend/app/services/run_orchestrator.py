@@ -13,8 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +24,8 @@ from app.agent.claude_runner import (
     RunRequest,
     run_claude_with_playwright,
 )
-from app.agent.trace_parser import ParsedRun, StepEvent as ParsedStep
+from app.agent.trace_parser import ParsedRun
+from app.agent.trace_parser import StepEvent as ParsedStep
 from app.config import settings
 from app.db import async_session_maker
 from app.llm import prompt_id, render
@@ -57,7 +57,9 @@ def _format_assertions(case: TestCase) -> str:
     for i, a in enumerate(case.assertions, start=1):
         desc = a.get("description", "") if isinstance(a, dict) else str(a)
         lines.append(f"{i}. {desc}")
-    return "\n".join(lines) if lines else "(no explicit assertions; verify the steps above succeeded)"
+    return (
+        "\n".join(lines) if lines else "(no explicit assertions; verify the steps above succeeded)"
+    )
 
 
 def _format_preconditions(case: TestCase) -> str:
@@ -114,9 +116,7 @@ def _infer_status(parsed: ParsedRun) -> tuple[str, str | None]:
         return "failed", failure_summary or "model reported case_status=failed"
 
     # No explicit hint → look at steps
-    pw_steps_failed = any(
-        s.is_playwright and s.result_is_error for s in parsed.steps
-    )
+    pw_steps_failed = any(s.is_playwright and s.result_is_error for s in parsed.steps)
     if pw_steps_failed:
         return "failed", "one or more @playwright/mcp tool calls failed"
 
@@ -143,7 +143,7 @@ def _step_intent(parsed: ParsedStep) -> str | None:
     if "url" in a:
         return f"{parsed.tool_name}: {a['url']}"
     if "element" in a:
-        return f"{parsed.tool_name}: {a.get('element','')}"
+        return f"{parsed.tool_name}: {a.get('element', '')}"
     if "text" in a:
         text_preview = str(a.get("text", ""))[:40]
         return f"{parsed.tool_name}: {text_preview!r}"
@@ -228,7 +228,7 @@ async def execute_case(
             await session.commit()
 
         run.status = "running"
-        run.started_at = datetime.now(timezone.utc)
+        run.started_at = datetime.now(UTC)
         await session.commit()
         log.info("orchestrator.run.started")
 
@@ -250,7 +250,7 @@ async def execute_case(
         except ClaudeRunnerError as exc:
             run.status = "aborted"
             run.error_message = str(exc)[:500]
-            run.ended_at = datetime.now(timezone.utc)
+            run.ended_at = datetime.now(UTC)
             run.duration_ms = (
                 int((run.ended_at - (run.started_at or run.ended_at)).total_seconds() * 1000)
                 if run.started_at
@@ -263,8 +263,7 @@ async def execute_case(
         # Trace dump as JSONL alongside artifacts
         (rd / "trace.jsonl").write_text(
             "\n".join(
-                json.dumps(_step_event_summary(s), ensure_ascii=False)
-                for s in outcome.parsed.steps
+                json.dumps(_step_event_summary(s), ensure_ascii=False) for s in outcome.parsed.steps
             ),
             encoding="utf-8",
         )
@@ -310,7 +309,7 @@ async def _persist_results(
     status, err = _infer_status(parsed)
     run.status = status
     run.error_message = err
-    run.ended_at = datetime.now(timezone.utc)
+    run.ended_at = datetime.now(UTC)
     run.duration_ms = (
         int((run.ended_at - (run.started_at or run.ended_at)).total_seconds() * 1000)
         if run.started_at
@@ -406,17 +405,32 @@ def kick_off(case_id: str, run_id: str, env: str, *, timeout_seconds: int = 300)
 # ── Failure heuristics ─────────────────────────────────────────────────────
 
 _ENV_HINTS = (
-    "econnrefused", "connection refused", "connection reset",
-    "name not resolved", "nxdomain", "getaddrinfo enotfound",
-    "net::err_connection", "net::err_name", "net::err_address",
-    "timeout exceeded", "navigation timeout", "tcp connect",
-    "ssl_error", "certificate", "503 service unavailable",
-    "502 bad gateway", "504 gateway",
+    "econnrefused",
+    "connection refused",
+    "connection reset",
+    "name not resolved",
+    "nxdomain",
+    "getaddrinfo enotfound",
+    "net::err_connection",
+    "net::err_name",
+    "net::err_address",
+    "timeout exceeded",
+    "navigation timeout",
+    "tcp connect",
+    "ssl_error",
+    "certificate",
+    "503 service unavailable",
+    "502 bad gateway",
+    "504 gateway",
 )
 _FLAKY_HINTS = (
-    "stale element", "detached from dom", "click was intercepted",
-    "element is not visible", "element is not stable",
-    "wait_for timeout", "race condition",
+    "stale element",
+    "detached from dom",
+    "click was intercepted",
+    "element is not visible",
+    "element is not stable",
+    "wait_for timeout",
+    "race condition",
 )
 
 
@@ -450,9 +464,15 @@ def heuristic_classify(parsed: ParsedRun, error_message: str | None) -> str | No
 # Patterns that MAY recover on a retry (e.g. one Chromium hiccup, transient
 # network blip). Anything else fails fast.
 _TRANSIENT_HINTS = (
-    "timeout", "stale element", "detached from dom",
-    "wait_for timeout", "navigation timeout", "claude cli timed out",
-    "race condition", "element is not visible", "element is not stable",
+    "timeout",
+    "stale element",
+    "detached from dom",
+    "wait_for timeout",
+    "navigation timeout",
+    "claude cli timed out",
+    "race condition",
+    "element is not visible",
+    "element is not stable",
     "click was intercepted",
 )
 
@@ -527,7 +547,7 @@ async def _persist_abort(*, run_id: str, error: str) -> None:
             if run is not None and run.status in {"pending", "running"}:
                 run.status = "aborted"
                 run.error_message = error[:500]
-                run.ended_at = datetime.now(timezone.utc)
+                run.ended_at = datetime.now(UTC)
                 await session.commit()
     except Exception:  # noqa: BLE001
         _log.exception("orchestrator.persist_abort.failed", run_id=run_id)
@@ -548,6 +568,7 @@ async def _mark_status(*, run_id: str, status: str, note: str = "") -> None:
 async def _emit_failure_hook(*, run_id: str) -> None:
     """Fire run.failed hook handlers (auto-diagnose lives there)."""
     from app.agent import hooks
+
     try:
         await hooks.emit("run.failed", {"run_id": run_id})
     except Exception:  # noqa: BLE001
@@ -565,10 +586,10 @@ async def _classify_and_persist(*, run_id: str) -> None:
         from sqlmodel import select
 
         steps = (
-            await session.execute(
-                select(StepEvent).where(StepEvent.run_id == run_id)
-            )
-        ).scalars().all()
+            (await session.execute(select(StepEvent).where(StepEvent.run_id == run_id)))
+            .scalars()
+            .all()
+        )
 
         # Build minimal ParsedRun-compatible
         class _ShimStep:

@@ -14,12 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlmodel import SQLModel, select
 
 from app.models import PRD, Project, TestCase
-from app.services import case_versioning
 from app.services.case_versioning import (
     mark_stale_for_removed_chapters,
     plan_regeneration,
 )
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -348,9 +346,7 @@ async def test_mark_stale_when_chapter_removed(session):
     )
     await session.commit()
 
-    touched = await mark_stale_for_removed_chapters(
-        session=session, new_prd=new, prev_prd=prev
-    )
+    touched = await mark_stale_for_removed_chapters(session=session, new_prd=new, prev_prd=prev)
 
     # Only the pending B-derived case is marked stale
     assert touched == ["TC-FROM-B-PEND"]

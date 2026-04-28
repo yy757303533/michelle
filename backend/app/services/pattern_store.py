@@ -24,7 +24,7 @@ Schema (already in models/pattern.py):
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -37,8 +37,25 @@ from app.obs import EVENTS, get_logger
 _log = get_logger(__name__)
 
 _STOP_WORDS = {
-    "the", "a", "an", "is", "in", "on", "to", "of", "and", "or",
-    "for", "with", "at", "by", "this", "that", "it", "be", "as",
+    "the",
+    "a",
+    "an",
+    "is",
+    "in",
+    "on",
+    "to",
+    "of",
+    "and",
+    "or",
+    "for",
+    "with",
+    "at",
+    "by",
+    "this",
+    "that",
+    "it",
+    "be",
+    "as",
 }
 _KEYWORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}|[一-鿿]{2,}")
 
@@ -46,9 +63,7 @@ _KEYWORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}|[一-鿿]{2,}")
 # ── Public API ─────────────────────────────────────────────────────────────
 
 
-async def absorb_diagnosis(
-    *, diag: Diagnosis, session: AsyncSession
-) -> Pattern:
+async def absorb_diagnosis(*, diag: Diagnosis, session: AsyncSession) -> Pattern:
     """Called when a human confirms a diagnosis. Either merges into an existing
     pattern (matcher-equivalent) or creates a new one.
 
@@ -58,7 +73,7 @@ async def absorb_diagnosis(
     title = (diag.fix_suggestion or diag.reasoning or diag.category)[:120]
 
     existing = await _find_equivalent(matcher=matcher, category=diag.category, session=session)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if existing is not None:
         existing.hit_count += 1
@@ -114,10 +129,14 @@ async def find_matches_for_run(
     if run is None:
         return []
     steps = (
-        await session.execute(
-            select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
+        (
+            await session.execute(
+                select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     candidate = _matcher_from_run(run=run, steps=list(steps))
 
     patterns = (await session.execute(select(Pattern))).scalars().all()
@@ -134,7 +153,7 @@ async def find_matches_for_run(
     matched = [p for _, p in scored[:top_n]]
     for p in matched:
         p.hit_count += 1
-        p.last_hit_at = datetime.now(timezone.utc)
+        p.last_hit_at = datetime.now(UTC)
         _log.info(EVENTS.PATTERN_MATCHED.name, pattern_id=p.pattern_id, pattern_type=p.pattern_type)
     if matched:
         await session.commit()
@@ -144,17 +163,21 @@ async def find_matches_for_run(
 # ── Internals ──────────────────────────────────────────────────────────────
 
 
-async def _extract_matcher(
-    *, diag: Diagnosis, session: AsyncSession
-) -> dict[str, Any]:
+async def _extract_matcher(*, diag: Diagnosis, session: AsyncSession) -> dict[str, Any]:
     run = await session.get(Run, diag.run_id)
     if run is None:
         return {}
     steps = (
-        await session.execute(
-            select(StepEvent).where(StepEvent.run_id == diag.run_id).order_by(StepEvent.step_index)
+        (
+            await session.execute(
+                select(StepEvent)
+                .where(StepEvent.run_id == diag.run_id)
+                .order_by(StepEvent.step_index)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return _matcher_from_run(run=run, steps=list(steps), reasoning=diag.reasoning)
 
 
@@ -212,10 +235,10 @@ async def _find_equivalent(
     """Find a Pattern of the same category whose matcher is highly similar
     (Jaccard ≥ 0.5 across blob_keywords)."""
     rows = (
-        await session.execute(
-            select(Pattern).where(Pattern.pattern_type == category)
-        )
-    ).scalars().all()
+        (await session.execute(select(Pattern).where(Pattern.pattern_type == category)))
+        .scalars()
+        .all()
+    )
     cand_kw = set(matcher.get("blob_keywords") or [])
     if not cand_kw:
         return None
@@ -243,10 +266,6 @@ def _score(candidate: dict, stored: dict) -> float:
     if not union:
         return 0.0
     score = len(a & b) / len(union)
-    if (
-        candidate.get("tool")
-        and stored.get("tool")
-        and candidate["tool"] == stored["tool"]
-    ):
+    if candidate.get("tool") and stored.get("tool") and candidate["tool"] == stored["tool"]:
         score += 0.1
     return min(1.0, score)

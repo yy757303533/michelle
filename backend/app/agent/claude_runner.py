@@ -17,7 +17,6 @@ Subprocess invocation:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shlex
 import time
@@ -110,14 +109,12 @@ async def run_claude_with_playwright(req: RunRequest) -> RunOutcome:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=req.timeout_seconds
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         proc.kill()
         await proc.wait()
         elapsed = int((time.monotonic() - t0) * 1000)
         log.error("agent.claude.timeout", elapsed_ms=elapsed, timeout=req.timeout_seconds)
-        raise ClaudeRunnerError(
-            f"claude timed out after {req.timeout_seconds}s"
-        ) from exc
+        raise ClaudeRunnerError(f"claude timed out after {req.timeout_seconds}s") from exc
 
     elapsed = int((time.monotonic() - t0) * 1000)
 

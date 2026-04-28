@@ -32,9 +32,7 @@ RESULT_LINE_RE = re.compile(r"^\s*RESULT\s*=\s*(\{.*\})\s*$", re.MULTILINE)
 # Page URL / Title / Snapshot extractors — `@playwright/mcp` text format
 _PAGE_URL_RE = re.compile(r"^- Page URL:\s*(.+)$", re.MULTILINE)
 _PAGE_TITLE_RE = re.compile(r"^- Page Title:\s*(.+)$", re.MULTILINE)
-_CONSOLE_SUMMARY_RE = re.compile(
-    r"^- Console:\s*(\d+)\s+errors,\s*(\d+)\s+warnings", re.MULTILINE
-)
+_CONSOLE_SUMMARY_RE = re.compile(r"^- Console:\s*(\d+)\s+errors,\s*(\d+)\s+warnings", re.MULTILINE)
 _SCREENSHOT_FILE_RE = re.compile(
     r"\[Screenshot of viewport\]\((.+?)\)|filename['\"]:\s*['\"]([^'\"]+)['\"]"
 )

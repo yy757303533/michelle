@@ -66,9 +66,7 @@ class FlywheelClient(BaseChatClient):
         timeout_seconds: int | None = None,
     ) -> LLMResult:
         if not self.token:
-            raise LLMAuthError(
-                "Flywheel token is empty (set FLYWHEEL_TOKEN)", provider=self.name
-            )
+            raise LLMAuthError("Flywheel token is empty (set FLYWHEEL_TOKEN)", provider=self.name)
 
         log = _log.bind(provider=self.name, prompt_version=prompt_version, model=self.model)
 
@@ -168,19 +166,13 @@ class FlywheelClient(BaseChatClient):
 
         # Flywheel error envelope is OpenAI-compatible: {"error":{"message":...,"type":...,"code":...}}
         if resp.status_code == 401:
-            raise LLMAuthError(
-                f"Flywheel auth failure: {resp.text[:200]}", provider=self.name
-            )
+            raise LLMAuthError(f"Flywheel auth failure: {resp.text[:200]}", provider=self.name)
         if resp.status_code == 402 or _is_quote_error(data):
             err = (data.get("error") or {}).get("message", resp.text)
             log.warning("llm.completion.quota_exceeded", error=err[:300])
-            raise QuotaExceededError(
-                f"Flywheel quota exceeded: {err[:200]}", provider=self.name
-            )
+            raise QuotaExceededError(f"Flywheel quota exceeded: {err[:200]}", provider=self.name)
         if resp.status_code == 429:
-            raise RateLimitError(
-                f"Flywheel rate limited: {resp.text[:200]}", provider=self.name
-            )
+            raise RateLimitError(f"Flywheel rate limited: {resp.text[:200]}", provider=self.name)
         if resp.status_code >= 400:
             raise LLMResponseFormatError(
                 f"Flywheel error: http={resp.status_code} body={resp.text[:200]}",
@@ -196,12 +188,8 @@ class FlywheelClient(BaseChatClient):
         text = ""
         finish_reason: str | None = None
         usage = data.get("usage") or {}
-        prompt_tokens = (
-            usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        )
-        completion_tokens = (
-            usage.get("completion_tokens") or usage.get("output_tokens") or 0
-        )
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
 
         if "choices" in data and data["choices"]:
             # OpenAI-compatible shape

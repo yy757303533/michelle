@@ -13,7 +13,6 @@ from app.services.run_orchestrator import (
     heuristic_classify,
 )
 
-
 # ── heuristic_classify ─────────────────────────────────────────────────────
 
 
@@ -21,16 +20,26 @@ def _parsed(steps: list[ParsedStep] | None = None) -> ParsedRun:
     return ParsedRun(
         steps=steps or [],
         summary=RunSummary(
-            success=False, final_text="", parsed_result=None,
-            duration_ms=0, num_turns=0, cost_usd=None,
+            success=False,
+            final_text="",
+            parsed_result=None,
+            duration_ms=0,
+            num_turns=0,
+            cost_usd=None,
         ),
     )
 
 
 def _err_step(text: str) -> ParsedStep:
     return ParsedStep(
-        step_index=0, tool_name="x", tool_full_name="x", tool_args={},
-        tool_use_id="t", is_playwright=True, result_is_error=True, result_text=text,
+        step_index=0,
+        tool_name="x",
+        tool_full_name="x",
+        tool_args={},
+        tool_use_id="t",
+        is_playwright=True,
+        result_is_error=True,
+        result_text=text,
     )
 
 
@@ -99,8 +108,13 @@ async def test_semaphore_caps_simultaneous_runs(monkeypatch):
         from app.models import Run
 
         return Run(
-            run_id=_kw["run_id"], trace_id="t", project_id="p", case_id="c",
-            case_version=1, env="x", status="passed",
+            run_id=_kw["run_id"],
+            trace_id="t",
+            project_id="p",
+            case_id="c",
+            case_version=1,
+            env="x",
+            status="passed",
         )
 
     monkeypatch.setattr(ro, "execute_case", fake_execute_case)
@@ -118,10 +132,7 @@ async def test_semaphore_caps_simultaneous_runs(monkeypatch):
     monkeypatch.setattr(ro, "_classify_and_persist", noop_classify)
     monkeypatch.setattr(ro, "_mark_status", noop_mark)
 
-    tasks = [
-        ro.kick_off(case_id="c", run_id=str(i), env="x", timeout_seconds=10)
-        for i in range(5)
-    ]
+    tasks = [ro.kick_off(case_id="c", run_id=str(i), env="x", timeout_seconds=10) for i in range(5)]
     await asyncio.gather(*tasks)
 
     assert peak <= 2, f"semaphore breach: peak={peak} (limit=2)"

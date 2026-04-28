@@ -74,9 +74,7 @@ async def _on_run_failed_auto_diagnose(payload: dict[str, Any]) -> None:
             confidence=diag.confidence,
         )
     except Exception as exc:  # noqa: BLE001
-        _log.exception(
-            "hook.run_failed.auto_diagnose_failed", run_id=run_id, error=str(exc)[:200]
-        )
+        _log.exception("hook.run_failed.auto_diagnose_failed", run_id=run_id, error=str(exc)[:200])
 
 
 async def _on_diagnosis_confirmed_sediment(payload: dict[str, Any]) -> None:

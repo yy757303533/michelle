@@ -51,11 +51,7 @@ async def list_patterns(
     limit: int = 100,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = (
-        select(Pattern)
-        .order_by(desc(Pattern.last_hit_at), desc(Pattern.hit_count))
-        .limit(limit)
-    )
+    stmt = select(Pattern).order_by(desc(Pattern.last_hit_at), desc(Pattern.hit_count)).limit(limit)
     if pattern_type:
         stmt = stmt.where(Pattern.pattern_type == pattern_type)
     rows = (await session.execute(stmt)).scalars().all()
@@ -63,17 +59,19 @@ async def list_patterns(
 
 
 @router.get("/by-run/{run_id}")
-async def get_diagnoses_by_run(
-    run_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def get_diagnoses_by_run(run_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     """All diagnoses + matching sediment patterns for one run."""
     diags = (
-        await session.execute(
-            select(Diagnosis)
-            .where(Diagnosis.run_id == run_id)
-            .order_by(desc(Diagnosis.created_at))
+        (
+            await session.execute(
+                select(Diagnosis)
+                .where(Diagnosis.run_id == run_id)
+                .order_by(desc(Diagnosis.created_at))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     matches = await find_matches_for_run(run_id=run_id, session=session)
     return {
         "data": {
@@ -115,9 +113,7 @@ async def trigger_diagnosis_for_run(
 
 
 @router.get("/{diag_id}")
-async def get_diagnosis(
-    diag_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def get_diagnosis(diag_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     row = await session.get(Diagnosis, diag_id)
     if row is None:
         raise HTTPException(status_code=404, detail="diagnosis not found")

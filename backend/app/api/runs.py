@@ -70,10 +70,7 @@ async def create_runs(
     return {
         "data": {
             "run_ids": [r.run_id for r in runs],
-            "runs": [
-                {"run_id": r.run_id, "case_id": r.case_id, "status": r.status}
-                for r in runs
-            ],
+            "runs": [{"run_id": r.run_id, "case_id": r.case_id, "status": r.status} for r in runs],
         }
     }
 
@@ -211,8 +208,11 @@ async def get_run_report_json(
     steps = (await session.execute(steps_stmt)).scalars().all()
 
     rep = run_to_report_input(
-        run=run, steps=list(steps), case_name=case_name,
-        case_intent=case_intent, case_module=case_module,
+        run=run,
+        steps=list(steps),
+        case_name=case_name,
+        case_intent=case_intent,
+        case_module=case_module,
     )
     return JSONResponse(content={"data": _json_to_dict(render_report_json(rep))})
 
@@ -233,9 +233,7 @@ async def _ensure_report(run: Run, session: AsyncSession) -> Path:
     case_module = case.module if case else ""
 
     steps_stmt = (
-        select(StepEvent)
-        .where(StepEvent.run_id == run.run_id)
-        .order_by(StepEvent.step_index)
+        select(StepEvent).where(StepEvent.run_id == run.run_id).order_by(StepEvent.step_index)
     )
     steps = (await session.execute(steps_stmt)).scalars().all()
     rep = run_to_report_input(
@@ -261,4 +259,5 @@ async def _ensure_report(run: Run, session: AsyncSession) -> Path:
 
 def _json_to_dict(s: str):
     import json
+
     return json.loads(s)

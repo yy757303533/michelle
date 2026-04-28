@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -74,20 +74,24 @@ async def diagnose_run(
 
     if not overwrite_existing:
         existing = (
-            await session.execute(
-                select(Diagnosis).where(Diagnosis.run_id == run_id)
-            )
-        ).scalars().first()
+            (await session.execute(select(Diagnosis).where(Diagnosis.run_id == run_id)))
+            .scalars()
+            .first()
+        )
         if existing is not None:
             log.info("diagnoser.skip_existing", diag_id=existing.diag_id)
             return existing
 
     case = await session.get(TestCase, run.case_id)
     steps = (
-        await session.execute(
-            select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
+        (
+            await session.execute(
+                select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     failed_step = next((s for s in steps if s.status == "failed"), None) or (
         steps[-1] if steps else None
@@ -208,7 +212,7 @@ async def record_feedback(
         raise DiagnoserError(f"diagnosis {diag_id} not found")
     diag.human_feedback = feedback
     diag.feedback_note = note[:1000]
-    diag.feedback_at = datetime.now(timezone.utc)
+    diag.feedback_at = datetime.now(UTC)
     await session.commit()
 
     _log.info(

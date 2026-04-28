@@ -50,8 +50,13 @@ async def test_list_artifacts_empty_run_returns_empty_list(memory_db, app_client
     async with maker() as s:
         s.add(
             Run(
-                run_id="r1", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r1",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()
@@ -67,8 +72,13 @@ async def test_list_artifacts_finds_files(memory_db, app_client):
     async with maker() as s:
         s.add(
             Run(
-                run_id="r2", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r2",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()
@@ -96,8 +106,13 @@ async def test_serve_png_returns_correct_content_type(memory_db, app_client):
     async with maker() as s:
         s.add(
             Run(
-                run_id="r3", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r3",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()
@@ -119,8 +134,13 @@ async def test_path_traversal_blocked(memory_db, app_client, tmp_path):
     async with maker() as s:
         s.add(
             Run(
-                run_id="r4", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r4",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()
@@ -150,8 +170,13 @@ async def test_missing_artifact_404(memory_db, app_client):
     async with maker() as s:
         s.add(
             Run(
-                run_id="r5", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r5",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()
@@ -166,8 +191,13 @@ async def test_jsonl_content_type(memory_db, app_client):
     async with maker() as s:
         s.add(
             Run(
-                run_id="r6", trace_id="t", project_id="demo",
-                case_id="c", case_version=1, env="x", status="passed",
+                run_id="r6",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
             )
         )
         await s.commit()

@@ -24,66 +24,74 @@ def test_parse_empty_stream():
 
 def test_parse_minimal_run_with_one_tool_call():
     lines = [
-        _line({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "tu_1",
-                        "name": "mcp__playwright__browser_navigate",
-                        "input": {"url": "http://example.com"},
-                    }
-                ]
-            },
-        }),
-        _line({
-            "type": "user",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tu_1",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "### Page\n"
-                                    "- Page URL: http://example.com\n"
-                                    "- Page Title: Example\n"
-                                    "- Console: 0 errors, 1 warnings\n"
-                                ),
-                            }
-                        ],
-                    }
-                ]
-            },
-        }),
-        _line({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": 'Done.\nRESULT={"login":"success","step_count":1}',
-                    }
-                ]
-            },
-        }),
-        _line({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "duration_ms": 1234,
-            "num_turns": 2,
-            "total_cost_usd": 0.01,
-            "usage": {
-                "input_tokens": 5,
-                "output_tokens": 50,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-            },
-        }),
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "mcp__playwright__browser_navigate",
+                            "input": {"url": "http://example.com"},
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "### Page\n"
+                                        "- Page URL: http://example.com\n"
+                                        "- Page Title: Example\n"
+                                        "- Console: 0 errors, 1 warnings\n"
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": 'Done.\nRESULT={"login":"success","step_count":1}',
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "duration_ms": 1234,
+                "num_turns": 2,
+                "total_cost_usd": 0.01,
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 50,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+            }
+        ),
     ]
 
     parsed = parse_stream(lines)
@@ -108,26 +116,30 @@ def test_parse_minimal_run_with_one_tool_call():
 
 def test_failure_hint_when_login_failed():
     lines = [
-        _line({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": 'RESULT={"login":"failed","evidence":"still on login page"}',
-                    }
-                ]
-            },
-        }),
-        _line({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "duration_ms": 100,
-            "num_turns": 1,
-            "total_cost_usd": 0.0,
-            "usage": {},
-        }),
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": 'RESULT={"login":"failed","evidence":"still on login page"}',
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "duration_ms": 100,
+                "num_turns": 1,
+                "total_cost_usd": 0.0,
+                "usage": {},
+            }
+        ),
     ]
     parsed = parse_stream(lines)
     assert parsed.summary.success is False
@@ -136,14 +148,16 @@ def test_failure_hint_when_login_failed():
 
 def test_non_playwright_tool_is_marked_correctly():
     lines = [
-        _line({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "tool_use", "id": "x", "name": "ToolSearch", "input": {"q": "foo"}}
-                ]
-            },
-        }),
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "x", "name": "ToolSearch", "input": {"q": "foo"}}
+                    ]
+                },
+            }
+        ),
     ]
     parsed = parse_stream(lines)
     assert len(parsed.steps) == 1

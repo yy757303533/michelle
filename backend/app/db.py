@@ -73,7 +73,11 @@ async def _run_alembic_upgrade() -> None:
         if has_biz and not has_version:
             _log.info("db.alembic.stamp_existing_db_at_head")
             stamp = await asyncio.create_subprocess_exec(
-                "uv", "run", "alembic", "stamp", "head",
+                "uv",
+                "run",
+                "alembic",
+                "stamp",
+                "head",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -82,7 +86,11 @@ async def _run_alembic_upgrade() -> None:
         _log.warning("db.alembic.stamp_check_failed", error=str(e)[:200])
 
     proc = await asyncio.create_subprocess_exec(
-        "uv", "run", "alembic", "upgrade", "head",
+        "uv",
+        "run",
+        "alembic",
+        "upgrade",
+        "head",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -93,9 +101,7 @@ async def _run_alembic_upgrade() -> None:
             stdout=stdout.decode()[:500],
             stderr=stderr.decode()[:500],
         )
-        raise RuntimeError(
-            f"alembic upgrade failed: {(stderr or stdout).decode()[:500]}"
-        )
+        raise RuntimeError(f"alembic upgrade failed: {(stderr or stdout).decode()[:500]}")
     _log.debug("db.alembic.ok", out=stdout.decode()[-200:])
 
 

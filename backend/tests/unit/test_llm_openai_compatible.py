@@ -14,7 +14,6 @@ from app.llm.base import (
 )
 from app.llm.openai_compatible import OpenAICompatibleClient
 
-
 URL = "https://api.example.com/v1/chat/completions"
 
 
@@ -54,9 +53,7 @@ async def test_happy_path():
 @pytest.mark.asyncio
 @respx.mock
 async def test_401_auth_error():
-    respx.post(URL).mock(
-        return_value=httpx.Response(401, json={"error": {"message": "bad key"}})
-    )
+    respx.post(URL).mock(return_value=httpx.Response(401, json={"error": {"message": "bad key"}}))
     with pytest.raises(LLMAuthError):
         await _client().chat("hi", prompt_version="probe_v1")
 
@@ -100,9 +97,7 @@ async def test_quota_detected_in_2xx_body():
 
 @pytest.mark.asyncio
 async def test_no_api_key_raises_auth_error():
-    c = OpenAICompatibleClient(
-        name="t", api_key="", base_url=URL, default_model="m"
-    )
+    c = OpenAICompatibleClient(name="t", api_key="", base_url=URL, default_model="m")
     with pytest.raises(LLMAuthError):
         await c.chat("hi", prompt_version="probe_v1")
 
@@ -147,18 +142,14 @@ async def test_image_dropped_when_not_supported():
         )
 
     respx.post(URL).mock(side_effect=_capture)
-    await _client(supports_image=False).chat(
-        "hi", prompt_version="probe_v1", image=b"\x89PNG\r\n"
-    )
+    await _client(supports_image=False).chat("hi", prompt_version="probe_v1", image=b"\x89PNG\r\n")
     assert "image_url" not in captured["body"]
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_no_choices_raises_format_error():
-    respx.post(URL).mock(
-        return_value=httpx.Response(200, json={"choices": [], "usage": {}})
-    )
+    respx.post(URL).mock(return_value=httpx.Response(200, json={"choices": [], "usage": {}}))
     with pytest.raises(LLMResponseFormatError):
         await _client().chat("hi", prompt_version="probe_v1")
 

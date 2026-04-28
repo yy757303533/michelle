@@ -7,7 +7,7 @@ output structure. We also smoke-test rendering with a real screenshot file.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.models.run import Run, StepEvent
@@ -142,9 +142,7 @@ def test_render_json_summary():
 
 
 def test_write_report_files_persists(tmp_path: Path):
-    rep = ReportInput(
-        project="d", run_id="r", rows=[_row("TC-1", PASS)]
-    )
+    rep = ReportInput(project="d", run_id="r", rows=[_row("TC-1", PASS)])
     paths = write_report_files(rep, tmp_path / "run-r")
     assert paths["html"].is_file()
     assert paths["json"].is_file()
@@ -170,7 +168,13 @@ def test_run_to_report_input_passed_run():
 def test_run_to_report_input_failed_run_includes_step_errors():
     run = _make_run(status="failed", error_message="overall failure")
     steps = [
-        StepEvent(run_id="run-1", step_index=0, event="agent.step.executed", intent="open page", status="ok"),
+        StepEvent(
+            run_id="run-1",
+            step_index=0,
+            event="agent.step.executed",
+            intent="open page",
+            status="ok",
+        ),
         StepEvent(
             run_id="run-1",
             step_index=1,
@@ -250,7 +254,7 @@ def test_render_html_with_run_to_report_input_smoke():
     """End-to-end smoke: synthetic Run → adapter → HTML."""
     run = _make_run(
         status="failed",
-        ended_at=datetime(2026, 4, 27, 12, 0, tzinfo=timezone.utc),
+        ended_at=datetime(2026, 4, 27, 12, 0, tzinfo=UTC),
         error_message="fail x",
     )
     steps = [

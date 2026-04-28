@@ -17,9 +17,7 @@ from app.llm.minimax import MiniMaxClient
 
 # Read MINIMAX_API_KEY directly from env at module import time. Tests'
 # conftest.py sets it to "" if not provided, so this skip path activates.
-_KEY = os.environ.get("MINIMAX_API_KEY", "") or os.environ.get(
-    "MINIMAX_API_KEY_FOR_TESTS", ""
-)
+_KEY = os.environ.get("MINIMAX_API_KEY", "") or os.environ.get("MINIMAX_API_KEY_FOR_TESTS", "")
 _FORCE = os.environ.get("MINIMAX_REAL_TEST") == "1"
 
 skip_if_no_key = pytest.mark.skipif(
@@ -50,7 +48,7 @@ async def test_real_minimax_reasoning_model():
     """M2.7 is a reasoning model — requires bigger max_tokens to surface a final answer."""
     c = MiniMaxClient(api_key=_KEY, model="MiniMax-M2.7")
     r = await c.chat(
-        "Output only the JSON: {\"status\":\"ok\"}",
+        'Output only the JSON: {"status":"ok"}',
         prompt_version="probe_real_v1",
         max_tokens=500,  # reasoning model needs room
     )

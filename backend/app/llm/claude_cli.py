@@ -130,10 +130,8 @@ class ClaudeCLIClient(BaseChatClient):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except asyncio.TimeoutError as exc:
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except TimeoutError as exc:
                 proc.kill()
                 await proc.wait()
                 latency = int((time.monotonic() - t0) * 1000)
@@ -188,7 +186,7 @@ class ClaudeCLIClient(BaseChatClient):
             if mu:
                 model = max(
                     mu.items(),
-                    key=lambda kv: (kv[1].get("inputTokens", 0) + kv[1].get("outputTokens", 0)),
+                    key=lambda kv: kv[1].get("inputTokens", 0) + kv[1].get("outputTokens", 0),
                 )[0]
 
             text = data.get("result", "") or ""

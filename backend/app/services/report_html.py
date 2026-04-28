@@ -14,7 +14,7 @@ import base64
 import html as _html
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,7 @@ class ReportInput:
     excel_path: str | None = None
     """Optional source-of-truth file label (legacy webtest-mcp field; we reuse
     it to point at the PRD or 'AI generated'."""
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     rows: list[ResultRow] = field(default_factory=list)
 
 
@@ -183,7 +183,7 @@ def run_to_report_input(
         project=run.project_id,
         run_id=run.run_id,
         excel_path=case_intent or "AI-generated",
-        timestamp=(run.ended_at or run.started_at or datetime.now(timezone.utc)).isoformat(),
+        timestamp=(run.ended_at or run.started_at or datetime.now(UTC)).isoformat(),
         rows=[row],
     )
 
@@ -233,8 +233,8 @@ def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
         f'<tr{row_cls} data-status="{r.status}">'
         f'<td class="cid">{cid}</td>'
         f'<td class="mod">{mod}</td>'
-        f'<td>{title}</td>'
-        f'<td>{badge}</td>'
+        f"<td>{title}</td>"
+        f"<td>{badge}</td>"
         f'<td class="err">{err}{ss_tag}</td>'
         f"</tr>\n"
     )

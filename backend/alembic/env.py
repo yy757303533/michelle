@@ -23,12 +23,11 @@ BACKEND_DIR = HERE.parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.config import settings  # noqa: E402  (after sys.path setup)
 from sqlmodel import SQLModel  # noqa: E402
 
 # Side-effect import: registers all tables with SQLModel.metadata
 import app.models  # noqa: F401, E402
-
+from app.config import settings  # noqa: E402  (after sys.path setup)
 
 config = context.config
 if config.config_file_name is not None:

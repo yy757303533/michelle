@@ -1,8 +1,8 @@
 """LLM-related endpoints.
 
-  GET  /api/llm/health     — config presence per provider (no LLM calls)
-  POST /api/llm/probe      — actually fire a tiny completion via prefer'd provider
-                              (returns provider, latency, tokens; for dashboard smoke)
+GET  /api/llm/health     — config presence per provider (no LLM calls)
+POST /api/llm/probe      — actually fire a tiny completion via prefer'd provider
+                            (returns provider, latency, tokens; for dashboard smoke)
 """
 
 from __future__ import annotations

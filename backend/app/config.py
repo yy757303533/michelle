@@ -83,7 +83,9 @@ class Settings(BaseSettings):
 
     # ── LLM: Gemini (OpenAI-compatible endpoint) ──
     gemini_api_key: str = ""
-    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    gemini_base_url: str = (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
     gemini_model: str = "gemini-2.5-pro"
 
     # ── LLM: arbitrary 中转站 (free-form OpenAI-compatible relay) ──

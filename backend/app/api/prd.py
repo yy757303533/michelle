@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -156,9 +156,7 @@ async def upload_prd(
 
 
 @router.get("/{prd_id}")
-async def get_prd(
-    prd_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def get_prd(prd_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     row = await session.get(PRD, prd_id)
     if row is None:
         raise HTTPException(status_code=404, detail="PRD not found")
@@ -288,7 +286,9 @@ async def generate_cases(
         "prd.generation.batch_complete",
         prd_id=prd_id,
         chapters_processed=len(indices),
-        chapters_regenerated=sum(1 for r in results if not r.get("skipped") and r.get("saved_count", 0) > 0),
+        chapters_regenerated=sum(
+            1 for r in results if not r.get("skipped") and r.get("saved_count", 0) > 0
+        ),
         chapters_skipped=sum(1 for r in results if r.get("skipped")),
         total_cases=total,
         stale_marked=len(stale_marked),
@@ -299,6 +299,6 @@ async def generate_cases(
             "results": results,
             "total_cases": total,
             "stale_marked_case_ids": stale_marked,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "uploaded_at": datetime.now(UTC).isoformat(),
         }
     }

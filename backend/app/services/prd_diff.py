@@ -73,9 +73,6 @@ def diff_prds(old: ParsedPRD, new: ParsedPRD) -> PRDDiff:
     old_by_key: dict[tuple[int, str], Chapter] = {
         (c.level, c.normalized_title): c for c in old.chapters
     }
-    new_by_key: dict[tuple[int, str], Chapter] = {
-        (c.level, c.normalized_title): c for c in new.chapters
-    }
     deltas: list[ChapterDelta] = []
 
     seen_keys: set[tuple[int, str]] = set()

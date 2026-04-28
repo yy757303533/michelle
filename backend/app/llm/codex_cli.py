@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 import time
-from typing import Any
 
 from app.llm.base import (
     BaseChatClient,
@@ -97,10 +96,8 @@ class CodexCLIClient(BaseChatClient):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
-        except asyncio.TimeoutError as exc:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError as exc:
             proc.kill()
             await proc.wait()
             raise LLMTimeoutError(

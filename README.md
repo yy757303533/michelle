@@ -1,5 +1,10 @@
 # Michelle
 
+[![ci](https://github.com/yy757303533/michelle/actions/workflows/ci.yml/badge.svg)](https://github.com/yy757303533/michelle/actions/workflows/ci.yml)
+![tests](https://img.shields.io/badge/tests-152%20passing-emerald)
+![python](https://img.shields.io/badge/python-3.12+-blue)
+![node](https://img.shields.io/badge/node-22+-blue)
+
 > **AI-native Web 测试平台** · PRD → AI 生成用例 → 人工 review → 一键执行 → AI 诊断 → 沉淀闭环
 >
 > *not a tool, an agent that gets smarter the more it runs.*

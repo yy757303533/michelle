@@ -4,7 +4,6 @@ so no real LLM/browser is touched."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,7 +13,7 @@ from sqlmodel import SQLModel, select
 from app.agent.claude_runner import RunOutcome
 from app.agent.trace_parser import ParsedRun, RunSummary
 from app.agent.trace_parser import StepEvent as ParsedStep
-from app.models import Project, Run, StepEvent, TestCase
+from app.models import Project, StepEvent, TestCase
 from app.services import run_orchestrator
 from app.services.run_orchestrator import (
     _format_assertions,
@@ -24,7 +23,6 @@ from app.services.run_orchestrator import (
     execute_case,
     render_execute_prompt,
 )
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -267,10 +265,16 @@ async def test_execute_case_passed_path(seeded, session):
 
     # StepEvents persisted
     rows = (
-        await session.execute(
-            select(StepEvent).where(StepEvent.run_id == run.run_id).order_by(StepEvent.step_index)
+        (
+            await session.execute(
+                select(StepEvent)
+                .where(StepEvent.run_id == run.run_id)
+                .order_by(StepEvent.step_index)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert len(rows) == 2
     assert rows[0].tool_name == "browser_navigate"
     assert rows[0].status == "ok"
@@ -292,10 +296,10 @@ async def test_execute_case_failed_path(seeded, session):
     assert out.status == "failed"
 
     rows = (
-        await session.execute(
-            select(StepEvent).where(StepEvent.run_id == run.run_id)
-        )
-    ).scalars().all()
+        (await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
     failed = [r for r in rows if r.status == "failed"]
     assert len(failed) == 1
     assert failed[0].tool_name == "browser_type"

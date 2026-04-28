@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
-from unittest.mock import AsyncMock, patch
 
 from app.llm.base import LLMResult
 from app.models import Diagnosis, Pattern, Run, StepEvent, TestCase
@@ -19,10 +20,8 @@ from app.services.pattern_store import (
     _keywords,
     _matcher_from_run,
     _score,
-    absorb_diagnosis,
     find_matches_for_run,
 )
-
 
 # ── _parse_diagnosis_json ─────────────────────────────────────────────────
 
@@ -37,9 +36,7 @@ def test_parse_clean_json():
 
 
 def test_parse_strips_fences():
-    p = _parse_diagnosis_json(
-        '```json\n{"category":"real_bug","confidence":0.9}\n```'
-    )
+    p = _parse_diagnosis_json('```json\n{"category":"real_bug","confidence":0.9}\n```')
     assert p["category"] == "real_bug"
     assert p["confidence"] == 0.9
 
@@ -92,17 +89,26 @@ def _seed_failed_run(s: AsyncSession) -> tuple[Run, TestCase]:
         review_status="approved",
     )
     run = Run(
-        run_id="R1", trace_id="t", project_id="demo", case_id="TC-X",
-        case_version=1, env="x", status="failed",
+        run_id="R1",
+        trace_id="t",
+        project_id="demo",
+        case_id="TC-X",
+        case_version=1,
+        env="x",
+        status="failed",
         error_message="timeout waiting for navigation after click",
     )
     s.add(case)
     s.add(run)
     s.add(
         StepEvent(
-            run_id="R1", step_index=3, event="agent.step.executed",
-            tool_name="browser_click", intent="click 登录 button",
-            status="failed", error_message="element timeout",
+            run_id="R1",
+            step_index=3,
+            event="agent.step.executed",
+            tool_name="browser_click",
+            intent="click 登录 button",
+            status="failed",
+            error_message="element timeout",
         )
     )
     return run, case
@@ -115,10 +121,12 @@ async def test_diagnose_run_persists_diagnosis(db):
 
     fake = LLMResult(
         text='{"category":"flaky","confidence":0.6,'
-             '"reasoning":"the click step timed out which is a known transient issue",'
-             '"fix_suggestion":"increase wait_for to 5s"}',
-        provider="mock", model="mock-1",
-        input_tokens=10, output_tokens=30,
+        '"reasoning":"the click step timed out which is a known transient issue",'
+        '"fix_suggestion":"increase wait_for to 5s"}',
+        provider="mock",
+        model="mock-1",
+        input_tokens=10,
+        output_tokens=30,
     )
     with patch("app.services.diagnoser.get_gateway") as gw_mock:
         gw_mock.return_value.chat = AsyncMock(return_value=fake)
@@ -140,7 +148,8 @@ async def test_diagnose_run_idempotent_unless_overwrite(db):
 
     fake = LLMResult(
         text='{"category":"real_bug","confidence":0.5}',
-        provider="mock", model="mock-1",
+        provider="mock",
+        model="mock-1",
     )
     with patch("app.services.diagnoser.get_gateway") as gw_mock:
         gw_mock.return_value.chat = AsyncMock(return_value=fake)
@@ -155,8 +164,15 @@ async def test_diagnose_run_idempotent_unless_overwrite(db):
 @pytest.mark.asyncio
 async def test_diagnose_run_rejects_passed_run(db):
     db.add(
-        Run(run_id="ok", trace_id="t", project_id="d", case_id="c",
-            case_version=1, env="x", status="passed")
+        Run(
+            run_id="ok",
+            trace_id="t",
+            project_id="d",
+            case_id="c",
+            case_version=1,
+            env="x",
+            status="passed",
+        )
     )
     await db.commit()
     with pytest.raises(DiagnoserError):
@@ -169,7 +185,8 @@ async def test_record_feedback_confirmed_creates_pattern(db):
     await db.commit()
     fake = LLMResult(
         text='{"category":"flaky","confidence":0.6,"reasoning":"timeout race","fix_suggestion":"retry"}',
-        provider="m", model="m",
+        provider="m",
+        model="m",
     )
     with patch("app.services.diagnoser.get_gateway") as gw_mock:
         gw_mock.return_value.chat = AsyncMock(return_value=fake)
@@ -193,7 +210,9 @@ async def test_record_feedback_wrong_does_not_sediment(db):
     _seed_failed_run(db)
     await db.commit()
     fake = LLMResult(
-        text='{"category":"flaky","confidence":0.6}', provider="m", model="m",
+        text='{"category":"flaky","confidence":0.6}',
+        provider="m",
+        model="m",
     )
     with patch("app.services.diagnoser.get_gateway") as gw_mock:
         gw_mock.return_value.chat = AsyncMock(return_value=fake)
@@ -233,19 +252,32 @@ def test_score_zero_when_no_keywords():
 
 def test_matcher_from_run_extracts_failed_step_features():
     run = Run(
-        run_id="r", trace_id="t", project_id="p", case_id="c",
-        case_version=1, env="x", status="failed",
+        run_id="r",
+        trace_id="t",
+        project_id="p",
+        case_id="c",
+        case_version=1,
+        env="x",
+        status="failed",
         error_message="connection refused 172.25.17.105",
     )
     steps = [
         StepEvent(
-            run_id="r", step_index=0, event="agent.step.executed",
-            tool_name="browser_navigate", intent="open page", status="ok",
+            run_id="r",
+            step_index=0,
+            event="agent.step.executed",
+            tool_name="browser_navigate",
+            intent="open page",
+            status="ok",
         ),
         StepEvent(
-            run_id="r", step_index=1, event="agent.step.executed",
-            tool_name="browser_click", intent="click 登录 button",
-            status="failed", error_message="timeout",
+            run_id="r",
+            step_index=1,
+            event="agent.step.executed",
+            tool_name="browser_click",
+            intent="click 登录 button",
+            status="failed",
+            error_message="timeout",
         ),
     ]
     m = _matcher_from_run(run=run, steps=steps)
@@ -260,8 +292,9 @@ async def test_find_matches_for_run_returns_relevant_only(db):
     await db.commit()
     fake = LLMResult(
         text='{"category":"flaky","confidence":0.6,"reasoning":"timeout race",'
-             '"fix_suggestion":"increase wait"}',
-        provider="m", model="m",
+        '"fix_suggestion":"increase wait"}',
+        provider="m",
+        model="m",
     )
     with patch("app.services.diagnoser.get_gateway") as gw_mock:
         gw_mock.return_value.chat = AsyncMock(return_value=fake)

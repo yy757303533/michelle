@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
@@ -57,7 +57,7 @@ async def create_or_update_project(
     if existing:
         for k, v in body.model_dump().items():
             setattr(existing, k, v)
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = datetime.now(UTC)
     else:
         existing = Project(**body.model_dump())
         session.add(existing)
@@ -80,13 +80,17 @@ async def project_aggregate_report(
         raise HTTPException(status_code=404, detail="project not found")
 
     runs = (
-        await session.execute(
-            select(Run)
-            .where(Run.project_id == project_id)
-            .order_by(desc(Run.created_at))
-            .limit(limit * 4)  # over-fetch then dedupe
+        (
+            await session.execute(
+                select(Run)
+                .where(Run.project_id == project_id)
+                .order_by(desc(Run.created_at))
+                .limit(limit * 4)  # over-fetch then dedupe
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     seen: set[str] = set()
     latest: list[Run] = []
@@ -100,8 +104,10 @@ async def project_aggregate_report(
 
     case_ids = [r.case_id for r in latest]
     cases = (
-        await session.execute(select(TestCase).where(TestCase.case_id.in_(case_ids)))
-    ).scalars().all()
+        (await session.execute(select(TestCase).where(TestCase.case_id.in_(case_ids))))
+        .scalars()
+        .all()
+    )
     case_by_id = {c.case_id: c for c in cases}
 
     rows: list[ResultRow] = []
@@ -116,25 +122,36 @@ async def project_aggregate_report(
 
         # Reuse the run-level adapter to pick up screenshot + error string
         steps = (
-            await session.execute(
-                select(StepEvent).where(StepEvent.run_id == r.run_id).order_by(StepEvent.step_index)
+            (
+                await session.execute(
+                    select(StepEvent)
+                    .where(StepEvent.run_id == r.run_id)
+                    .order_by(StepEvent.step_index)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if case is None:
             rows.append(
-                ResultRow(case_id=r.case_id, title=r.case_id, status=status, error=r.error_message or "")
+                ResultRow(
+                    case_id=r.case_id, title=r.case_id, status=status, error=r.error_message or ""
+                )
             )
             continue
         single = run_to_report_input(
-            run=r, steps=list(steps),
-            case_name=case.name, case_intent=case.intent, case_module=case.module,
+            run=r,
+            steps=list(steps),
+            case_name=case.name,
+            case_intent=case.intent,
+            case_module=case.module,
         )
         # Take the (one) row we'd have rendered for this single run
         rows.extend(single.rows)
 
     rep = ReportInput(
         project=proj.name or project_id,
-        run_id=f"{project_id}-aggregate-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
+        run_id=f"{project_id}-aggregate-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}",
         excel_path="latest run per case",
         rows=rows,
     )

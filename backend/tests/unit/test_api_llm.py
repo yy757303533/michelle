@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.llm.base import LLMResult
 from app.llm.gateway import GatewayClient, LLMGateway
 from tests.unit.test_llm_gateway import FakeClient
 
