@@ -205,21 +205,40 @@ function RunsListPage() {
       </div>
 
       {/* Bulk action bar — only shows when at least one row is checked */}
-      {selected.size > 0 && (
-        <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
+      {selected.size > 0 && (() => {
+        // Make the dedup math explicit: same case appearing in 3 failed
+        // runs reruns ONCE, not 3 times — but the user shouldn't have to
+        // figure that out from a single "(N)" on the button.
+        const dupCount = selectedRerunnable.length - selectedUniqueCases.size;
+        const skippedCount = selectedRows.length - selectedRerunnable.length;
+        return (
+        <div className="flex flex-wrap items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
           <span>{selected.size} selected</span>
-          {selectedRows.length !== selectedRerunnable.length && (
+          <span className="text-xs text-slate-400">·</span>
+          <span className="text-xs">
+            <span className="text-emerald-300">{selectedUniqueCases.size}</span> unique case{selectedUniqueCases.size === 1 ? "" : "s"} will rerun
+          </span>
+          {dupCount > 0 && (
+            <span className="text-xs text-slate-400" title="multiple selected runs share the same case_id; rerun fires one new run per case">
+              · {dupCount} duplicate{dupCount > 1 ? "s" : ""} merged
+            </span>
+          )}
+          {skippedCount > 0 && (
             <span className="text-xs text-amber-300">
-              ({selectedRows.length - selectedRerunnable.length} skipped: only failed/aborted/flaky can rerun)
+              · {skippedCount} skipped (only failed/aborted/flaky can rerun)
             </span>
           )}
           <button
             disabled={selectedUniqueCases.size === 0 || rerun.isPending}
             onClick={() => {
               const ids = [...selectedUniqueCases];
+              const dupNote =
+                dupCount > 0
+                  ? `\n\n${selectedRerunnable.length} selected runs → ${ids.length} unique cases (same case selected ${dupCount > 1 ? "multiple times" : "twice"} fires only one new run).`
+                  : "";
               if (
                 window.confirm(
-                  `Rerun ${ids.length} unique case${ids.length > 1 ? "s" : ""} from ${selectedRerunnable.length} selected run${selectedRerunnable.length > 1 ? "s" : ""}?\n\n` +
+                  `Rerun ${ids.length} unique case${ids.length > 1 ? "s" : ""}?${dupNote}\n\n` +
                     `Originals stay untouched.`,
                 )
               ) {
@@ -231,7 +250,7 @@ function RunsListPage() {
             title={
               selectedUniqueCases.size === 0
                 ? "no rerunnable rows in selection (only failed/aborted/flaky can rerun)"
-                : `${selectedUniqueCases.size} unique cases will be rerun`
+                : `${selectedUniqueCases.size} unique case_id(s) — same case_id selected multiple times fires one new run`
             }
           >
             {rerun.isPending
@@ -245,7 +264,8 @@ function RunsListPage() {
             clear
           </button>
         </div>
-      )}
+        );
+      })()}
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {runs.isLoading ? (
