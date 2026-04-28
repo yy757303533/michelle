@@ -209,6 +209,51 @@ async def test_bulk_review_bad_action(app_client):
     assert r.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_review_reset_single_approved_back_to_pending(session, app_client):
+    session.add(_case("TC-R1", review_status="approved"))
+    await session.commit()
+
+    r = await app_client.post("/api/cases/TC-R1/review", json={"action": "reset"})
+    assert r.status_code == 200
+    assert r.json()["data"]["review_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_review_reset_single_rejected_back_to_pending(session, app_client):
+    session.add(_case("TC-R2", review_status="rejected"))
+    await session.commit()
+
+    r = await app_client.post("/api/cases/TC-R2/review", json={"action": "reset"})
+    assert r.status_code == 200
+    assert r.json()["data"]["review_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_bulk_review_reset_mixed_selection(session, app_client):
+    """Reset reverts approved+rejected back to pending; leaves already-pending alone."""
+    session.add(_case("TC-RA", review_status="approved"))
+    session.add(_case("TC-RR", review_status="rejected"))
+    session.add(_case("TC-RP", review_status="pending"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/bulk-review",
+        json={"case_ids": ["TC-RA", "TC-RR", "TC-RP"], "action": "reset"},
+    )
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert sorted(body["updated"]) == ["TC-RA", "TC-RR"]
+    assert body["skipped_already_at_state"] == ["TC-RP"]
+    assert body["target_state"] == "pending"
+
+    rows = {
+        r.case_id: r.review_status
+        for r in (await session.execute(select(TestCase))).scalars().all()
+    }
+    assert rows == {"TC-RA": "pending", "TC-RR": "pending", "TC-RP": "pending"}
+
+
 # ── case_versioning: plan_regeneration ─────────────────────────────────────
 
 

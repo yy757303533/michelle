@@ -17,6 +17,7 @@ interface CaseRow {
   module: string;
   tags: string[];
   priority: string;
+  auth_state: string;
   source: string;
   prompt_version: string;
   model_version: string;
@@ -53,6 +54,11 @@ function CasesPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
+  // Free-text fuzzy filter on top of the status pills. Matches case-insensitive
+  // substrings across the fields a human would actually search on (case_id,
+  // name, intent, module, tags, auth_state). Pure client-side — the cases
+  // query already returns the full project's set, no extra round trip.
+  const [searchQuery, setSearchQuery] = useState("");
 
   const cases = useQuery({
     // Re-key on project so swapping the global selector re-fetches.
@@ -105,7 +111,7 @@ function CasesPage() {
   }, [projectRuns.data]);
 
   const review = useMutation({
-    mutationFn: async ({ id, action }: { id: string; action: "approve" | "reject" }) => {
+    mutationFn: async ({ id, action }: { id: string; action: "approve" | "reject" | "reset" }) => {
       const r = await fetch(`/api/cases/${id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -118,7 +124,7 @@ function CasesPage() {
   });
 
   const bulk = useMutation({
-    mutationFn: async (action: "approve" | "reject") => {
+    mutationFn: async (action: "approve" | "reject" | "reset") => {
       const r = await fetch("/api/cases/bulk-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,7 +254,31 @@ function CasesPage() {
   });
 
   const counts = cases.data?.counts_by_status ?? {};
-  const visible = cases.data?.data ?? [];
+  const allRows = cases.data?.data ?? [];
+  // Apply the free-text filter on top of the server-side status filter.
+  // Matches against the human-meaningful fields: id, name, intent, module,
+  // tags joined, and auth_state. Multi-token query → all tokens must match
+  // (AND), so "登录 P0" narrows to login-related P0 cases.
+  const visible = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return allRows;
+    const tokens = q.split(/\s+/);
+    return allRows.filter((c) => {
+      const haystack = [
+        c.case_id,
+        c.name,
+        c.intent,
+        c.module,
+        c.priority,
+        c.review_status,
+        c.auth_state,
+        (c.tags ?? []).join(" "),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return tokens.every((t) => haystack.includes(t));
+    });
+  }, [allRows, searchQuery]);
   const allSelected = visible.length > 0 && visible.every((c) => selected.has(c.case_id));
 
   const toggleSelect = (id: string) => {
@@ -299,8 +329,8 @@ function CasesPage() {
         </p>
       </div>
 
-      {/* Filter pills + new case */}
-      <div className="flex items-center gap-2">
+      {/* Filter pills + search + new case */}
+      <div className="flex flex-wrap items-center gap-2">
         {STATUS_FILTERS.map((f) => {
           const n = f.key
             ? (counts[f.key] ?? 0)
@@ -327,6 +357,30 @@ function CasesPage() {
             </button>
           );
         })}
+        <div className="relative ml-2 flex-1 min-w-[200px] max-w-md">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              // Same hidden-row guard as filter pill switches: a query
+              // that hides a checked row shouldn't let it stowaway into
+              // the next bulk action.
+              setSelected(new Set());
+            }}
+            placeholder="搜索 name / intent / module / tags…  (空格分隔多关键字)"
+            className="w-full text-sm px-3 py-1 rounded border border-slate-200 focus:border-slate-400 focus:outline-none"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-sm"
+              title="clear search"
+            >
+              ×
+            </button>
+          )}
+        </div>
         <div className="ml-auto">
           <button
             onClick={() => setCreating((v) => !v)}
@@ -336,6 +390,20 @@ function CasesPage() {
           </button>
         </div>
       </div>
+
+      {/* Search summary line — only when actually searching */}
+      {searchQuery && (
+        <div className="text-xs text-slate-500 -mt-2">
+          {visible.length} of {allRows.length} cases match{" "}
+          <code className="font-mono">{searchQuery}</code>
+          {filter && (
+            <>
+              {" "}
+              within <code>{filter}</code>
+            </>
+          )}
+        </div>
+      )}
 
       {creating && (
         <NewCaseFormPanel
@@ -348,29 +416,75 @@ function CasesPage() {
 
       {/* Bulk action bar */}
       {selected.size > 0 && (() => {
-        // Only approved cases can be run; the bulk Run button filters down
-        // to those, so the user never accidentally fires runs against
-        // pending/rejected/stale rows that haven't been confirmed yet.
-        const approvedSelected = visible.filter(
-          (c) => selected.has(c.case_id) && c.review_status === "approved",
+        // Each verb only makes sense for some review_statuses, so we count
+        // the actionable subset up front and show it on the button. Without
+        // this, "200 selected · ▶ Run (7)" looks like a bug — the user can't
+        // tell that approve/reject would also no-op on most of the 200.
+        const selectedRows = visible.filter((c) => selected.has(c.case_id));
+        const approvedSelected = selectedRows.filter((c) => c.review_status === "approved");
+        const pendingSelected = selectedRows.filter(
+          (c) => c.review_status === "pending" || c.review_status === "stale",
+        );
+        const reviewedSelected = selectedRows.filter(
+          (c) => c.review_status === "approved" || c.review_status === "rejected",
         );
         const nonApprovedCount = selected.size - approvedSelected.length;
         return (
         <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
           <span>{selected.size} selected</span>
           <button
-            disabled={bulk.isPending || bulkDelete.isPending || bulkRun.isPending}
+            disabled={
+              pendingSelected.length === 0 ||
+              bulk.isPending || bulkDelete.isPending || bulkRun.isPending
+            }
             onClick={() => bulk.mutate("approve")}
             className="bg-emerald-600 px-3 py-0.5 rounded hover:bg-emerald-500 disabled:opacity-50"
+            title={
+              pendingSelected.length === 0
+                ? "no pending/stale cases in selection"
+                : `${pendingSelected.length} pending case${pendingSelected.length > 1 ? "s" : ""} → approved`
+            }
           >
-            ✓ Approve
+            ✓ Approve {pendingSelected.length > 0 ? `(${pendingSelected.length})` : ""}
           </button>
           <button
-            disabled={bulk.isPending || bulkDelete.isPending || bulkRun.isPending}
+            disabled={
+              pendingSelected.length === 0 ||
+              bulk.isPending || bulkDelete.isPending || bulkRun.isPending
+            }
             onClick={() => bulk.mutate("reject")}
             className="bg-red-600 px-3 py-0.5 rounded hover:bg-red-500 disabled:opacity-50"
+            title={
+              pendingSelected.length === 0
+                ? "no pending/stale cases in selection"
+                : `${pendingSelected.length} pending case${pendingSelected.length > 1 ? "s" : ""} → rejected`
+            }
           >
-            ✗ Reject
+            ✗ Reject {pendingSelected.length > 0 ? `(${pendingSelected.length})` : ""}
+          </button>
+          <button
+            disabled={
+              reviewedSelected.length === 0 ||
+              bulk.isPending || bulkDelete.isPending || bulkRun.isPending
+            }
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Revert ${reviewedSelected.length} case${reviewedSelected.length > 1 ? "s" : ""} back to pending?\n\n` +
+                    `This undoes the approve/reject verdict so they re-enter the review queue.`,
+                )
+              ) {
+                bulk.mutate("reset");
+              }
+            }}
+            className="bg-amber-600 px-3 py-0.5 rounded hover:bg-amber-500 disabled:opacity-50"
+            title={
+              reviewedSelected.length === 0
+                ? "no approved/rejected cases in selection"
+                : `${reviewedSelected.length} approved/rejected case${reviewedSelected.length > 1 ? "s" : ""} → pending`
+            }
+          >
+            ↺ Revert {reviewedSelected.length > 0 ? `(${reviewedSelected.length})` : ""}
           </button>
           <button
             disabled={
@@ -476,6 +590,7 @@ function CasesPage() {
                   }
                   onApprove={() => review.mutate({ id: c.case_id, action: "approve" })}
                   onReject={() => review.mutate({ id: c.case_id, action: "reject" })}
+                  onReset={() => review.mutate({ id: c.case_id, action: "reset" })}
                   onRun={() => runMut.mutate(c.case_id)}
                   onEdit={() => setEditing(c.case_id)}
                   onCancelEdit={() => setEditing(null)}
@@ -680,6 +795,7 @@ function CaseRowView({
   onToggle,
   onApprove,
   onReject,
+  onReset,
   onRun,
   onEdit,
   onCancelEdit,
@@ -699,6 +815,7 @@ function CaseRowView({
   onToggle: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onReset: () => void;
   onRun: () => void;
   onEdit: () => void;
   onCancelEdit: () => void;
@@ -810,7 +927,7 @@ function CaseRowView({
                 {runBusy ? "starting…" : "▶ Run"}
               </button>
               <button
-                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 mr-1"
                 onClick={() => {
                   if (!expanded) onToggle();
                   onEdit();
@@ -818,6 +935,14 @@ function CaseRowView({
                 title="editing an approved case re-opens it as pending"
               >
                 edit
+              </button>
+              <button
+                className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50"
+                disabled={busy}
+                onClick={onReset}
+                title="revert to pending — undo the approve verdict without editing"
+              >
+                ↺ revert
               </button>
               {/* No delete on approved — user must reject first. The
                   contract is that approved == human-confirmed, and one
@@ -834,6 +959,14 @@ function CaseRowView({
                 title="edit re-opens the case as pending"
               >
                 edit
+              </button>
+              <button
+                className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800 hover:bg-amber-200 disabled:opacity-50 mr-1"
+                disabled={busy}
+                onClick={onReset}
+                title="revert to pending — undo the reject verdict"
+              >
+                ↺ revert
               </button>
               <DeleteBtn busy={deleteBusy} onDelete={onDelete} />
             </>

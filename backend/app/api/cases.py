@@ -32,7 +32,12 @@ EDITABLE_FIELDS = {
 }
 
 
-ReviewVerb = Literal["approve", "reject"]
+ReviewVerb = Literal["approve", "reject", "reset"]
+_VERB_TO_STATE: dict[str, str] = {
+    "approve": "approved",
+    "reject": "rejected",
+    "reset": "pending",
+}
 AuthState = Literal["logged-in", "logged-out", "wrong-creds", "public"]
 
 
@@ -189,7 +194,7 @@ async def review_case(
         raise HTTPException(status_code=404, detail="case not found")
 
     before = row.review_status
-    row.review_status = "approved" if body.action == "approve" else "rejected"
+    row.review_status = _VERB_TO_STATE[body.action]
     row.updated_at = datetime.now(UTC)
     await session.commit()
     log.info(
@@ -205,8 +210,12 @@ async def review_case(
 
 @router.post("/bulk-review")
 async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_session)) -> dict:
-    """Apply approve/reject to many cases in one transaction."""
-    target = "approved" if body.action == "approve" else "rejected"
+    """Apply approve/reject/reset to many cases in one transaction.
+
+    `reset` reverts approved/rejected cases back to `pending` — useful when
+    a reviewer wants to take back a verdict without having to edit the case
+    body. (Edits already auto-reset, but that's a heavier action.)"""
+    target = _VERB_TO_STATE[body.action]
 
     rows = (
         (await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids))))
