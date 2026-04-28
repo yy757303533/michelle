@@ -180,6 +180,16 @@ async def generate_cases(
     body: GenerateRequest,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Diff-aware case regeneration.
+
+    For each requested chapter:
+      - approved cases exist  → skip (never auto-overwrite human review)
+      - chapter unchanged vs prev PRD → skip (no LLM call)
+      - otherwise → call LLM and persist new cases
+
+    Also marks cases from removed chapters as `review_status="stale"` so the
+    review UI can surface them for human decision.
+    """
     prd = await session.get(PRD, prd_id)
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD not found")
@@ -187,20 +197,55 @@ async def generate_cases(
     if proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    from app.services.case_versioning import (
+        find_prev_prd,
+        mark_stale_for_removed_chapters,
+        plan_regeneration,
+    )
     from app.services.prd_parser import Chapter
 
     indices = body.chapter_indices
     if indices is None:
         indices = list(range(len(prd.chapters)))
-
     indices = [i for i in indices if 0 <= i < len(prd.chapters)]
     if not indices:
         return {"data": {"prd_id": prd_id, "results": [], "total_cases": 0}}
 
+    prev_prd = await find_prev_prd(session, prd)
+    stale_marked = await mark_stale_for_removed_chapters(
+        session=session, new_prd=prd, prev_prd=prev_prd
+    )
+
+    decisions = await plan_regeneration(
+        session=session, new_prd=prd, prev_prd=prev_prd, chapter_indices=indices
+    )
+
     results: list[dict[str, Any]] = []
     total = 0
-    for idx in indices:
-        chap = Chapter(**prd.chapters[idx])
+    for d in decisions:
+        chap = Chapter(**prd.chapters[d.chapter_index])
+
+        if d.action != "regenerate":
+            results.append(
+                {
+                    "chapter_index": d.chapter_index,
+                    "chapter_title": d.title,
+                    "saved_count": 0,
+                    "skipped": True,
+                    "skip_reason": d.reason,
+                    "skip_action": d.action,
+                    "existing_case_ids": d.existing_case_ids,
+                }
+            )
+            log.info(
+                "prd.generation.chapter_skipped",
+                prd_id=prd_id,
+                chapter_index=d.chapter_index,
+                action=d.action,
+                reason=d.reason,
+            )
+            continue
+
         try:
             saved, batch = await generate_cases_for_chapter(
                 project_id=prd.project_id,
@@ -213,26 +258,28 @@ async def generate_cases(
             )
             results.append(
                 {
-                    "chapter_index": idx,
-                    "chapter_title": chap.title,
+                    "chapter_index": d.chapter_index,
+                    "chapter_title": d.title,
                     "saved_count": len(saved),
                     "saved_case_ids": [c.case_id for c in saved],
                     "coverage_notes": batch.coverage_notes,
+                    "skipped": False,
                 }
             )
             total += len(saved)
         except Exception as exc:  # noqa: BLE001
             log.exception(
                 "case.generation.failed",
-                chapter_index=idx,
-                title=chap.title,
+                chapter_index=d.chapter_index,
+                title=d.title,
                 error=str(exc)[:200],
             )
             results.append(
                 {
-                    "chapter_index": idx,
-                    "chapter_title": chap.title,
+                    "chapter_index": d.chapter_index,
+                    "chapter_title": d.title,
                     "saved_count": 0,
+                    "skipped": False,
                     "error": str(exc)[:200],
                 }
             )
@@ -241,13 +288,17 @@ async def generate_cases(
         "prd.generation.batch_complete",
         prd_id=prd_id,
         chapters_processed=len(indices),
+        chapters_regenerated=sum(1 for r in results if not r.get("skipped") and r.get("saved_count", 0) > 0),
+        chapters_skipped=sum(1 for r in results if r.get("skipped")),
         total_cases=total,
+        stale_marked=len(stale_marked),
     )
     return {
         "data": {
             "prd_id": prd_id,
             "results": results,
             "total_cases": total,
+            "stale_marked_case_ids": stale_marked,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
         }
     }

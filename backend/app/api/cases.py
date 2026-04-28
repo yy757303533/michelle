@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
@@ -17,10 +18,34 @@ from app.obs import EVENTS, get_logger
 router = APIRouter()
 log = get_logger(__name__)
 
+EDITABLE_FIELDS = {
+    "name", "intent", "module", "tags", "priority",
+    "preconditions", "steps", "assertions",
+}
+
 
 class ReviewAction(BaseModel):
     action: str  # approve | reject
     note: str = ""
+
+
+class CaseEdit(BaseModel):
+    """Partial edit of a case. Any field present overwrites + is added to
+    manual_edited_fields, which protects it from future LLM regenerations."""
+
+    name: str | None = None
+    intent: str | None = None
+    module: str | None = None
+    tags: list[str] | None = None
+    priority: str | None = None
+    preconditions: list[str] | None = None
+    steps: list[dict[str, Any]] | None = None
+    assertions: list[dict[str, Any]] | None = None
+
+
+class BulkReview(BaseModel):
+    case_ids: list[str] = Field(min_length=1)
+    action: str  # approve | reject
 
 
 @router.get("/")
@@ -88,3 +113,98 @@ async def review_case(
         after_state=row.review_status,
     )
     return {"data": row.model_dump()}
+
+
+@router.post("/bulk-review")
+async def bulk_review(
+    body: BulkReview, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Apply approve/reject to many cases in one transaction."""
+    if body.action not in {"approve", "reject"}:
+        raise HTTPException(status_code=400, detail="action must be approve|reject")
+    target = "approved" if body.action == "approve" else "rejected"
+
+    rows = (
+        await session.execute(select(TestCase).where(TestCase.case_id.in_(body.case_ids)))
+    ).scalars().all()
+    found_ids = {r.case_id for r in rows}
+    missing = [cid for cid in body.case_ids if cid not in found_ids]
+
+    now = datetime.now(timezone.utc)
+    updated: list[str] = []
+    for r in rows:
+        if r.review_status == target:
+            continue
+        before = r.review_status
+        r.review_status = target
+        r.updated_at = now
+        updated.append(r.case_id)
+        log.info(
+            EVENTS.REVIEW_CASE_ACTION.name,
+            case_id=r.case_id,
+            action=body.action,
+            before_state=before,
+            after_state=target,
+            via="bulk",
+        )
+    await session.commit()
+    return {
+        "data": {
+            "updated": updated,
+            "skipped_already_at_state": [
+                cid for cid in body.case_ids if cid in found_ids and cid not in updated
+            ],
+            "missing": missing,
+            "target_state": target,
+        }
+    }
+
+
+@router.patch("/{case_id}")
+async def edit_case(
+    case_id: str,
+    body: CaseEdit,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Partial edit. Each field set in the body is added to
+    manual_edited_fields, which protects it from future LLM regenerations.
+
+    Edits don't change review_status; the user re-reviews after editing.
+    """
+    row = await session.get(TestCase, case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="case not found")
+
+    payload = body.model_dump(exclude_unset=True, exclude_none=True)
+    if not payload:
+        return {"data": row.model_dump(), "edited_fields": []}
+
+    bad_fields = set(payload) - EDITABLE_FIELDS
+    if bad_fields:
+        raise HTTPException(
+            status_code=400, detail=f"non-editable fields: {sorted(bad_fields)}"
+        )
+
+    edited: list[str] = []
+    for k, v in payload.items():
+        if getattr(row, k) != v:
+            setattr(row, k, v)
+            edited.append(k)
+
+    if edited:
+        merged = list({*row.manual_edited_fields, *edited})
+        row.manual_edited_fields = merged
+        # Edits revert review back to pending if the case was already approved/rejected
+        # so a human re-confirms the change. Plain field touch on a pending case stays pending.
+        if row.review_status in {"approved", "rejected"}:
+            row.review_status = "pending"
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        log.info(
+            "case.edited",
+            case_id=case_id,
+            edited_fields=edited,
+            now_pending=(row.review_status == "pending"),
+        )
+
+    return {"data": row.model_dump(), "edited_fields": edited}
