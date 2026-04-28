@@ -54,6 +54,7 @@ function CasesPage() {
     queryFn: async (): Promise<CasesResponse> => {
       const u = filter ? `/api/cases/?status=${encodeURIComponent(filter)}` : "/api/cases/";
       const r = await fetch(u);
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       return r.json();
     },
   });
@@ -143,6 +144,18 @@ function CasesPage() {
           {runMut.error && (
             <span className="ml-2 text-red-600">run error: {(runMut.error as Error).message}</span>
           )}
+          {review.error && (
+            <span className="ml-2 text-red-600">review error: {(review.error as Error).message}</span>
+          )}
+          {bulk.error && (
+            <span className="ml-2 text-red-600">bulk error: {(bulk.error as Error).message}</span>
+          )}
+          {editMut.error && (
+            <span className="ml-2 text-red-600">edit error: {(editMut.error as Error).message}</span>
+          )}
+          {cases.error && (
+            <span className="ml-2 text-red-600">load error: {(cases.error as Error).message}</span>
+          )}
         </p>
       </div>
 
@@ -156,7 +169,13 @@ function CasesPage() {
           return (
             <button
               key={f.key}
-              onClick={() => setFilter(f.key)}
+              onClick={() => {
+                setFilter(f.key);
+                // Without this, IDs selected under one filter remain in
+                // `selected` after switching tabs; bulk-review would then act
+                // on rows the user can't see.
+                setSelected(new Set());
+              }}
               className={
                 "text-sm px-3 py-1 rounded border " +
                 (active
@@ -244,7 +263,7 @@ function CasesPage() {
                   onSubmitEdit={(patch) =>
                     editMut.mutate({ id: c.case_id, patch })
                   }
-                  busy={review.isPending}
+                  busy={review.isPending && review.variables?.id === c.case_id}
                   runBusy={runMut.isPending && runMut.variables === c.case_id}
                   editBusy={editMut.isPending && editMut.variables?.id === c.case_id}
                 />
@@ -363,13 +382,25 @@ function CaseRowView({
               </button>
             </>
           ) : c.review_status === "approved" ? (
-            <button
-              className="text-xs px-2 py-0.5 rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50"
-              disabled={runBusy}
-              onClick={onRun}
-            >
-              {runBusy ? "starting…" : "▶ Run"}
-            </button>
+            <>
+              <button
+                className="text-xs px-2 py-0.5 rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50 mr-1"
+                disabled={runBusy}
+                onClick={onRun}
+              >
+                {runBusy ? "starting…" : "▶ Run"}
+              </button>
+              <button
+                className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+                onClick={() => {
+                  if (!expanded) onToggle();
+                  onEdit();
+                }}
+                title="editing an approved case re-opens it as pending"
+              >
+                edit
+              </button>
+            </>
           ) : (
             <span className="text-xs text-slate-400">—</span>
           )}
@@ -471,8 +502,13 @@ function EditForm({
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => {
-        const [a, b] = line.split("|").map((x) => x.trim());
-        return b ? { intent: a, expected: b } : { intent: a };
+        // Split on the FIRST `|` only — `expected` may legitimately contain
+        // pipes (regex literals, table cells in the description, …).
+        const idx = line.indexOf("|");
+        if (idx === -1) return { intent: line.trim() };
+        const intent = line.slice(0, idx).trim();
+        const expected = line.slice(idx + 1).trim();
+        return expected ? { intent, expected } : { intent };
       });
     if (JSON.stringify(newSteps) !== JSON.stringify(c.steps)) patch.steps = newSteps;
 
@@ -484,6 +520,10 @@ function EditForm({
     if (JSON.stringify(newAssertions) !== JSON.stringify(c.assertions))
       patch.assertions = newAssertions;
 
+    if (Object.keys(patch).length === 0) {
+      onCancel();
+      return;
+    }
     onSubmit(patch);
   };
 

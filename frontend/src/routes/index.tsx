@@ -70,13 +70,13 @@ function Dashboard() {
 
       <BackendHealth />
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <CasesWidget />
         <RecentRunsWidget />
         <PRDsWidget />
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <LLMProvidersWidget />
         <ProbePanel />
       </div>
@@ -327,7 +327,7 @@ function ProbePanel() {
                 value={
                   <code>
                     {last.input_tokens}/{last.output_tokens}
-                    {last.cost_usd ? ` · $${last.cost_usd.toFixed(3)}` : ""}
+                    {last.cost_usd != null ? ` · $${last.cost_usd.toFixed(3)}` : ""}
                   </code>
                 }
               />

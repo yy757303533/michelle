@@ -96,7 +96,10 @@ function PrdPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          chapter_indices: [...selected],
+          // Sort numerically — Set iteration order is insertion order, which
+          // produces an unstable list when the user toggles checkboxes off
+          // and back on.
+          chapter_indices: [...selected].sort((a, b) => a - b),
           max_cases_per_chapter: 8,
         }),
       });
@@ -106,6 +109,9 @@ function PrdPage() {
     onSuccess: (resp) => {
       setGenResult(resp.data);
       qc.invalidateQueries({ queryKey: ["cases"] });
+      // Dashboard widget keys on ["cases-summary"] — invalidate explicitly so
+      // the home page reflects the new generated cases without a manual reload.
+      qc.invalidateQueries({ queryKey: ["cases-summary"] });
     },
   });
 

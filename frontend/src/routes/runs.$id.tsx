@@ -1,6 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+/** Build an artifact URL with each path segment percent-encoded so filenames
+ * with spaces / `#` / `?` round-trip correctly to the backend's
+ * /artifacts/{filename:path} route. */
+function artifactUrl(runId: string, name: string): string {
+  const id = encodeURIComponent(runId);
+  const path = name.split("/").map(encodeURIComponent).join("/");
+  return `/api/runs/${id}/artifacts/${path}`;
+}
 
 export const Route = createFileRoute("/runs/$id")({
   component: RunDetailPage,
@@ -74,6 +83,12 @@ function RunDetailPage() {
     },
   });
 
+  // The artifact-list polling cadence is gated by the OUTER `run` query's
+  // status, not its own data — `q.state.data` here is ArtifactsResponse and
+  // would never have a `data.run.status` field, so the original code
+  // effectively polled forever every 3s.
+  const runStatus = data?.data.run.status;
+  const isTerminal = Boolean(runStatus && TERMINAL.has(runStatus));
   const artifacts = useQuery({
     queryKey: ["run-artifacts", id],
     queryFn: async (): Promise<ArtifactsResponse> => {
@@ -81,27 +96,31 @@ function RunDetailPage() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
-    refetchInterval: (q) => {
-      const status = (q.state.data as RunDetail | undefined)?.data?.run?.status;
-      return status && TERMINAL.has(status) ? false : 3000;
-    },
+    refetchInterval: () => (isTerminal ? false : 3000),
     enabled: Boolean(data),
   });
 
-  /** Map step_index → image URL by matching filenames like step-N.png / final.png. */
+  // The run can flip to terminal a fraction of a second before the report
+  // writer flushes the final screenshots/report.html. Without a one-shot
+  // refetch we can race past the last artifact list and leave the page
+  // showing a stale set.
+  useEffect(() => {
+    if (isTerminal) {
+      void artifacts.refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTerminal]);
+
+  /** Map step_index → image URL by matching filenames like step-N.png. */
   const screenshotByStep = useMemo<Record<number, string>>(() => {
     const m: Record<number, string> = {};
     if (!artifacts.data) return m;
     for (const f of artifacts.data.data) {
       if (!f.is_image) continue;
-      const url = `/api/runs/${id}/artifacts/${f.name}`;
       const stepMatch = f.name.match(/step-(\d+)\.(png|jpg|jpeg|webp)$/i);
       if (stepMatch) {
-        m[parseInt(stepMatch[1], 10)] = url;
-        continue;
+        m[parseInt(stepMatch[1], 10)] = artifactUrl(id, f.name);
       }
-      // also accept names like "after-login.png", "final.png" — attach to last step
-      // (we backfill these into the final step in the render pass).
     }
     return m;
   }, [artifacts.data, id]);
@@ -117,7 +136,7 @@ function RunDetailPage() {
           !/step-\d+\./i.test(f.name) &&
           !f.name.startsWith("screenshots/")  // already accounted for via step_event mapping
       )
-      .map((f) => ({ name: f.name, url: `/api/runs/${id}/artifacts/${f.name}` }));
+      .map((f) => ({ name: f.name, url: artifactUrl(id, f.name) }));
   }, [artifacts.data, id]);
 
   if (isLoading) return <div className="text-slate-400">loading…</div>;
@@ -209,7 +228,14 @@ function RunDetailPage() {
               <StepRow
                 key={s.step_index}
                 s={s}
-                screenshotUrl={screenshotByStep[s.step_index] ?? null}
+                screenshotUrl={
+                  // Prefer the explicit screenshot path the backend recorded
+                  // on the StepEvent; fall back to filename-pattern guess for
+                  // older runs that didn't populate it.
+                  s.screenshot_after
+                    ? artifactUrl(id, s.screenshot_after)
+                    : (screenshotByStep[s.step_index] ?? null)
+                }
                 onShowImage={(url) => setLightbox(url)}
               />
             ))}
