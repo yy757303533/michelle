@@ -1,5 +1,6 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
+import { HeaderClock } from "../components/HeaderClock";
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -29,6 +30,7 @@ function RootLayout() {
                 Runs
               </Link>
             </nav>
+            <HeaderClock />
           </div>
         </div>
       </header>
