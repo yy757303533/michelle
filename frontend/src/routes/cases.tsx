@@ -186,6 +186,28 @@ function CasesPage() {
     },
   });
 
+  const bulkRun = useMutation({
+    mutationFn: async (
+      caseIds: string[],
+    ): Promise<{ data: { run_ids: string[] } }> => {
+      const r = await fetch("/api/runs/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_ids: caseIds, env: "default" }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      // Land on the runs list rather than a single run — for a batch the
+      // user wants the overview, not one specific timeline.
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["runs-recent"] });
+      navigate({ to: "/runs" });
+    },
+  });
+
   const counts = cases.data?.counts_by_status ?? {};
   const visible = cases.data?.data ?? [];
   const allSelected = visible.length > 0 && visible.every((c) => selected.has(c.case_id));
@@ -283,22 +305,62 @@ function CasesPage() {
       )}
 
       {/* Bulk action bar */}
-      {selected.size > 0 && (
+      {selected.size > 0 && (() => {
+        // Only approved cases can be run; the bulk Run button filters down
+        // to those, so the user never accidentally fires runs against
+        // pending/rejected/stale rows that haven't been confirmed yet.
+        const approvedSelected = visible.filter(
+          (c) => selected.has(c.case_id) && c.review_status === "approved",
+        );
+        const nonApprovedCount = selected.size - approvedSelected.length;
+        return (
         <div className="flex items-center gap-3 bg-slate-900 text-white rounded px-3 py-2 text-sm">
           <span>{selected.size} selected</span>
           <button
-            disabled={bulk.isPending || bulkDelete.isPending}
+            disabled={bulk.isPending || bulkDelete.isPending || bulkRun.isPending}
             onClick={() => bulk.mutate("approve")}
             className="bg-emerald-600 px-3 py-0.5 rounded hover:bg-emerald-500 disabled:opacity-50"
           >
             ✓ Approve
           </button>
           <button
-            disabled={bulk.isPending || bulkDelete.isPending}
+            disabled={bulk.isPending || bulkDelete.isPending || bulkRun.isPending}
             onClick={() => bulk.mutate("reject")}
             className="bg-red-600 px-3 py-0.5 rounded hover:bg-red-500 disabled:opacity-50"
           >
             ✗ Reject
+          </button>
+          <button
+            disabled={
+              approvedSelected.length === 0 ||
+              bulkRun.isPending ||
+              bulk.isPending ||
+              bulkDelete.isPending
+            }
+            onClick={() => {
+              const ids = approvedSelected.map((c) => c.case_id);
+              const note =
+                nonApprovedCount > 0
+                  ? `\n\n${nonApprovedCount} non-approved case${nonApprovedCount > 1 ? "s" : ""} in selection will be skipped — only approved cases run.`
+                  : "";
+              if (
+                window.confirm(
+                  `Run ${ids.length} approved case${ids.length > 1 ? "s" : ""}?` +
+                    note +
+                    `\n\nEach case spawns its own Chromium + claude session, gated by MAX_CONCURRENT_RUNS (default 2).`,
+                )
+              ) {
+                bulkRun.mutate(ids);
+              }
+            }}
+            className="bg-blue-600 px-3 py-0.5 rounded hover:bg-blue-500 disabled:opacity-50"
+            title={
+              approvedSelected.length === 0
+                ? "no approved cases in selection"
+                : `${approvedSelected.length} approved case${approvedSelected.length > 1 ? "s" : ""} will run; ${nonApprovedCount} skipped`
+            }
+          >
+            ▶ Run {approvedSelected.length > 0 ? `(${approvedSelected.length})` : ""}
           </button>
           <button
             disabled={bulk.isPending || bulkDelete.isPending}
@@ -326,7 +388,8 @@ function CasesPage() {
             clear
           </button>
         </div>
-      )}
+        );
+      })()}
 
       <div className="bg-white border border-slate-200 rounded-lg">
         {cases.isLoading ? (
