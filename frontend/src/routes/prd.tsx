@@ -122,6 +122,32 @@ function PrdPage() {
     setSelected(next);
   };
 
+  const onFilePicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    // Cap at 2 MB so a stray binary doesn't lock the browser; PRDs are
+    // markdown text so the cap is generous.
+    if (f.size > 2 * 1024 * 1024) {
+      alert(`file too large (${(f.size / 1024 / 1024).toFixed(1)} MB) — paste contents instead`);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = typeof reader.result === "string" ? reader.result : "";
+      setMarkdown(text);
+      // If `name` is empty, default to filename without extension so the
+      // user doesn't have to type it.
+      if (!name) {
+        const stem = f.name.replace(/\.(md|markdown|txt)$/i, "");
+        setName(stem);
+      }
+    };
+    reader.readAsText(f);
+    // Reset input so picking the same file again still triggers onChange.
+    e.target.value = "";
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -151,12 +177,29 @@ function PrdPage() {
           </Field>
         </div>
         <Field label="markdown">
+          <div className="flex items-center gap-2 mb-1.5 text-xs text-slate-500">
+            <label className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded cursor-pointer">
+              📄 choose .md file
+              <input
+                type="file"
+                accept=".md,.markdown,.txt,text/markdown,text/plain"
+                onChange={onFilePicked}
+                className="hidden"
+              />
+            </label>
+            <span>or paste contents below</span>
+            {markdown && (
+              <span className="ml-auto font-mono">
+                {markdown.length.toLocaleString()} chars
+              </span>
+            )}
+          </div>
           <textarea
             className="border border-slate-200 rounded p-2 w-full text-sm font-mono"
             rows={10}
             value={markdown}
             onChange={(e) => setMarkdown(e.target.value)}
-            placeholder="# My PRD\n\n## Goals\n\n..."
+            placeholder="# My PRD&#10;&#10;## Goals&#10;&#10;..."
           />
         </Field>
         <button
