@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
+import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 
 export const Route = createFileRoute("/runs/")({
   component: RunsListPage,
@@ -76,6 +77,9 @@ function RunsListPage() {
         <h1 className="text-2xl font-semibold">
           Runs <span className="text-slate-400 text-base font-normal">/ {projectId}</span>
         </h1>
+        <div className="mt-1">
+          <ProjectTargetBadge projectId={projectId} />
+        </div>
         <p className="text-slate-500 text-sm mt-1">
           Every execution of a test case lives here. Click a row for the live timeline.
         </p>

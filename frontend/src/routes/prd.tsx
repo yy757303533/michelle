@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
+import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 
 const PRD_URL_KEY = "prd_id";
 
@@ -281,7 +282,17 @@ function PrdPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">PRD ingest</h1>
+        <h1 className="text-2xl font-semibold">
+          PRD ingest
+          {projectId && (
+            <span className="text-slate-400 text-base font-normal"> / {projectId}</span>
+          )}
+        </h1>
+        {projectId && (
+          <div className="mt-1">
+            <ProjectTargetBadge projectId={projectId} />
+          </div>
+        )}
         <p className="text-slate-500 text-sm mt-1">
           Paste markdown, see chapters detected, pick which to AI-generate cases for.
         </p>

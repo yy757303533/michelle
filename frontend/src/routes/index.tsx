@@ -77,6 +77,8 @@ function Dashboard() {
 
       <BackendHealth />
 
+      {projectId && <CurrentProjectPanel projectId={projectId} />}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <CasesWidget projectId={projectId} />
         <RecentRunsWidget projectId={projectId} />
@@ -353,6 +355,109 @@ function ProbePanel() {
           )}
         </div>
       )}
+    </Panel>
+  );
+}
+
+interface ProjectConfig {
+  project_id: string;
+  name: string;
+  base_url: string;
+  default_username: string;
+  default_password: string;
+  description?: string;
+}
+
+/** Show what test runs will actually target / authenticate as for the
+ * currently-selected project. Without this, the user fills in
+ * base_url/user/password in the create-project form and then has no way
+ * to see them again — the dropdown only shows the name, and the values
+ * sit invisible inside `runs` and `cases` requests. */
+function CurrentProjectPanel({ projectId }: { projectId: string }) {
+  const [showPwd, setShowPwd] = useState(false);
+  const projects = useQuery({
+    queryKey: ["projects"],
+    queryFn: async (): Promise<{ data: ProjectConfig[] }> => {
+      const r = await fetch("/api/projects/");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+  const proj = projects.data?.data.find((p) => p.project_id === projectId);
+  if (!proj) return null;
+
+  const hasCreds = Boolean(proj.default_username && proj.default_password);
+
+  return (
+    <Panel
+      title={`Project config / ${proj.project_id}`}
+      linkTo="/"
+      linkLabel="(use ✎ in header to edit)"
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-sm">
+        <Row label="name" value={<code>{proj.name}</code>} />
+        <Row
+          label="base_url"
+          value={
+            proj.base_url ? (
+              <a
+                href={proj.base_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-700 hover:underline font-mono text-xs break-all"
+              >
+                {proj.base_url}
+              </a>
+            ) : (
+              <span className="text-amber-700 text-xs">
+                (not set — runs will fail without a target)
+              </span>
+            )
+          }
+        />
+        <Row
+          label="default_username"
+          value={
+            proj.default_username ? (
+              <code className="text-xs">{proj.default_username}</code>
+            ) : (
+              <span className="text-slate-400 text-xs">(none)</span>
+            )
+          }
+        />
+        <Row
+          label="default_password"
+          value={
+            proj.default_password ? (
+              <span className="flex items-center gap-2">
+                <code className="text-xs">
+                  {showPwd ? proj.default_password : "•".repeat(Math.min(proj.default_password.length, 12))}
+                </code>
+                <button
+                  onClick={() => setShowPwd((v) => !v)}
+                  className="text-xs text-slate-500 hover:text-slate-900"
+                >
+                  {showPwd ? "hide" : "show"}
+                </button>
+              </span>
+            ) : (
+              <span className="text-slate-400 text-xs">(none)</span>
+            )
+          }
+        />
+      </div>
+      <div className="mt-2 text-xs">
+        {hasCreds ? (
+          <span className="text-emerald-700">
+            ✓ Cases will auto-login at runtime + new cases include explicit login steps.
+          </span>
+        ) : (
+          <span className="text-amber-700">
+            ⚠ No credentials configured — cases targeting protected pages will need
+            explicit login steps in the case body.
+          </span>
+        )}
+      </div>
     </Panel>
   );
 }

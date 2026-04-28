@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
+import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 
 export const Route = createFileRoute("/cases")({
   component: CasesPage,
@@ -237,6 +238,9 @@ function CasesPage() {
         <h1 className="text-2xl font-semibold">
           Test cases <span className="text-slate-400 text-base font-normal">/ {projectId}</span>
         </h1>
+        <div className="mt-1">
+          <ProjectTargetBadge projectId={projectId} />
+        </div>
         <p className="text-slate-500 text-sm mt-1">
           AI drafts → review → run. Edits to approved cases re-open them as pending.
           {runMut.error && (
