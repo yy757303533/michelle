@@ -17,12 +17,12 @@ Subprocess invocation:
 from __future__ import annotations
 
 import asyncio
-import os
 import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.agent.claude_env import build_claude_subprocess_env
 from app.agent.mcp_config import build_playwright_mcp_config, write_config
 from app.agent.trace_parser import ParsedRun, parse_stream, redact_bytes
 from app.config import settings
@@ -109,7 +109,7 @@ async def run_claude_with_playwright(req: RunRequest) -> RunOutcome:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(work),
-        env={**os.environ, "MICHELLE_RUN": "1"},
+        env=build_claude_subprocess_env(michelle_run=True),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

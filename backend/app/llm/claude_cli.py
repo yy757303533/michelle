@@ -14,6 +14,7 @@ import json
 import re
 import time
 
+from app.agent.claude_env import build_claude_subprocess_env
 from app.config import settings
 from app.llm.base import (
     BaseChatClient,
@@ -118,6 +119,7 @@ class ClaudeCLIClient(BaseChatClient):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                env=build_claude_subprocess_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

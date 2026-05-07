@@ -642,9 +642,7 @@ async def test_patch_auth_state_round_trip(session, app_client):
     session.add(_case("TC-AUTH", review_status="pending"))
     await session.commit()
 
-    r = await app_client.patch(
-        "/api/cases/TC-AUTH", json={"auth_state": "wrong-creds"}
-    )
+    r = await app_client.patch("/api/cases/TC-AUTH", json={"auth_state": "wrong-creds"})
     assert r.status_code == 200
     await session.refresh(await session.get(TestCase, "TC-AUTH"))
     row = await session.get(TestCase, "TC-AUTH")
@@ -671,9 +669,7 @@ async def test_bulk_run_creates_one_run_per_case_id(session, app_client, monkeyp
 
     monkeypatch.setattr(runs_api, "kick_off", lambda **kw: None)
 
-    r = await app_client.post(
-        "/api/runs/", json={"case_ids": ["TC-A", "TC-B"], "env": "default"}
-    )
+    r = await app_client.post("/api/runs/", json={"case_ids": ["TC-A", "TC-B"], "env": "default"})
     assert r.status_code == 200
     run_ids = r.json()["data"]["run_ids"]
     assert len(run_ids) == 2

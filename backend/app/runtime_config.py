@@ -27,9 +27,18 @@ from app import db as _db
 from app.config import settings
 from app.models import RuntimeSetting
 
+EXECUTOR_LOOPS = {"auto", "generic_openai", "claude_cli"}
+
 
 def _coerce_bool(v: Any) -> bool:
     return str(v).lower() in {"true", "1", "yes", "on"}
+
+
+def _coerce_executor_loop(v: Any) -> str:
+    value = str(v or "").strip()
+    if value not in EXECUTOR_LOOPS:
+        raise ValueError(f"unknown executor_loop: {value}")
+    return value
 
 
 # Whitelist of mutable knobs. Anything not here is invisible to the API
@@ -53,6 +62,15 @@ KNOBS: dict[str, dict[str, Any]] = {
             "drift or auth flows. Slower + breaks if you don't have a display."
         ),
     },
+    "executor_loop": {
+        "type": _coerce_executor_loop,
+        "choices": ["auto", "generic_openai", "claude_cli"],
+        "describe": (
+            "Execution loop strategy. Auto prefers Michelle's generic "
+            "OpenAI-compatible loop, and only falls back to Claude CLI when "
+            "no generic provider is configured."
+        ),
+    },
 }
 
 
@@ -61,6 +79,9 @@ KNOBS: dict[str, dict[str, Any]] = {
 _BOOTSTRAP_DEFAULTS: dict[str, Any] = {
     "max_concurrent_runs": lambda: settings.max_concurrent_runs,
     "headless": lambda: True,
+    "executor_loop": lambda: (
+        settings.executor_loop if settings.executor_loop in EXECUTOR_LOOPS else "auto"
+    ),
 }
 
 
@@ -106,6 +127,14 @@ async def get_headless(session: AsyncSession | None = None) -> bool:
         return bool(await _read_raw(s, "headless"))
 
 
+async def get_executor_loop(session: AsyncSession | None = None) -> str:
+    """Configured execution loop strategy: auto | generic_openai | claude_cli."""
+    if session is not None:
+        return str(await _read_raw(session, "executor_loop"))
+    async with _db.async_session_maker() as s:
+        return str(await _read_raw(s, "executor_loop"))
+
+
 # ── Read/write surface used by the HTTP layer ────────────────────────────
 
 
@@ -122,6 +151,7 @@ async def snapshot(session: AsyncSession) -> dict[str, dict[str, Any]]:
             "default": env_default(key),
             "min": spec.get("min"),
             "max": spec.get("max"),
+            "choices": spec.get("choices"),
             "describe": spec.get("describe", ""),
         }
     return out

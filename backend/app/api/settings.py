@@ -8,6 +8,8 @@ runtime_config or services should ever reach back into this module."""
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,7 @@ log = get_logger(__name__)
 class SettingsUpdate(BaseModel):
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=32)
     headless: bool | None = None
+    executor_loop: Literal["auto", "generic_openai", "claude_cli"] | None = None
 
 
 @router.get("/runtime")

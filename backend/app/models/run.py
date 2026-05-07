@@ -26,12 +26,8 @@ class Run(SQLModel, table=True):
     env: str = "default"
 
     status: str = "pending"  # pending | running | passed | failed | flaky | aborted
-    started_at: datetime | None = Field(
-        default=None, sa_column=Column(TZDateTime(), nullable=True)
-    )
-    ended_at: datetime | None = Field(
-        default=None, sa_column=Column(TZDateTime(), nullable=True)
-    )
+    started_at: datetime | None = Field(default=None, sa_column=Column(TZDateTime(), nullable=True))
+    ended_at: datetime | None = Field(default=None, sa_column=Column(TZDateTime(), nullable=True))
     duration_ms: int | None = None
 
     # Aggregated artifact paths (resolved relative to artifacts root)

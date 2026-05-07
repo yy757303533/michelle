@@ -53,6 +53,10 @@ coverage.xml
 build/
 *.egg
 
+# Local installer artifacts (do not commit)
+Miniconda3-*.sh
+yes/
+
 # Day 2 artifacts that ARE binary or transient (not committed)
 backend/artifacts/day2-smoke/claude.stream.jsonl
 backend/artifacts/day2-smoke/claude.err.log
@@ -71,4 +75,3 @@ backend/data/*-backup
 
 # pytest tmp_path artifacts
 backend/artifacts-test/
-

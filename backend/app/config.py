@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # ── Run orchestration ──
     max_concurrent_runs: int = 2
     """How many cases may execute simultaneously. Each = 1 Chromium + 1 claude CLI."""
+    executor_loop: str = "auto"
+    """Execution loop strategy: auto | generic_openai | claude_cli."""
+    generic_agent_max_turns: int = 30
+    """Safety cap for Michelle's own generic JSON-action agent loop."""
     playwright_mcp_package: str = "@playwright/mcp@latest"
     """npx package spec for the Playwright MCP server. Pin to a specific
     version (e.g. `@playwright/mcp@0.0.20`) in production via .env to avoid
@@ -36,6 +40,14 @@ class Settings(BaseSettings):
     # ── LLM: Claude CLI (primary, subscription) ──
     claude_cli_path: str = "claude"
     claude_timeout_seconds: int = 180
+    # When set, these are injected into the env of every `claude` subprocess
+    # spawned by claude_runner / claude_cli, so the CLI talks to an
+    # Anthropic-compatible gateway (e.g. Flywheel) instead of the user's
+    # subscription. Leave empty to use the user's normal subscription login.
+    anthropic_base_url: str = ""
+    anthropic_api_key: str = ""
+    anthropic_model: str = ""
+    claude_code_attribution_header: str = ""
 
     # ── LLM: Codex CLI (secondary, ChatGPT subscription) ──
     codex_cli_path: str = "codex"

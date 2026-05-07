@@ -157,9 +157,7 @@ async def plan_regeneration(
 
     for idx in indices:
         chap = new_chapters[idx]
-        existing = await _cases_from_chapter(
-            session, new_prd.project_id, _chapter_signature(chap)
-        )
+        existing = await _cases_from_chapter(session, new_prd.project_id, _chapter_signature(chap))
 
         # Approved cases? leave alone regardless of diff status
         if any(c.review_status == "approved" for c in existing):
@@ -236,9 +234,7 @@ async def mark_stale_for_removed_chapters(
 
     touched: list[str] = []
     for chap in removed_chapters:
-        existing = await _cases_from_chapter(
-            session, new_prd.project_id, _chapter_signature(chap)
-        )
+        existing = await _cases_from_chapter(session, new_prd.project_id, _chapter_signature(chap))
         for c in existing:
             if c.review_status in {"approved", "stale"}:
                 continue

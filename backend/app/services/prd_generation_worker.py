@@ -105,9 +105,7 @@ async def run_job(job_id: str) -> None:
         indices = sorted({i for i in indices if 0 <= i < len(prd.chapters)})
 
         prev_prd = await find_prev_prd(session, prd)
-        await mark_stale_for_removed_chapters(
-            session=session, new_prd=prd, prev_prd=prev_prd
-        )
+        await mark_stale_for_removed_chapters(session=session, new_prd=prd, prev_prd=prev_prd)
 
         decisions = await plan_regeneration(
             session=session, new_prd=prd, prev_prd=prev_prd, chapter_indices=indices

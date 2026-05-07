@@ -135,7 +135,12 @@ async def diagnose_run(
     #   3. kimi / gemini / qwen / glm — OpenAI-compat multimodal channels
     chosen_prefer = prefer_provider
     skip_for_image: list[str] = []
-    if image_bytes and chosen_prefer is None:
+    # Always prefer Flywheel (or another API-billed channel) for diagnosis,
+    # not just for image inputs. The local `claude-cli` subscription path is
+    # operationally fragile (login expiry, session-end hooks, rate limits)
+    # and silently breaks auto-diagnosis when the user is signed out. Route
+    # text-only diagnosis through the same provider order as vision.
+    if chosen_prefer is None:
         for cand in ("flywheel", "minimax", "kimi", "gemini", "qwen", "glm"):
             if gw.get(cand) is not None:
                 chosen_prefer = cand

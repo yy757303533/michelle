@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.claude_runner import (
     ClaudeRunnerError,
-    RunOutcome,
     RunRequest,
     run_claude_with_playwright,
 )
+from app.agent.executor import resolve_executor_status
+from app.agent.generic_runner import GenericRunnerError, run_generic_with_playwright
 from app.agent.trace_parser import ParsedRun
 from app.agent.trace_parser import StepEvent as ParsedStep
 from app.config import settings
@@ -300,18 +301,42 @@ async def execute_case(
 
         headless = await get_headless(session)
 
-        try:
-            outcome: RunOutcome = await run_claude_with_playwright(
-                RunRequest(
-                    prompt=prompt,
-                    work_dir=rd,
-                    timeout_seconds=timeout_seconds,
-                    headless=headless,
-                    isolated=True,
-                    secrets=secrets,
-                )
+        executor = await resolve_executor_status(session)
+        if executor.status != "ready" or not executor.resolved_loop:
+            run.status = "aborted"
+            run.error_message = f"executor not ready: {executor.detail}"[:500]
+            run.ended_at = datetime.now(UTC)
+            run.duration_ms = (
+                int((run.ended_at - (run.started_at or run.ended_at)).total_seconds() * 1000)
+                if run.started_at
+                else None
             )
-        except ClaudeRunnerError as exc:
+            await session.commit()
+            log.error(
+                "orchestrator.executor.not_ready",
+                configured_loop=executor.configured_loop,
+                resolved_loop=executor.resolved_loop,
+                detail=executor.detail,
+            )
+            return run
+
+        run_req = RunRequest(
+            prompt=prompt,
+            work_dir=rd,
+            timeout_seconds=timeout_seconds,
+            headless=headless,
+            isolated=True,
+            secrets=secrets,
+        )
+
+        try:
+            if executor.resolved_loop == "generic_openai":
+                log.info("orchestrator.executor.selected", runner="generic_openai")
+                outcome = await run_generic_with_playwright(run_req)
+            else:
+                log.info("orchestrator.executor.selected", runner="claude_cli")
+                outcome = await run_claude_with_playwright(run_req)
+        except (ClaudeRunnerError, GenericRunnerError) as exc:
             run.status = "aborted"
             run.error_message = str(exc)[:500]
             run.ended_at = datetime.now(UTC)

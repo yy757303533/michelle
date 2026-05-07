@@ -52,3 +52,73 @@ async def test_llm_probe_endpoint_returns_result():
     assert body["data"]["ok"] is True
     assert body["data"]["provider"] == "primary"
     assert body["data"]["text"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_llm_runner_status_reports_auto_generic(monkeypatch):
+    import app.api.llm as llm_api
+    from app.agent.executor import ExecutorStatus
+    from app.main import app
+
+    monkeypatch.setattr(llm_api, "build_claude_subprocess_env", lambda **_kw: {})
+
+    async def fake_resolve(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="auto",
+            resolved_loop="generic_openai",
+            detail="auto selected generic loop via qwen",
+            generic_available=True,
+            generic_providers=["qwen"],
+            claude_cli_available=True,
+            npx_available=True,
+        )
+
+    monkeypatch.setattr(llm_api, "resolve_executor_status", fake_resolve)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get("/api/llm/runner_status")
+
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert body["status"] == "ready"
+    assert body["mode"] == "generic_openai"
+    assert body["configured_loop"] == "auto"
+    assert body["resolved_loop"] == "generic_openai"
+
+
+@pytest.mark.asyncio
+async def test_llm_runner_status_reports_missing_executor(monkeypatch):
+    import app.api.llm as llm_api
+    from app.agent.executor import ExecutorStatus
+    from app.main import app
+
+    monkeypatch.setattr(
+        llm_api,
+        "build_claude_subprocess_env",
+        lambda **_kw: {"ANTHROPIC_BASE_URL": "http://127.0.0.1:4000"},
+    )
+
+    async def fake_resolve(_session):
+        return ExecutorStatus(
+            status="down",
+            configured_loop="auto",
+            resolved_loop=None,
+            detail="no generic provider configured and claude CLI is unavailable",
+            generic_available=False,
+            generic_providers=[],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    monkeypatch.setattr(llm_api, "resolve_executor_status", fake_resolve)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.get("/api/llm/runner_status")
+
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert body["status"] == "down"
+    assert body["mode"] == "unavailable"

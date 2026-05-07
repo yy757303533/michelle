@@ -196,9 +196,7 @@ async def test_generate_endpoint_returns_202_and_job_id(app_client, session, mon
 
     monkeypatch.setattr(prd_api, "kick_off", lambda job_id: None)
 
-    r = await app_client.post(
-        "/api/prd/prd-1/generate", json={"chapter_indices": [0]}
-    )
+    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
     assert r.status_code == 202
     data = r.json()["data"]
     assert data["job_id"].startswith("gen_")

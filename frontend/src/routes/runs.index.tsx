@@ -3,7 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+import {
+  isLLMRunnerBlocked,
+  LLMRunnerStatusLight,
+} from "../components/LLMRunnerStatusLight";
 import { fmtDateTime, fmtMs } from "../lib/datetime";
+import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
 
 const RERUNNABLE = new Set(["failed", "aborted", "flaky"]);
 
@@ -36,6 +41,10 @@ function RunsListPage() {
   const { projectId } = useCurrentProject();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const llmRunner = useLLMRunnerStatus();
+  const llmStatus = llmRunner.data?.status ?? "unknown";
+  const llmDetail = llmRunner.data?.detail ?? "";
+  const runnerBlocked = isLLMRunnerBlocked(llmStatus);
   const [filter, setFilter] = useState<string>("");
   // Track per-row selection by run_id so the user can pick exactly which
   // failures to rerun. Cleared on filter change so a hidden run can't sneak
@@ -170,6 +179,14 @@ function RunsListPage() {
         <p className="text-slate-500 text-sm mt-1">
           Every execution of a test case lives here. Click a row for the live timeline.
         </p>
+        <div className="mt-2 flex items-center gap-2">
+          <LLMRunnerStatusLight data={llmRunner.data} loading={llmRunner.isLoading} />
+          {runnerBlocked && (
+            <span className="text-xs text-amber-700">
+              Rerun is disabled until the selected execution loop is ready.
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-2">
@@ -207,7 +224,7 @@ function RunsListPage() {
           if (uniqueCases.size === 0) return null;
           return (
             <button
-              disabled={rerun.isPending}
+              disabled={rerun.isPending || runnerBlocked}
               onClick={() => {
                 if (
                   window.confirm(
@@ -219,7 +236,11 @@ function RunsListPage() {
                 }
               }}
               className="ml-auto text-sm px-3 py-1 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
-              title={`spawn fresh runs for ${uniqueCases.size} case(s) that previously failed`}
+              title={
+                runnerBlocked
+                  ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                  : `spawn fresh runs for ${uniqueCases.size} case(s) that previously failed`
+              }
             >
               {rerun.isPending
                 ? "scheduling…"
@@ -254,7 +275,7 @@ function RunsListPage() {
             </span>
           )}
           <button
-            disabled={selectedUniqueCases.size === 0 || rerun.isPending}
+            disabled={selectedUniqueCases.size === 0 || rerun.isPending || runnerBlocked}
             onClick={() => {
               const ids = [...selectedUniqueCases];
               const dupNote =
@@ -273,7 +294,9 @@ function RunsListPage() {
             }}
             className="bg-amber-600 px-3 py-0.5 rounded hover:bg-amber-500 disabled:opacity-50"
             title={
-              selectedUniqueCases.size === 0
+              runnerBlocked
+                ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                : selectedUniqueCases.size === 0
                 ? "no rerunnable rows in selection (only failed/aborted/flaky can rerun)"
                 : `${selectedUniqueCases.size} unique case_id(s) — same case_id selected multiple times fires one new run`
             }
@@ -390,10 +413,14 @@ function RunsListPage() {
                   <td className="p-2 text-right">
                     {RERUNNABLE.has(r.status) && (
                       <button
-                        disabled={rerun.isPending}
+                        disabled={rerun.isPending || runnerBlocked}
                         onClick={() => rerun.mutate([r.case_id])}
                         className="text-xs px-2 py-0.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
-                        title={`rerun ${r.case_id} as a fresh run`}
+                        title={
+                          runnerBlocked
+                            ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                            : `rerun ${r.case_id} as a fresh run`
+                        }
                       >
                         ↻ rerun
                       </button>
@@ -425,4 +452,3 @@ function StatusPill({ status }: { status: string }) {
     </span>
   );
 }
-

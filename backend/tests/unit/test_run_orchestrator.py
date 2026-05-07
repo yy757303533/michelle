@@ -36,6 +36,22 @@ async def session(monkeypatch) -> AsyncSession:
         await conn.run_sync(SQLModel.metadata.create_all)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(run_orchestrator, "async_session_maker", maker)
+
+    from app.agent.executor import ExecutorStatus
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="claude_cli",
+            resolved_loop="claude_cli",
+            detail="test",
+            generic_available=False,
+            generic_providers=[],
+            claude_cli_available=True,
+            npx_available=True,
+        )
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
     async with maker() as s:
         yield s
 

@@ -1,7 +1,9 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { LLMRunnerStatusLight } from "../components/LLMRunnerStatusLight";
 import { useCurrentProject } from "../lib/useCurrentProject";
+import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
 
 export const Route = createFileRoute("/")({
   component: Dashboard,
@@ -105,6 +107,7 @@ function BackendHealth() {
     },
     refetchInterval: 5000,
   });
+  const runner = useLLMRunnerStatus();
 
   return (
     <Panel title="Backend">
@@ -119,6 +122,7 @@ function BackendHealth() {
           <span className="text-slate-500">
             env <code>{health.data.env}</code>
           </span>
+          <LLMRunnerStatusLight data={runner.data} loading={runner.isLoading} />
         </div>
       )}
     </Panel>
@@ -585,17 +589,19 @@ function ProjectInlineEditForm({
   );
 }
 
-interface RuntimeKnob<T = number | boolean> {
+interface RuntimeKnob<T = number | boolean | string> {
   value: T;
   default: T;
   min?: number;
   max?: number;
+  choices?: string[];
   describe: string;
 }
 interface RuntimeSettingsResponse {
   data: {
     max_concurrent_runs: RuntimeKnob<number>;
     headless: RuntimeKnob<boolean>;
+    executor_loop: RuntimeKnob<"auto" | "generic_openai" | "claude_cli">;
   };
 }
 
@@ -615,11 +621,12 @@ function RuntimeSettingsPanel() {
 
   const concurrencyKnob = settings.data?.data.max_concurrent_runs;
   const headlessKnob = settings.data?.data.headless;
+  const executorLoopKnob = settings.data?.data.executor_loop;
   const [draft, setDraft] = useState<number | null>(null);
   const value = draft ?? concurrencyKnob?.value ?? 2;
 
   const save = useMutation({
-    mutationFn: async (body: Record<string, number | boolean>) => {
+    mutationFn: async (body: Record<string, number | boolean | string>) => {
       const r = await fetch("/api/settings/runtime", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -631,15 +638,51 @@ function RuntimeSettingsPanel() {
     onSuccess: () => {
       setDraft(null);
       qc.invalidateQueries({ queryKey: ["runtime-settings"] });
+      qc.invalidateQueries({ queryKey: ["llm-runner-status"] });
     },
   });
 
   return (
     <Panel title="Platform settings">
-      {settings.isLoading || !concurrencyKnob || !headlessKnob ? (
+      {settings.isLoading || !concurrencyKnob || !headlessKnob || !executorLoopKnob ? (
         <span className="text-slate-400 text-sm">…</span>
       ) : (
         <div className="space-y-3 text-sm">
+          {/* executor loop */}
+          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <code className="text-xs text-slate-500">executor_loop</code>
+              <select
+                className="border border-slate-200 rounded px-2 py-0.5 text-sm"
+                value={executorLoopKnob.value}
+                onChange={(e) => save.mutate({ executor_loop: e.target.value })}
+                disabled={save.isPending}
+              >
+                <option value="auto">Auto: Michelle Loop 优先</option>
+                <option value="generic_openai">Michelle Loop: OpenAI-compatible</option>
+                <option value="claude_cli">Claude CLI Loop: legacy fallback</option>
+              </select>
+              <span className="text-xs text-slate-400">
+                default: <code>{String(executorLoopKnob.default)}</code>
+              </span>
+            </div>
+            <p className="text-xs text-slate-600">
+              Run 执行时优先走 Michelle 自有 JSON-action loop：OpenAI-compatible
+              模型决定下一步，Michelle 直接调用 Playwright MCP 并记录 timeline。
+              Claude CLI 保留为兼容模式。
+            </p>
+            <div className="mt-2 grid gap-1 text-xs text-slate-500 sm:grid-cols-3">
+              <span>
+                <b className="font-medium text-slate-700">Auto</b> 按可用 provider 选择
+              </span>
+              <span>
+                <b className="font-medium text-slate-700">LiteLLM/Flywheel</b> 只是 provider 入口
+              </span>
+              <span>
+                <b className="font-medium text-slate-700">Runner status</b> 只检查配置和依赖
+              </span>
+            </div>
+          </div>
           {/* concurrency */}
           <div>
             <div className="flex items-center gap-2 mb-1">

@@ -62,10 +62,24 @@ async def test_get_headless_db_override(session):
 
 
 @pytest.mark.asyncio
+async def test_get_executor_loop_default_auto(memory_db):
+    assert await rc.get_executor_loop() == "auto"
+
+
+@pytest.mark.asyncio
+async def test_get_executor_loop_db_override(session):
+    session.add(RuntimeSetting(key="executor_loop", value="generic_openai"))
+    await session.commit()
+    assert await rc.get_executor_loop() == "generic_openai"
+
+
+@pytest.mark.asyncio
 async def test_snapshot_includes_all_known_knobs(session):
     snap = await rc.snapshot(session)
     assert "max_concurrent_runs" in snap
     assert "headless" in snap
+    assert "executor_loop" in snap
+    assert snap["executor_loop"]["choices"] == ["auto", "generic_openai", "claude_cli"]
     for entry in snap.values():
         assert "value" in entry
         assert "default" in entry
@@ -74,9 +88,13 @@ async def test_snapshot_includes_all_known_knobs(session):
 
 @pytest.mark.asyncio
 async def test_update_many_persists_then_reads_back(session):
-    await rc.update_many(session, {"max_concurrent_runs": 9, "headless": False})
+    await rc.update_many(
+        session,
+        {"max_concurrent_runs": 9, "headless": False, "executor_loop": "claude_cli"},
+    )
     assert await rc.get_max_concurrent_runs(session) == 9
     assert await rc.get_headless(session) is False
+    assert await rc.get_executor_loop(session) == "claude_cli"
 
 
 @pytest.mark.asyncio
@@ -104,14 +122,13 @@ async def test_get_settings_endpoint(app_client):
     data = r.json()["data"]
     assert "max_concurrent_runs" in data
     assert "headless" in data
+    assert "executor_loop" in data
 
 
 @pytest.mark.asyncio
 async def test_put_settings_endpoint_validates(app_client):
     """422 on out-of-bounds (Pydantic Field constraint)."""
-    r = await app_client.put(
-        "/api/settings/runtime", json={"max_concurrent_runs": 999}
-    )
+    r = await app_client.put("/api/settings/runtime", json={"max_concurrent_runs": 999})
     assert r.status_code == 422
 
 
@@ -125,9 +142,15 @@ async def test_put_settings_endpoint_empty_body(app_client):
 @pytest.mark.asyncio
 async def test_put_settings_endpoint_round_trip(app_client):
     r = await app_client.put(
-        "/api/settings/runtime", json={"max_concurrent_runs": 5, "headless": False}
+        "/api/settings/runtime",
+        json={
+            "max_concurrent_runs": 5,
+            "headless": False,
+            "executor_loop": "generic_openai",
+        },
     )
     assert r.status_code == 200
     data = r.json()["data"]
     assert data["max_concurrent_runs"]["value"] == 5
     assert data["headless"]["value"] is False
+    assert data["executor_loop"]["value"] == "generic_openai"

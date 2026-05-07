@@ -268,9 +268,7 @@ async def generate_cases(
 
 
 @router.get("/jobs/{job_id}")
-async def get_generation_job(
-    job_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def get_generation_job(job_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     """Poll a generation job's status. Frontend uses 1-2s interval while
     `pending` / `running`, then stops once `done` / `failed`."""
     job = await session.get(PRDGenerationJob, job_id)
@@ -280,9 +278,7 @@ async def get_generation_job(
 
 
 @router.get("/{prd_id}/jobs")
-async def list_jobs_for_prd(
-    prd_id: str, session: AsyncSession = Depends(get_session)
-) -> dict:
+async def list_jobs_for_prd(prd_id: str, session: AsyncSession = Depends(get_session)) -> dict:
     """All generation jobs for one PRD, newest first. Used to surface
     "currently generating…" / "last generation finished N min ago"
     on the PRD detail UI."""

@@ -55,9 +55,7 @@ class PRDGenerationJob(SQLModel, table=True):
         default_factory=_utcnow,
         sa_column=Column(TZDateTime(), nullable=False),
     )
-    started_at: datetime | None = Field(
-        default=None, sa_column=Column(TZDateTime(), nullable=True)
-    )
+    started_at: datetime | None = Field(default=None, sa_column=Column(TZDateTime(), nullable=True))
     finished_at: datetime | None = Field(
         default=None, sa_column=Column(TZDateTime(), nullable=True)
     )

@@ -16,8 +16,10 @@ What you see:
 - **Cases**: 12 total (1 approved, 11 pending) — all auto-generated from
   Michelle's own PRD on Day 4 (dogfood)
 - **Recent runs** — newest first, polled every 3s
-- **LLM providers** — 9 channels enrolled, 4 currently configured. Click
-  "probe" to fire a 10-token round-trip through the gateway
+- **LLM providers** — 10 channels enrolled, whichever are configured in `.env`.
+  Click "probe" to fire a 10-token round-trip through the gateway
+- **Runner status** — the selected executor loop (`auto`, `generic_openai`,
+  or `claude_cli`) and whether its local dependencies are ready
 
 The dashboard is a status panel, not a feature. The actual work happens on
 the next four pages.
@@ -65,9 +67,12 @@ The Run page polls every 1.5s until terminal. For each step we see:
 - live page URL + title after the action
 - inline screenshot thumbnail (click → fullscreen lightbox)
 
-`@playwright/mcp` drives Chromium under the orchestrator. AI is only at the
-edges (deciding what tool to call, taking the screenshot at meaningful
-moments) — execution itself is deterministic.
+Michelle's generic loop asks the selected OpenAI-compatible model for one
+strict JSON action per turn, then the orchestrator calls `@playwright/mcp`
+directly and stores the result. AI decides the next action; browser effects,
+artifacts, screenshots, and timeline persistence stay under Michelle's
+control. Claude CLI remains a compatibility executor, selectable from Platform
+settings.
 
 ## 5. AI diagnosis — the killer feature
 
@@ -115,7 +120,7 @@ Anything a human can do, an agent can too.
                  human review ──▶ approved cases ──▶ ▶ Run
                                                        │
                                                        ▼
-                                              orchestrator + claude
+                                              Michelle generic loop
                                               + @playwright/mcp
                                                        │
                                   passed ◀─────────────┴────────────▶ failed

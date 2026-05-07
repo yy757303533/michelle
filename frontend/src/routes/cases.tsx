@@ -3,7 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+import {
+  isLLMRunnerBlocked,
+  LLMRunnerStatusLight,
+} from "../components/LLMRunnerStatusLight";
 import { fmtDateTime, fmtMs } from "../lib/datetime";
+import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
 
 export const Route = createFileRoute("/cases")({
   component: CasesPage,
@@ -51,6 +56,13 @@ function CasesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { projectId } = useCurrentProject();
+  // Reachability of the LLM proxy that the executor talks to. The Run button
+  // grays itself out when the proxy is "down" / "starting" so users don't
+  // hit the cryptic "API returned empty/malformed response" error during boot.
+  const llmRunner = useLLMRunnerStatus();
+  const llmStatus = llmRunner.data?.status ?? "unknown";
+  const llmDetail = llmRunner.data?.detail ?? "";
+  const runnerBlocked = isLLMRunnerBlocked(llmStatus);
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -360,6 +372,14 @@ function CasesPage() {
             <span className="ml-2 text-red-600">load error: {(cases.error as Error).message}</span>
           )}
         </p>
+        <div className="mt-2 flex items-center gap-2">
+          <LLMRunnerStatusLight data={llmRunner.data} loading={llmRunner.isLoading} />
+          {runnerBlocked && (
+            <span className="text-xs text-amber-700">
+              Run is disabled until the selected execution loop is ready.
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Filter pills + search + new case */}
@@ -555,7 +575,8 @@ function CasesPage() {
               approvedCount === 0 ||
               bulkRun.isPending ||
               bulk.isPending ||
-              bulkDelete.isPending
+              bulkDelete.isPending ||
+              runnerBlocked
             }
             onClick={() => {
               const ids = selectedRows
@@ -578,7 +599,9 @@ function CasesPage() {
             }}
             className="bg-blue-600 px-3 py-0.5 rounded hover:bg-blue-500 disabled:opacity-50"
             title={
-              approvedCount === 0
+              runnerBlocked
+                ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                : approvedCount === 0
                 ? "no approved cases in selection"
                 : `${approvedCount} approved → run`
             }
@@ -676,6 +699,8 @@ function CasesPage() {
                   runBusy={runMut.isPending && runMut.variables === c.case_id}
                   editBusy={editMut.isPending && editMut.variables?.id === c.case_id}
                   deleteBusy={deleteMut.isPending && deleteMut.variables === c.case_id}
+                  llmStatus={llmStatus}
+                  llmDetail={llmDetail}
                 />
               ))}
             </tbody>
@@ -942,6 +967,8 @@ function CaseRowView({
   runBusy,
   editBusy,
   deleteBusy,
+  llmStatus,
+  llmDetail,
 }: {
   c: CaseRow;
   lastRun: CaseRowLastRun | null;
@@ -962,7 +989,10 @@ function CaseRowView({
   runBusy: boolean;
   editBusy: boolean;
   deleteBusy: boolean;
+  llmStatus: "ready" | "starting" | "down" | "unknown";
+  llmDetail: string;
 }) {
+  const runnerBlocked = isLLMRunnerBlocked(llmStatus);
   return (
     <>
       <tr
@@ -1058,8 +1088,13 @@ function CaseRowView({
             <>
               <button
                 className="text-xs px-2 py-0.5 rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50 mr-1"
-                disabled={runBusy}
+                disabled={runBusy || runnerBlocked}
                 onClick={onRun}
+                title={
+                  runnerBlocked
+                    ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                    : "run this approved case"
+                }
               >
                 {runBusy ? "starting…" : "▶ Run"}
               </button>

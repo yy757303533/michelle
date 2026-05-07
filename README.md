@@ -33,7 +33,7 @@ one cheaper.
 ## Pillars
 
 1. **Agent-native parity**. Anything the Web UI can do, an agent can too — REST API, Claude Code Skill, Michelle's own MCP server.
-2. **AI at the right layers**. Generation (PRD → cases) and diagnosis (failure → root cause). Execution itself is deterministic via [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp).
+2. **AI at the right layers**. Generation (PRD → cases), execution planning (Michelle's generic JSON-action loop), and diagnosis (failure → root cause). Browser effects are still deterministic via [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp).
 3. **provider-agnostic LLM gateway**. 10 channels (Claude / Codex / Flywheel / Kimi / Qwen / GLM / Gemini / DeepSeek / MiniMax / arbitrary OpenAI-compatible relay) behind one `BaseChatClient`. Auto-fallback on RateLimit / Quota / Timeout.
 4. **Three layers of observability**. OpenTelemetry (infra) + Event Catalog (business) + AI diagnosis (read-the-trace-for-you, on top).
 
@@ -58,7 +58,7 @@ one cheaper.
 |---|---|---|
 | Backend | Python 3.12+ · FastAPI · SQLModel + Alembic · structlog · OpenTelemetry · pytest | LLM ecosystem is best in Python; async-first |
 | Frontend | Vite + React 19 + TypeScript · TanStack Router/Query · Tailwind · shadcn-ui | SPA matches separated backend; no Next.js bloat needed |
-| Execution | `claude -p --mcp-config ours` subprocess + `@playwright/mcp` (ARIA tree) | Deterministic, demo-stable, ~100ms/step (vs 1.8s for vision-LLM-per-step) |
+| Execution | Michelle generic loop + `@playwright/mcp` (ARIA tree), with Claude CLI loop as compatibility fallback | Provider-portable execution, deterministic browser actions, traceable step timeline |
 | Storage | SQLite + local FS (MVP) · Postgres + MinIO (Phase 2) | Zero-ops MVP, drop-in upgrade path |
 | LLM Gateway | provider-agnostic + 10 channels + auto-fallback | Demo never blocks on rate-limit |
 
@@ -88,11 +88,22 @@ result = await gateway.chat(
 )
 ```
 
-Day-11's diagnoser uses this. When a screenshot is attached, the gateway
+Generation, diagnosis, and the generic executor loop use this gateway. When a screenshot is attached, the gateway
 auto-routes to a vision-capable provider (minimax/kimi/gemini/...) because
 Claude CLI's `-p` mode can't relay images without a session token. Other
 calls hit Claude first; if Claude rate-limits, the next provider takes over
 transparently.
+
+## Execution Loop
+
+Michelle now owns the browser agent loop. In `auto` mode it prefers an
+OpenAI-compatible provider, asks the model for one strict JSON action per turn,
+calls Playwright MCP directly, persists each tool result into the run timeline,
+and only accepts a final result when observed evidence backs the assertions.
+
+Claude CLI remains available as `executor_loop=claude_cli` for legacy demos or
+machines without an OpenAI-compatible provider. LiteLLM/Flywheel is just one
+way to supply that provider; it is not required for the default dev stack.
 
 ---
 
@@ -121,6 +132,9 @@ cp .env.example .env
 
 # 3. Bring up backend (:8000) + frontend (:5173)
 make dev
+
+# Optional: also start LiteLLM (:4000) when FLYWHEEL_TOKEN is configured
+make dev-all
 ```
 
 Open `http://localhost:5173`. Upload a PRD on the PRD page, generate cases,
@@ -131,7 +145,7 @@ End-to-end smoke scripts (real LLM, real browser, real target Web app):
 
 ```bash
 cd backend
-uv run python ../scripts/day2_smoke.py            # claude + @playwright/mcp drives a real login
+uv run python ../scripts/day2_smoke.py            # executor loop + @playwright/mcp drives a real login
 uv run python ../scripts/day4_dogfood.py          # generate cases from Michelle's own PRD
 uv run python ../scripts/day7_visual_smoke.py     # screenshot every page
 uv run python ../scripts/day12_demo_capture.py    # full walkthrough video
@@ -147,7 +161,8 @@ backend/
     api/            REST: prd, cases, runs, projects, diagnosis, llm
     services/       prd_parser, prd_diff, case_generator, case_versioning,
                     run_orchestrator, report_html, diagnoser, pattern_store
-    agent/          claude_runner, mcp_config, trace_parser, hooks
+    agent/          generic_runner, claude_runner, executor, mcp_stdio,
+                    mcp_config, trace_parser, hooks
     llm/            provider-agnostic gateway + 10 clients + versioned prompts/
     mcp/            Michelle's own MCP server — 6 tools
     obs/            structlog + OTel + Event Catalog
