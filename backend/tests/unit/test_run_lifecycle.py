@@ -26,6 +26,7 @@ async def memory_db(monkeypatch):
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "async_session_maker", maker)
     yield maker
+    await engine.dispose()
 
 
 @pytest.fixture

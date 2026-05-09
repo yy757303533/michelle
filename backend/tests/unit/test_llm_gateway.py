@@ -114,6 +114,19 @@ async def test_gateway_prefer_overrides_priority():
 
 
 @pytest.mark.asyncio
+async def test_gateway_prefer_without_fallback_only_tries_requested_provider():
+    primary = FakeClient("primary")
+    backup = FakeClient("backup", raises=RateLimitError("slow", provider="backup"))
+    gw, _ = _gw(primary, backup)
+
+    with pytest.raises(RateLimitError):
+        await gw.chat("hi", prompt_version="probe_v1", prefer="backup", fallback=False)
+
+    assert backup.call_count == 1
+    assert primary.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_gateway_skip_excludes_provider():
     primary = FakeClient("primary")
     backup = FakeClient("backup")

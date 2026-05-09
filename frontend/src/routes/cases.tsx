@@ -9,6 +9,7 @@ import {
 } from "../components/LLMRunnerStatusLight";
 import { fmtDateTime, fmtMs } from "../lib/datetime";
 import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
+import { apiFetch } from "../lib/adminAuth";
 
 export const Route = createFileRoute("/cases")({
   component: CasesPage,
@@ -30,7 +31,19 @@ interface CaseRow {
   review_status: string;
   manual_edited_fields: string[];
   steps: Array<{ intent: string; expected?: string }>;
-  assertions: Array<{ description: string }>;
+  assertions: Array<{
+    description: string;
+    source?: "prd_explicit" | "domain_inferred" | "exploratory";
+    confidence?: number;
+    rationale?: string;
+  }>;
+  quality?: {
+    score?: number;
+    severity?: "low" | "medium" | "high" | string;
+    flags?: string[];
+    avg_assertion_confidence?: number;
+    reviewer_notes?: string[];
+  };
   preconditions: string[];
   version: number;
   created_at: string;
@@ -68,31 +81,30 @@ function CasesPage() {
   const [editing, setEditing] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
-  // Free-text fuzzy filter on top of the status pills. Matches case-insensitive
-  // substrings across the fields a human would actually search on (case_id,
-  // name, intent, module, tags, auth_state). Pure client-side — the cases
-  // query already returns the full project's set, no extra round trip.
+  // Free-text fuzzy filter on top of the status pills. The backend applies
+  // this before pagination so large projects don't need a 5000-row fetch.
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Client-side pagination. We deliberately keep all rows loaded (so bulk
-  // counts/select-all/search stay accurate) and only slice for rendering.
-  // `pageSize === "all"` opts out of paging entirely.
+  // Server-side pagination. `all` keeps the old operator escape hatch but is
+  // still capped by the API's max limit.
   const [pageSize, setPageSize] = useState<number | "all">(100);
   const [page, setPage] = useState(1);
+  const effectiveLimit = pageSize === "all" ? 5000 : pageSize;
+  const offset = pageSize === "all" ? 0 : (page - 1) * pageSize;
 
   const cases = useQuery({
     // Re-key on project so swapping the global selector re-fetches.
-    queryKey: ["cases", projectId, filter],
+    queryKey: ["cases", projectId, filter, searchQuery, effectiveLimit, offset],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<CasesResponse> => {
-      // limit=5000 because the filter pills' count_by_status reflects the
-      // full table, but `data` is hard-capped server-side. If they don't
-      // match, "all (264)" + "200 selected" looks like a bug — actually 64
-      // cases were silently dropped before the page even rendered. With
-      // ~few-hundred-case scale per project this is plenty.
-      const params = new URLSearchParams({ project_id: projectId, limit: "5000" });
+      const params = new URLSearchParams({
+        project_id: projectId,
+        limit: String(effectiveLimit),
+        offset: String(offset),
+      });
       if (filter) params.set("status", filter);
-      const r = await fetch(`/api/cases/?${params}`);
+      if (searchQuery.trim()) params.set("q", searchQuery.trim());
+      const r = await apiFetch(`/api/cases/?${params}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       return r.json();
     },
@@ -116,7 +128,7 @@ function CasesPage() {
     enabled: Boolean(projectId),
     refetchInterval: 5000,
     queryFn: async (): Promise<{ data: RunRow[] }> => {
-      const r = await fetch(
+      const r = await apiFetch(
         `/api/runs/?project_id=${encodeURIComponent(projectId)}&limit=500`,
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -137,7 +149,7 @@ function CasesPage() {
 
   const review = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: "approve" | "reject" | "reset" }) => {
-      const r = await fetch(`/api/cases/${id}/review`, {
+      const r = await apiFetch(`/api/cases/${id}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
@@ -150,7 +162,7 @@ function CasesPage() {
 
   const bulk = useMutation({
     mutationFn: async (action: "approve" | "reject" | "reset") => {
-      const r = await fetch("/api/cases/bulk-review", {
+      const r = await apiFetch("/api/cases/bulk-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_ids: [...selected], action }),
@@ -170,7 +182,7 @@ function CasesPage() {
     ): Promise<{
       data: { deleted: string[]; skipped_approved: string[]; missing: string[] };
     }> => {
-      const r = await fetch("/api/cases/bulk-delete", {
+      const r = await apiFetch("/api/cases/bulk-delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_ids: ids }),
@@ -198,7 +210,7 @@ function CasesPage() {
 
   const editMut = useMutation({
     mutationFn: async ({ id, patch }: { id: string; patch: Partial<CaseRow> }) => {
-      const r = await fetch(`/api/cases/${id}`, {
+      const r = await apiFetch(`/api/cases/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -214,7 +226,7 @@ function CasesPage() {
 
   const deleteMut = useMutation({
     mutationFn: async (id: string) => {
-      const r = await fetch(`/api/cases/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/cases/${id}`, { method: "DELETE" });
       if (!r.ok && r.status !== 204) {
         // 409 = approved-protection guard from backend; surface verbatim.
         throw new Error(await r.text());
@@ -225,7 +237,7 @@ function CasesPage() {
 
   const createMut = useMutation({
     mutationFn: async (body: NewCaseDraft): Promise<{ data: CaseRow }> => {
-      const r = await fetch("/api/cases/", {
+      const r = await apiFetch("/api/cases/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...body, project_id: projectId }),
@@ -242,7 +254,7 @@ function CasesPage() {
 
   const runMut = useMutation({
     mutationFn: async (case_id: string): Promise<{ data: { run_ids: string[] } }> => {
-      const r = await fetch("/api/runs/", {
+      const r = await apiFetch("/api/runs/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_ids: [case_id], env: "default" }),
@@ -260,7 +272,7 @@ function CasesPage() {
     mutationFn: async (
       caseIds: string[],
     ): Promise<{ data: { run_ids: string[] } }> => {
-      const r = await fetch("/api/runs/", {
+      const r = await apiFetch("/api/runs/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_ids: caseIds, env: "default" }),
@@ -279,36 +291,12 @@ function CasesPage() {
   });
 
   const counts = cases.data?.counts_by_status ?? {};
-  const allRows = cases.data?.data ?? [];
-  // Apply the free-text filter on top of the server-side status filter.
-  // Matches against the human-meaningful fields: id, name, intent, module,
-  // tags joined, and auth_state. Multi-token query → all tokens must match
-  // (AND), so "登录 P0" narrows to login-related P0 cases.
-  const visible = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return allRows;
-    const tokens = q.split(/\s+/);
-    return allRows.filter((c) => {
-      const haystack = [
-        c.case_id,
-        c.name,
-        c.intent,
-        c.module,
-        c.priority,
-        c.review_status,
-        c.auth_state,
-        (c.tags ?? []).join(" "),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return tokens.every((t) => haystack.includes(t));
-    });
-  }, [allRows, searchQuery]);
+  const visible = cases.data?.data ?? [];
+  const total = cases.data?.total ?? 0;
   const allSelected = visible.length > 0 && visible.every((c) => selected.has(c.case_id));
 
-  // Pagination math. Bulk-select keeps acting on the full `visible` set —
-  // pages only affect rendering, never selection semantics.
-  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(visible.length / pageSize));
+  // Pagination math. Bulk-select acts on the currently loaded page.
+  const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(total / pageSize));
   // Clamp page when filter/search/delete shrinks the dataset under the cursor.
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -318,13 +306,9 @@ function CasesPage() {
   useEffect(() => {
     setPage(1);
   }, [filter, searchQuery, pageSize]);
-  const pagedVisible = useMemo(() => {
-    if (pageSize === "all") return visible;
-    const start = (page - 1) * pageSize;
-    return visible.slice(start, start + pageSize);
-  }, [visible, page, pageSize]);
-  const pageStart = pageSize === "all" ? 1 : visible.length === 0 ? 0 : (page - 1) * pageSize + 1;
-  const pageEnd = pageSize === "all" ? visible.length : Math.min(page * pageSize, visible.length);
+  const pagedVisible = visible;
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = offset + visible.length;
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -455,7 +439,7 @@ function CasesPage() {
       {/* Search summary line — only when actually searching */}
       {searchQuery && (
         <div className="text-xs text-slate-500 -mt-2">
-          {visible.length} of {allRows.length} cases match{" "}
+          {total} cases match{" "}
           <code className="font-mono">{searchQuery}</code>
           {filter && (
             <>
@@ -713,15 +697,11 @@ function CasesPage() {
         )}
 
         {/* Pagination footer — purely a render-layer concern; selection,
-            counts, and search all stay scoped to the full `visible` set so
-            flipping pages never changes what bulk actions act on. */}
+            counts and search are applied by the backend before pagination. */}
         {visible.length > 0 && (
           <div className="flex flex-wrap items-center gap-3 px-3 py-2 border-t border-slate-100 text-xs text-slate-600">
             <span>
-              {pageStart}–{pageEnd} of {visible.length}
-              {visible.length !== allRows.length && (
-                <span className="text-slate-400"> (filtered from {allRows.length})</span>
-              )}
+              {pageStart}–{pageEnd} of {total}
             </span>
             <label className="flex items-center gap-1">
               每页
@@ -1006,6 +986,7 @@ function CaseRowView({
         <td className="p-2">
           <div className="font-medium">{c.name}</div>
           <div className="text-xs text-slate-500 truncate">{c.intent}</div>
+          <QualityBadges quality={c.quality} />
         </td>
         <td className="p-2">
           <span
@@ -1177,11 +1158,46 @@ function CaseRowView({
               <Block title="assertions">
                 <ul className="list-disc pl-4 space-y-1">
                   {c.assertions.map((a, i) => (
-                    <li key={i}>{a.description}</li>
+                    <li key={i}>
+                      {a.description}
+                      {(a.source || a.confidence != null) && (
+                        <div className="text-[11px] text-slate-500">
+                          {a.source || "source?"}
+                          {a.confidence != null && (
+                            <> · confidence {Math.round(a.confidence * 100)}%</>
+                          )}
+                          {a.rationale && <> · {a.rationale}</>}
+                        </div>
+                      )}
+                    </li>
                   ))}
                 </ul>
               </Block>
             </div>
+            {c.quality && (
+              <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                <div className="font-medium">
+                  case quality · score {Math.round((c.quality.score ?? 0) * 100)} ·{" "}
+                  {c.quality.severity || "unknown"}
+                </div>
+                {(c.quality.flags ?? []).length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {(c.quality.flags ?? []).map((f) => (
+                      <span key={f} className="rounded bg-white px-1.5 py-0.5 font-mono">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {(c.quality.reviewer_notes ?? []).length > 0 && (
+                  <ul className="mt-1 list-disc pl-4">
+                    {(c.quality.reviewer_notes ?? []).map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
             <div className="mt-3 text-xs text-slate-400 font-mono">
               tags: {c.tags.join(", ") || "—"} · source: {c.source} · prompt:{" "}
               {c.prompt_version} · model: {c.model_version} · from:{" "}
@@ -1383,6 +1399,37 @@ function StatusPill({ status }: { status: string }) {
     >
       {status}
     </span>
+  );
+}
+
+function QualityBadges({ quality }: { quality?: CaseRow["quality"] }) {
+  if (!quality) return null;
+  const flags = quality.flags ?? [];
+  const severity = quality.severity ?? "low";
+  const score = quality.score;
+  const colors: Record<string, string> = {
+    low: "bg-emerald-50 text-emerald-700",
+    medium: "bg-amber-50 text-amber-700",
+    high: "bg-red-50 text-red-700",
+  };
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1">
+      <span className={"text-[10px] rounded px-1.5 py-0.5 font-mono " + (colors[severity] || colors.low)}>
+        quality {score != null ? Math.round(score * 100) : "?"} · {severity}
+      </span>
+      {flags.slice(0, 2).map((f) => (
+        <span
+          key={f}
+          className="text-[10px] rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-600"
+          title={f}
+        >
+          {f}
+        </span>
+      ))}
+      {flags.length > 2 && (
+        <span className="text-[10px] text-slate-400">+{flags.length - 2}</span>
+      )}
+    </div>
   );
 }
 

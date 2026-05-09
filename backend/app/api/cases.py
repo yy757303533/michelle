@@ -5,16 +5,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
+from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
 from app.models import Project, TestCase
 from app.obs import EVENTS, get_logger
-from app.services.case_generator import _mint_case_id, _next_seq
+from app.services.case_generator import CASE_ID_ALLOCATION_LOCK, _mint_case_id, _next_seq
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -102,23 +104,68 @@ class BulkDelete(BaseModel):
     case_ids: list[str] = Field(min_length=1, max_length=500)
 
 
+class CaseImport(BaseModel):
+    project_id: str = Field(min_length=1)
+    cases: list[CaseCreate]
+
+
 @router.get("/")
 async def list_cases(
+    request: Request,
     status: Literal["pending", "approved", "rejected", "stale"] | None = None,
     project_id: str | None = None,
+    q: str = "",
     limit: int = Query(default=200, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(TestCase).order_by(desc(TestCase.created_at)).limit(limit)
+    stmt = select(TestCase).order_by(desc(TestCase.created_at), desc(TestCase.case_id))
+    base_filters = []
+    if project_id:
+        await require_project_role(
+            getattr(request.state, "user", None), project_id, "viewer", session
+        )
+        base_filters.append(TestCase.project_id == project_id)
+    else:
+        allowed = await accessible_project_ids(getattr(request.state, "user", None), session)
+        if allowed is not None:
+            if not allowed:
+                return {
+                    "data": [],
+                    "count": 0,
+                    "counts_by_status": {},
+                    "total": 0,
+                    "truncated": False,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            base_filters.append(TestCase.project_id.in_(allowed))
+    q = q.strip()
+    if q:
+        needle = f"%{q}%"
+        base_filters.append(
+            or_(
+                TestCase.case_id.ilike(needle),
+                TestCase.name.ilike(needle),
+                TestCase.intent.ilike(needle),
+                TestCase.module.ilike(needle),
+                TestCase.auth_state.ilike(needle),
+                cast(TestCase.tags, String).ilike(needle),
+            )
+        )
+    for f in base_filters:
+        stmt = stmt.where(f)
     if status:
         stmt = stmt.where(TestCase.review_status == status)
-    if project_id:
-        stmt = stmt.where(TestCase.project_id == project_id)
-    rows = (await session.execute(stmt)).scalars().all()
+    rows = (await session.execute(stmt.offset(offset).limit(limit))).scalars().all()
 
     counts_stmt = select(TestCase.review_status, func.count()).group_by(TestCase.review_status)
-    if project_id:
-        counts_stmt = counts_stmt.where(TestCase.project_id == project_id)
+    total_stmt = select(func.count()).select_from(TestCase)
+    for f in base_filters:
+        counts_stmt = counts_stmt.where(f)
+        total_stmt = total_stmt.where(f)
+    if status:
+        total_stmt = total_stmt.where(TestCase.review_status == status)
     counts_rows = (await session.execute(counts_stmt)).all()
     counts: dict[str, int] = {row[0]: row[1] for row in counts_rows}
 
@@ -126,19 +173,128 @@ async def list_cases(
     # `counts_by_status` sums to) so the UI can detect "we returned 200
     # rows but the project has 264" — that gap was the cause of the
     # "all (264) / 200 selected" inconsistency users hit before.
-    total = sum(counts.values()) if status is None else counts.get(status, 0)
+    total = int((await session.execute(total_stmt)).scalar_one())
     return {
         "data": [r.model_dump() for r in rows],
         "count": len(rows),
         "counts_by_status": counts,
         "total": total,
         "truncated": len(rows) < total,
+        "limit": limit,
+        "offset": offset,
     }
+
+
+@router.get("/export")
+async def export_cases(
+    request: Request,
+    project_id: str | None = None,
+    format: Literal["json", "csv"] = "json",
+    session: AsyncSession = Depends(get_session),
+):
+    stmt = select(TestCase).order_by(desc(TestCase.created_at))
+    if project_id:
+        await require_project_role(
+            getattr(request.state, "user", None), project_id, "viewer", session
+        )
+        stmt = stmt.where(TestCase.project_id == project_id)
+    else:
+        allowed = await accessible_project_ids(getattr(request.state, "user", None), session)
+        if allowed is not None:
+            if not allowed:
+                return JSONResponse({"data": []}) if format == "json" else PlainTextResponse("")
+            stmt = stmt.where(TestCase.project_id.in_(allowed))
+    rows = (await session.execute(stmt)).scalars().all()
+    data = [r.model_dump() for r in rows]
+    if format == "json":
+        return JSONResponse({"data": data})
+    import csv
+    import io
+
+    out = io.StringIO()
+    writer = csv.DictWriter(
+        out,
+        fieldnames=[
+            "case_id",
+            "project_id",
+            "name",
+            "intent",
+            "module",
+            "priority",
+            "review_status",
+        ],
+    )
+    writer.writeheader()
+    for row in data:
+        writer.writerow({k: row.get(k, "") for k in writer.fieldnames or []})
+    return PlainTextResponse(out.getvalue(), media_type="text/csv; charset=utf-8")
+
+
+@router.post("/import")
+async def import_cases(
+    body: CaseImport,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    proj = await session.get(Project, body.project_id)
+    if proj is None:
+        raise HTTPException(status_code=404, detail=f"project {body.project_id} not found")
+    await require_project_role(
+        getattr(request.state, "user", None), body.project_id, "reviewer", session
+    )
+    created = []
+    async with CASE_ID_ALLOCATION_LOCK:
+        for item in body.cases:
+            payload = item.model_copy(update={"project_id": body.project_id})
+            seq = await _next_seq(session, body.project_id)
+            case_id = _mint_case_id(seq)
+            row = TestCase(
+                case_id=case_id,
+                project_id=body.project_id,
+                name=payload.name[:200],
+                intent=payload.intent[:1000],
+                module=payload.module[:60],
+                tags=payload.tags,
+                priority=payload.priority,
+                auth_state=payload.auth_state,
+                preconditions=payload.preconditions,
+                steps=payload.steps,
+                assertions=payload.assertions,
+                quality={
+                    "score": 1.0,
+                    "severity": "low",
+                    "flags": [],
+                    "reviewer_notes": ["imported case"],
+                },
+                source="imported",
+                prompt_version="import",
+                model_version="import",
+                review_status="pending",
+                version=1,
+            )
+            session.add(row)
+            created.append(row)
+        await session.commit()
+    data = [r.model_dump() for r in created]
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="case.imported",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="project",
+        target_id=body.project_id,
+        detail=f"count={len(created)}",
+        session=session,
+    )
+    await session.commit()
+    return {"data": data, "count": len(created)}
 
 
 @router.post("/", status_code=201)
 async def create_case(
     body: CaseCreate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Hand-author a case. Lands in `pending` so it still goes through the
@@ -146,43 +302,73 @@ async def create_case(
     proj = await session.get(Project, body.project_id)
     if proj is None:
         raise HTTPException(status_code=404, detail=f"project {body.project_id} not found")
-
-    seq = await _next_seq(session, body.project_id)
-    case_id = _mint_case_id(seq)
-    row = TestCase(
-        case_id=case_id,
-        project_id=body.project_id,
-        name=body.name[:200],
-        intent=body.intent[:1000],
-        module=body.module[:60],
-        tags=body.tags,
-        priority=body.priority,
-        auth_state=body.auth_state,
-        preconditions=body.preconditions,
-        steps=body.steps,
-        assertions=body.assertions,
-        source="manual",
-        prompt_version="manual",
-        model_version="manual",
-        generated_from=None,
-        review_status="pending",
-        version=1,
+    await require_project_role(
+        getattr(request.state, "user", None), body.project_id, "reviewer", session
     )
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
+
+    async with CASE_ID_ALLOCATION_LOCK:
+        seq = await _next_seq(session, body.project_id)
+        case_id = _mint_case_id(seq)
+        row = TestCase(
+            case_id=case_id,
+            project_id=body.project_id,
+            name=body.name[:200],
+            intent=body.intent[:1000],
+            module=body.module[:60],
+            tags=body.tags,
+            priority=body.priority,
+            auth_state=body.auth_state,
+            preconditions=body.preconditions,
+            steps=body.steps,
+            assertions=body.assertions,
+            quality={
+                "score": 1.0,
+                "severity": "low",
+                "flags": [],
+                "reviewer_notes": ["manual case"],
+            },
+            source="manual",
+            prompt_version="manual",
+            model_version="manual",
+            generated_from=None,
+            review_status="pending",
+            version=1,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
     log.info("case.created.manual", case_id=case_id, project_id=body.project_id)
-    return {"data": row.model_dump()}
+    data = row.model_dump()
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="case.created",
+        method=request.method,
+        path=request.url.path,
+        status_code=201,
+        target_type="case",
+        target_id=case_id,
+        detail=f"project_id={body.project_id}",
+        session=session,
+    )
+    await session.commit()
+    return {"data": data}
 
 
 @router.delete("/{case_id}", status_code=204)
-async def delete_case(case_id: str, session: AsyncSession = Depends(get_session)) -> None:
+async def delete_case(
+    case_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> None:
     """Hard-delete a case. Approved cases are protected — the contract is
     that approved == human-confirmed, and one accidental click shouldn't
     erase that signal. Reject the case first if you really need it gone."""
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "reviewer", session
+    )
     if row.review_status == "approved":
         raise HTTPException(
             status_code=409,
@@ -195,10 +381,17 @@ async def delete_case(case_id: str, session: AsyncSession = Depends(get_session)
 
 
 @router.get("/{case_id}")
-async def get_case(case_id: str, session: AsyncSession = Depends(get_session)) -> dict:
+async def get_case(
+    case_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "viewer", session
+    )
     return {"data": row.model_dump()}
 
 
@@ -206,11 +399,15 @@ async def get_case(case_id: str, session: AsyncSession = Depends(get_session)) -
 async def review_case(
     case_id: str,
     body: ReviewAction,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "reviewer", session
+    )
 
     before = row.review_status
     target = _VERB_TO_STATE[body.action]
@@ -233,7 +430,7 @@ async def review_case(
 
     row.review_status = target
     row.updated_at = datetime.now(UTC)
-    await session.commit()
+    data = row.model_dump()
     log.info(
         EVENTS.REVIEW_CASE_ACTION.name,
         case_id=case_id,
@@ -242,11 +439,27 @@ async def review_case(
         after_state=row.review_status,
         note=body.note[:500] if body.note else "",
     )
-    return {"data": row.model_dump()}
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action=f"case.{body.action}",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="case",
+        target_id=case_id,
+        detail=f"{before}->{target}; note={body.note[:500] if body.note else ''}",
+        session=session,
+    )
+    await session.commit()
+    return {"data": data}
 
 
 @router.post("/bulk-review")
-async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_review(
+    body: BulkReview,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Apply approve/reject/reset to many cases in one transaction.
 
     `reset` reverts approved/rejected cases back to `pending` — useful when
@@ -260,6 +473,10 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
         .scalars()
         .all()
     )
+    for row in rows:
+        await require_project_role(
+            getattr(request.state, "user", None), row.project_id, "reviewer", session
+        )
     found_ids = {r.case_id for r in rows}
     missing = [cid for cid in body.case_ids if cid not in found_ids]
 
@@ -289,6 +506,21 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
             after_state=target,
             via="bulk",
         )
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action=f"case.bulk_{body.action}",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="case",
+        target_id=",".join(updated[:20]),
+        detail=(
+            f"updated={len(updated)}; missing={len(missing)}; "
+            f"skipped_already={len(skipped_already_at_state)}; "
+            f"skipped_wrong_state={len(skipped_wrong_state)}"
+        ),
+        session=session,
+    )
     await session.commit()
     return {
         "data": {
@@ -302,7 +534,11 @@ async def bulk_review(body: BulkReview, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/bulk-delete")
-async def bulk_delete(body: BulkDelete, session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_delete(
+    body: BulkDelete,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Delete many cases in one transaction. Approved cases are skipped
     (same guard as DELETE /<id>) and surfaced in the response so the UI
     can tell the user "we deleted N, kept M approved ones — reject those
@@ -312,6 +548,10 @@ async def bulk_delete(body: BulkDelete, session: AsyncSession = Depends(get_sess
         .scalars()
         .all()
     )
+    for row in rows:
+        await require_project_role(
+            getattr(request.state, "user", None), row.project_id, "reviewer", session
+        )
     found_ids = {r.case_id for r in rows}
     missing = [cid for cid in body.case_ids if cid not in found_ids]
 
@@ -343,6 +583,7 @@ async def bulk_delete(body: BulkDelete, session: AsyncSession = Depends(get_sess
 async def edit_case(
     case_id: str,
     body: CaseEdit,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Partial edit. Each field set in the body is added to
@@ -353,6 +594,9 @@ async def edit_case(
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "reviewer", session
+    )
 
     payload = body.model_dump(exclude_unset=True, exclude_none=True)
     if not payload:

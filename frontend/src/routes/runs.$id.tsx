@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { fmtDateTime, fmtMs, fmtTime } from "../lib/datetime";
+import { apiFetch } from "../lib/adminAuth";
 
 /** Build an artifact URL with each path segment percent-encoded so filenames
  * with spaces / `#` / `?` round-trip correctly to the backend's
@@ -18,6 +19,7 @@ export const Route = createFileRoute("/runs/$id")({
 
 interface StepEvent {
   step_index: number;
+  phase: "prepare" | "action" | "assertion" | "cleanup" | string;
   event: string;
   intent: string | null;
   tool_name: string | null;
@@ -58,11 +60,22 @@ interface RunRow {
 }
 
 interface RunDetail {
-  data: { run: RunRow; steps: StepEvent[] };
+  data: {
+    run: RunRow;
+    steps: StepEvent[];
+    failure_context: {
+      step_index: number;
+      phase: string;
+      tool_name: string | null;
+      intent: string | null;
+      error_message: string | null;
+      evidence: string;
+    } | null;
+  };
 }
 
 interface ArtifactsResponse {
-  data: Array<{ name: string; size: number; is_image: boolean }>;
+  data: Array<{ name: string; size: number; is_image: boolean; kind?: string }>;
 }
 
 const TERMINAL = new Set(["passed", "failed", "flaky", "aborted"]);
@@ -77,7 +90,7 @@ function RunDetailPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["run", id],
     queryFn: async (): Promise<RunDetail> => {
-      const r = await fetch(`/api/runs/${id}`);
+      const r = await apiFetch(`/api/runs/${id}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -96,7 +109,7 @@ function RunDetailPage() {
   const artifacts = useQuery({
     queryKey: ["run-artifacts", id],
     queryFn: async (): Promise<ArtifactsResponse> => {
-      const r = await fetch(`/api/runs/${id}/artifacts`);
+      const r = await apiFetch(`/api/runs/${id}/artifacts`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -206,7 +219,12 @@ function RunDetailPage() {
     );
   const run = data!.data.run;
   const steps = data!.data.steps;
+  const failureContext = data!.data.failure_context;
   const live = !TERMINAL.has(run.status);
+  const phaseCounts = phaseSummary(steps);
+  const forensicArtifacts = (artifacts.data?.data ?? []).filter(
+    (f) => !f.is_image && f.name !== "report.html",
+  );
 
   return (
     <div className="space-y-6">
@@ -241,7 +259,15 @@ function RunDetailPage() {
                 rel="noreferrer"
                 className="text-xs px-3 py-1 rounded bg-slate-900 text-white hover:bg-slate-700"
               >
-                open HTML report ↗
+                single-run report ↗
+              </a>
+              <a
+                href={`/api/projects/${encodeURIComponent(run.project_id)}/report.html`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs px-3 py-1 rounded border border-slate-200 bg-white text-slate-700 hover:border-slate-400"
+              >
+                project report ↗
               </a>
             </>
           )}
@@ -265,6 +291,44 @@ function RunDetailPage() {
           {run.error_message}
         </div>
       )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+            execution phases
+          </div>
+          <div className="grid grid-cols-4 gap-2 text-sm">
+            {["prepare", "action", "assertion", "cleanup"].map((phase) => (
+              <div key={phase} className="rounded border border-slate-100 p-2">
+                <div className="text-xs text-slate-400">{phase}</div>
+                <div className="text-lg font-semibold">{phaseCounts[phase] ?? 0}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+            first failure
+          </div>
+          {failureContext ? (
+            <div className="text-sm space-y-1">
+              <div>
+                <PhaseBadge phase={failureContext.phase} />{" "}
+                <span className="font-mono text-xs">step {failureContext.step_index}</span>{" "}
+                <span className="text-slate-500">{failureContext.tool_name}</span>
+              </div>
+              <div className="font-medium">{failureContext.intent || "(no label)"}</div>
+              {(failureContext.error_message || failureContext.evidence) && (
+                <pre className="text-xs text-red-700 whitespace-pre-wrap max-h-20 overflow-auto">
+                  {failureContext.error_message || failureContext.evidence}
+                </pre>
+              )}
+            </div>
+          ) : (
+            <div className="text-sm text-slate-400">no failed step recorded</div>
+          )}
+        </div>
+      </div>
 
       {/* Step timeline */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -328,6 +392,30 @@ function RunDetailPage() {
                   {img.name}
                 </div>
               </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {forensicArtifacts.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+            trace / logs / data
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            {forensicArtifacts.map((f) => (
+              <a
+                key={f.name}
+                href={artifactUrl(id, f.name)}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-between gap-3 rounded border border-slate-100 px-3 py-2 hover:border-blue-300"
+              >
+                <span className="font-mono text-xs truncate">{f.name}</span>
+                <span className="text-xs text-slate-400 shrink-0">
+                  {f.kind || "file"} · {formatBytes(f.size)}
+                </span>
+              </a>
             ))}
           </div>
         </div>
@@ -419,7 +507,7 @@ function RunHistorySection({
   const siblings = useQuery({
     queryKey: ["case-run-history", projectId, caseId],
     queryFn: async (): Promise<{ data: SiblingRun[] }> => {
-      const r = await fetch(
+      const r = await apiFetch(
         `/api/runs/?project_id=${encodeURIComponent(projectId)}&case_id=${encodeURIComponent(caseId)}&limit=50`,
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -506,7 +594,10 @@ function StepRow({
         </span>
         <div className="flex-1 min-w-0">
           <div className="font-mono text-xs text-slate-500">{s.tool_name}</div>
-          <div className="font-medium">{s.intent || "(no label)"}</div>
+          <div className="flex items-center gap-2">
+            <PhaseBadge phase={s.phase || "action"} />
+            <div className="font-medium">{s.intent || "(no label)"}</div>
+          </div>
           {s.tool_args && Object.keys(s.tool_args).length > 0 && (
             <pre className="mt-1 text-xs text-slate-400 font-mono whitespace-pre-wrap break-all">
               {JSON.stringify(s.tool_args, null, 0)}
@@ -544,6 +635,35 @@ function StepRow({
   );
 }
 
+function PhaseBadge({ phase }: { phase: string }) {
+  const m: Record<string, string> = {
+    prepare: "bg-slate-100 text-slate-600",
+    action: "bg-blue-100 text-blue-700",
+    assertion: "bg-amber-100 text-amber-700",
+    cleanup: "bg-zinc-100 text-zinc-600",
+  };
+  return (
+    <span className={"text-[11px] px-1.5 py-0.5 rounded font-mono " + (m[phase] || m.action)}>
+      {phase}
+    </span>
+  );
+}
+
+function phaseSummary(steps: StepEvent[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const s of steps) {
+    const phase = s.phase || "action";
+    out[phase] = (out[phase] ?? 0) + 1;
+  }
+  return out;
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 function Card({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="bg-white border border-slate-200 rounded p-3">
@@ -574,4 +694,3 @@ function StatusBadge({ status, live }: { status: string; live: boolean }) {
     </span>
   );
 }
-

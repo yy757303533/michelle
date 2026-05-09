@@ -164,3 +164,93 @@ def test_non_playwright_tool_is_marked_correctly():
     assert parsed.steps[0].is_playwright is False
     assert parsed.steps[0].tool_name == "ToolSearch"
     assert parsed.playwright_steps == []
+
+
+def test_screenshot_parser_ignores_npm_cache_icons():
+    lines = [
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "mcp__playwright__browser_snapshot",
+                            "input": {},
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "[Screenshot of viewport]"
+                                        "(artifacts/.npm-cache/_npx/x/node_modules/"
+                                        "playwright-core/lib/server/chromium/appIcon.png)"
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+    ]
+
+    parsed = parse_stream(lines)
+
+    assert parsed.steps[0].screenshot_path is None
+
+
+def test_screenshot_parser_accepts_real_screenshot_file():
+    lines = [
+        _line(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "mcp__playwright__browser_take_screenshot",
+                            "input": {"filename": "final.png"},
+                        }
+                    ]
+                },
+            }
+        ),
+        _line(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "[Screenshot of viewport](final.png)",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+    ]
+
+    parsed = parse_stream(lines)
+
+    assert parsed.steps[0].screenshot_path == "final.png"

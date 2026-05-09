@@ -5,6 +5,7 @@ prompts, PRD delete/cascading, and the background generation job
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ async def memory_db(monkeypatch):
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "async_session_maker", maker)
     yield maker
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -97,6 +99,98 @@ async def test_post_with_known_id_updates_existing(app_client, session):
     assert data["name"] == "New"
     assert data["base_url"] == "http://new/"
     assert data["default_username"] == "admin"
+    assert data["default_password"] == ""
+    assert data["default_password_is_set"] is True
+
+
+@pytest.mark.asyncio
+async def test_import_cases_persists_every_case(app_client, session):
+    session.add(Project(project_id="demo", name="Demo"))
+    await session.commit()
+
+    r = await app_client.post(
+        "/api/cases/import",
+        json={
+            "project_id": "demo",
+            "cases": [
+                {
+                    "project_id": "demo",
+                    "name": "first",
+                    "intent": "open first page",
+                    "steps": [{"intent": "open first", "expected": "first shown"}],
+                    "assertions": [{"description": "first shown"}],
+                },
+                {
+                    "project_id": "demo",
+                    "name": "second",
+                    "intent": "open second page",
+                    "steps": [{"intent": "open second", "expected": "second shown"}],
+                    "assertions": [{"description": "second shown"}],
+                },
+            ],
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.json()["count"] == 2
+    rows = (await session.execute(select(TestCase).order_by(TestCase.name))).scalars().all()
+    assert [row.name for row in rows] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_list_cases_supports_server_pagination_and_search(app_client, session):
+    session.add(Project(project_id="demo", name="Demo"))
+    for idx, name in enumerate(["Alpha checkout", "Beta search", "Gamma checkout"], start=1):
+        session.add(
+            TestCase(
+                case_id=f"TC-PAGE-{idx}",
+                project_id="demo",
+                name=name,
+                intent=f"{name} flow",
+                module="payments" if "checkout" in name else "search",
+                review_status="approved",
+                tags=["checkout"] if "checkout" in name else ["search"],
+                steps=[{"intent": "open page"}],
+                assertions=[{"description": "page opens"}],
+            )
+        )
+    await session.commit()
+
+    r = await app_client.get("/api/cases/?project_id=demo&limit=1&offset=1&q=checkout")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2
+    assert body["count"] == 1
+    assert body["offset"] == 1
+    assert body["limit"] == 1
+    assert body["truncated"] is True
+    assert body["data"][0]["name"] in {"Alpha checkout", "Gamma checkout"}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_manual_case_creation_mints_unique_ids(app_client, session):
+    session.add(Project(project_id="demo", name="Demo"))
+    await session.commit()
+
+    async def create_one(name: str):
+        return await app_client.post(
+            "/api/cases/",
+            json={
+                "project_id": "demo",
+                "name": name,
+                "intent": name,
+                "steps": [{"intent": "open page"}],
+                "assertions": [{"description": "page opens"}],
+            },
+        )
+
+    r1, r2 = await asyncio.gather(create_one("first"), create_one("second"))
+
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    ids = {r1.json()["data"]["case_id"], r2.json()["data"]["case_id"]}
+    assert len(ids) == 2
 
 
 # ── PRD delete cascades children's prev_version_id ─────────────────────────
@@ -212,6 +306,101 @@ async def test_generate_endpoint_returns_202_and_job_id(app_client, session, mon
     assert job is not None
     assert job.status == "pending"
     assert job.total_chapters == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_reuses_active_job(app_client, session, monkeypatch):
+    proj = Project(project_id="demo", name="demo")
+    prd = PRD(
+        prd_id="prd-1",
+        project_id="demo",
+        name="P",
+        raw_markdown="",
+        content_hash="h",
+        chapters=[
+            {
+                "level": 2,
+                "title": "A",
+                "normalized_title": "a",
+                "body": "x",
+                "hash": "ha",
+                "position": 0,
+            }
+        ],
+        version=1,
+    )
+    active = PRDGenerationJob(
+        job_id="gen_active",
+        prd_id="prd-1",
+        project_id="demo",
+        status="running",
+        total_chapters=1,
+        completed_chapters=0,
+        saved_cases=0,
+        results=[],
+        request_payload={"chapter_indices": [0]},
+    )
+    session.add(proj)
+    session.add(prd)
+    session.add(active)
+    await session.commit()
+
+    from app.api import prd as prd_api
+
+    kicked: list[str] = []
+    monkeypatch.setattr(prd_api, "kick_off", lambda job_id: kicked.append(job_id))
+
+    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
+    assert r.status_code == 202
+    data = r.json()["data"]
+    assert data["job_id"] == "gen_active"
+    assert data["status"] == "running"
+    assert data["reused"] is True
+    assert kicked == []
+
+
+@pytest.mark.asyncio
+async def test_generate_endpoint_uses_runtime_case_generation_provider(
+    app_client, session, monkeypatch
+):
+    from app.models import RuntimeSetting
+
+    proj = Project(project_id="demo", name="demo")
+    prd = PRD(
+        prd_id="prd-1",
+        project_id="demo",
+        name="P",
+        raw_markdown="",
+        content_hash="h",
+        chapters=[
+            {
+                "level": 2,
+                "title": "A",
+                "normalized_title": "a",
+                "body": "x",
+                "hash": "ha",
+                "position": 0,
+            }
+        ],
+        version=1,
+    )
+    session.add(proj)
+    session.add(prd)
+    session.add(RuntimeSetting(key="case_generation_provider", value="codex-cli"))
+    session.add(RuntimeSetting(key="case_generation_preflight_timeout_seconds", value="45"))
+    await session.commit()
+
+    from app.api import prd as prd_api
+
+    monkeypatch.setattr(prd_api, "kick_off", lambda job_id: None)
+
+    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
+    assert r.status_code == 202
+    data = r.json()["data"]
+    job = await session.get(PRDGenerationJob, data["job_id"])
+    assert job is not None
+    assert job.request_payload["prefer_provider"] == "codex-cli"
+    assert job.request_payload["preflight_timeout_seconds"] == 45
 
 
 @pytest.mark.asyncio

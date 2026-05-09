@@ -5,10 +5,9 @@ OpenAI-compatible model produces JSON actions, Michelle calls
 `@playwright/mcp` directly, persists every tool call, and stops when the model
 returns the required RESULT payload.
 
-The first implementation intentionally uses a conservative JSON-action
-protocol instead of provider-specific native tool calling. That keeps Qwen /
-Kimi / GLM / DeepSeek / relay gateways on one code path. Native tool-calling
-can be added later under the same runner without changing the UI contract.
+The implementation intentionally uses a conservative JSON-action protocol
+instead of provider-specific native tool calling. Native tool-calling can be
+added later under the same runner without changing the UI contract.
 """
 
 from __future__ import annotations
@@ -30,15 +29,13 @@ from app.agent.trace_parser import (
 from app.config import settings
 from app.llm import LLMError, get_gateway
 from app.obs import EVENTS, get_logger
+from app.runtime_config import get_case_execution_provider
 
 _log = get_logger(__name__)
 
 
 class GenericRunnerError(RuntimeError):
     pass
-
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
@@ -75,9 +72,10 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             isolated=req.isolated,
             extra_args=req.extra_mcp_args,
         ) as mcp:
-            tools = await mcp.list_tools()
+            tools = [tool for tool in await mcp.list_tools() if tool.name != "browser_install"]
             transcript = _initial_transcript(req.prompt, tools)
             max_turns = max(1, settings.generic_agent_max_turns)
+            prefer_provider = await get_case_execution_provider()
             last_action_key: tuple[str, str] | None = None
             repeated_action_count = 0
 
@@ -86,14 +84,14 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 result = await get_gateway().chat(
                     model_prompt,
                     prompt_version="execute_generic_json_v1",
-                    skip=["claude-cli", "codex-cli", "minimax"],
+                    prefer=prefer_provider,
+                    skip=["claude-cli"],
                     json_mode=True,
                     temperature=0,
                     timeout_seconds=min(req.timeout_seconds, 120),
                 )
                 total_input += result.input_tokens
                 total_output += result.output_tokens
-                action = _parse_action(result.text)
                 events.append(
                     {
                         "type": "model",
@@ -103,6 +101,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                         "text": _redact_text(result.text, req.secrets),
                     }
                 )
+                action = _parse_action(result.text)
 
                 if "final" in action:
                     final_payload = _normalize_final_payload(action["final"], len(steps))
@@ -176,6 +175,10 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 step.console_errors = extracted.get("console_errors")
                 step.console_warnings = extracted.get("console_warnings")
                 step.screenshot_path = extracted.get("screenshot_path")
+                if not step.screenshot_path and tool_name == "browser_take_screenshot":
+                    filename = safe_args.get("filename")
+                    if isinstance(filename, str) and filename.strip():
+                        step.screenshot_path = filename.strip()
 
                 events.append(
                     {
@@ -288,10 +291,15 @@ def _parse_action(text: str) -> dict[str, Any]:
     try:
         data = json.loads(s)
     except json.JSONDecodeError as exc:
-        m = _JSON_RE.search(s)
-        if not m:
+        decoder = json.JSONDecoder()
+        for m in re.finditer(r"\{", s):
+            try:
+                data, _end = decoder.raw_decode(s[m.start() :])
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
             raise GenericRunnerError(f"model did not return JSON action: {text[:300]}") from exc
-        data = json.loads(m.group(0))
     if not isinstance(data, dict):
         raise GenericRunnerError("model JSON action must be an object")
     return data

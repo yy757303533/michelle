@@ -4,6 +4,8 @@ import { useState } from "react";
 import { LLMRunnerStatusLight } from "../components/LLMRunnerStatusLight";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
+import { fmtMs } from "../lib/datetime";
+import { apiFetch } from "../lib/adminAuth";
 
 export const Route = createFileRoute("/")({
   component: Dashboard,
@@ -17,7 +19,7 @@ interface HealthResponse {
 }
 
 interface LLMHealth {
-  data: Record<string, { available: boolean; priority: number }>;
+  data: Record<string, { available: boolean; priority: number; detail?: string }>;
   available_providers: string[];
 }
 
@@ -48,6 +50,24 @@ interface PRDsResponse {
   }>;
 }
 
+interface TrendsResponse {
+  data: {
+    total: number;
+    terminal: number;
+    pass_rate: number | null;
+    flaky_rate: number | null;
+    avg_duration_ms: number | null;
+    by_status: Record<string, number>;
+    by_day: Array<Record<string, number | string>>;
+  };
+}
+
+interface SelfCheckResponse {
+  data: {
+    checks: Array<{ name: string; ok: boolean; detail: string; elapsed_ms?: number | null }>;
+  };
+}
+
 interface ProbeResult {
   ok: boolean;
   provider?: string;
@@ -59,6 +79,35 @@ interface ProbeResult {
   cost_usd?: number | null;
   error?: string;
   error_type?: string;
+}
+
+interface ProviderProbeResult extends ProbeResult {
+  provider: string;
+}
+
+interface LLMMetricsResponse {
+  data: {
+    totals: {
+      calls: number;
+      failed: number;
+      failure_rate: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+    };
+    providers: Array<{
+      provider: string;
+      calls: number;
+      success: number;
+      failed: number;
+      failure_rate: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+      avg_latency_ms: number;
+      last_error: string;
+    }>;
+  };
 }
 
 function Dashboard() {
@@ -78,6 +127,8 @@ function Dashboard() {
       </div>
 
       <BackendHealth />
+      <SelfCheckPanel />
+      <TrendsPanel projectId={projectId} />
 
       {projectId && <CurrentProjectPanel projectId={projectId} />}
 
@@ -91,9 +142,208 @@ function Dashboard() {
         <LLMProvidersWidget />
         <ProbePanel />
       </div>
+      <LLMMetricsPanel />
 
       <RuntimeSettingsPanel />
+      <AdminOpsPanel projectId={projectId} />
     </div>
+  );
+}
+
+function LLMMetricsPanel() {
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const metrics = useQuery({
+    queryKey: ["llm-metrics"],
+    queryFn: async (): Promise<LLMMetricsResponse> => {
+      const r = await apiFetch("/api/llm/metrics?limit=500");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 30000,
+  });
+  const clear = useMutation({
+    mutationFn: async () => {
+      const r = await apiFetch("/api/llm/metrics", { method: "DELETE" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["llm-metrics"] }),
+  });
+  const data = metrics.data?.data;
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const hasFailures = Boolean(data?.totals.failed);
+  return (
+    <Panel title="LLM health history">
+      {!data ? (
+        <span className="text-slate-400 text-sm">…</span>
+      ) : (
+        <div className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-slate-500">
+              Historical telemetry for provider debugging. Model selection lives in{" "}
+              <code>Platform settings / model_routing</code>.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="text-xs rounded border border-slate-200 px-2 py-1 hover:bg-slate-50"
+              >
+                {expanded ? "hide details" : hasFailures ? "show errors" : "show details"}
+              </button>
+              <button
+                type="button"
+                onClick={() => clear.mutate()}
+                disabled={clear.isPending || data.totals.calls === 0}
+                className="text-xs rounded border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {clear.isPending ? "clearing…" : "clear history"}
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Row label="calls" value={data.totals.calls} mono />
+            <Row
+              label="failures"
+              value={`${data.totals.failed} (${pct(data.totals.failure_rate)})`}
+              mono
+              valueClass={data.totals.failed ? "text-red-700" : "text-emerald-700"}
+            />
+            <Row label="input tokens" value={data.totals.input_tokens} mono />
+            <Row label="output tokens" value={data.totals.output_tokens} mono />
+            <Row label="cost" value={`$${data.totals.cost_usd.toFixed(3)}`} mono />
+          </div>
+          {hasFailures && !expanded && (
+            <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+              Historical provider failures exist. Use details only when generation,
+              execution, or diagnosis fails.
+            </div>
+          )}
+          {expanded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+              {data.providers.map((p) => (
+                <div key={p.provider} className="rounded border border-slate-200 px-2 py-1">
+                  <div className="flex items-center justify-between">
+                    <code>{p.provider}</code>
+                    <span className={p.failed ? "text-red-700" : "text-emerald-700"}>
+                      {p.calls} calls · {pct(p.failure_rate)} failed
+                    </span>
+                  </div>
+                  <div className="text-slate-500">
+                    {p.input_tokens}/{p.output_tokens} tokens · {p.avg_latency_ms}ms avg
+                    {p.cost_usd ? ` · $${p.cost_usd.toFixed(3)}` : ""}
+                  </div>
+                  {p.last_error && <div className="truncate text-red-700">{p.last_error}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {clear.error && (
+            <div className="text-xs text-red-600">{(clear.error as Error).message}</div>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function SelfCheckPanel() {
+  const [includeMcpProbe, setIncludeMcpProbe] = useState(false);
+  const [includeLlmProbe, setIncludeLlmProbe] = useState(false);
+  const check = useQuery({
+    queryKey: ["selfcheck", includeMcpProbe, includeLlmProbe],
+    queryFn: async (): Promise<SelfCheckResponse> => {
+      const params = new URLSearchParams();
+      if (includeMcpProbe) params.set("include_mcp_probe", "true");
+      if (includeLlmProbe) params.set("include_llm_probe", "true");
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      const r = await apiFetch(`/api/settings/selfcheck${qs}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: includeMcpProbe || includeLlmProbe ? false : 15000,
+  });
+  const rows = check.data?.data.checks ?? [];
+  return (
+    <Panel title="Environment self-check">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-500">
+          Probes spend real startup/model time; use before sharing a pilot environment.
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIncludeMcpProbe(true)}
+            disabled={check.isFetching && includeMcpProbe}
+            className="text-xs rounded border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {check.isFetching && includeMcpProbe ? "probing…" : "probe MCP"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setIncludeLlmProbe(true)}
+            disabled={check.isFetching && includeLlmProbe}
+            className="text-xs rounded border border-slate-200 px-2 py-1 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {check.isFetching && includeLlmProbe ? "probing…" : "probe LLM"}
+          </button>
+        </div>
+      </div>
+      {check.isLoading ? (
+        <span className="text-slate-400 text-sm">checking…</span>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+          {rows.map((r) => (
+            <div key={r.name} className="rounded border border-slate-200 px-2 py-1">
+              <span className={r.ok ? "text-emerald-700" : "text-amber-700"}>
+                {r.ok ? "ok" : "check"}
+              </span>{" "}
+              <code>{r.name}</code>
+              <div className="text-slate-500 truncate">
+                {r.detail}
+                {typeof r.elapsed_ms === "number" ? ` (${fmtMs(r.elapsed_ms)})` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function TrendsPanel({ projectId }: { projectId: string }) {
+  const trends = useQuery({
+    queryKey: ["run-trends", projectId],
+    queryFn: async (): Promise<TrendsResponse> => {
+      const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+      const r = await apiFetch(`/api/runs/trends${qs}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 15000,
+  });
+  const d = trends.data?.data;
+  const pct = (v: number | null) => (v == null ? "—" : `${Math.round(v * 100)}%`);
+  return (
+    <Panel title="Run trends">
+      {!d ? (
+        <span className="text-slate-400 text-sm">…</span>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+          <Row label="runs" value={String(d.total)} mono />
+          <Row label="pass rate" value={pct(d.pass_rate)} mono valueClass="text-emerald-700" />
+          <Row label="flaky rate" value={pct(d.flaky_rate)} mono valueClass="text-amber-700" />
+          <Row label="avg duration" value={fmtMs(d.avg_duration_ms)} mono />
+          <Row
+            label="failed"
+            value={String((d.by_status.failed ?? 0) + (d.by_status.aborted ?? 0))}
+            mono
+            valueClass="text-red-700"
+          />
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -101,7 +351,7 @@ function BackendHealth() {
   const health = useQuery({
     queryKey: ["healthz"],
     queryFn: async (): Promise<HealthResponse> => {
-      const r = await fetch("/healthz");
+      const r = await apiFetch("/healthz");
       if (!r.ok) throw new Error("backend down");
       return r.json();
     },
@@ -134,7 +384,7 @@ function CasesWidget({ projectId }: { projectId: string }) {
     queryKey: ["cases-summary", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<CasesResponse> => {
-      const r = await fetch(`/api/cases/?limit=200&project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/cases/?limit=200&project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 10000,
@@ -178,7 +428,7 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
     queryKey: ["runs-recent", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
-      const r = await fetch(`/api/runs/?limit=5&project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/runs/?limit=5&project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 3000,
@@ -216,7 +466,7 @@ function PRDsWidget({ projectId }: { projectId: string }) {
     queryKey: ["prds-recent", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<PRDsResponse> => {
-      const r = await fetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 30000,
@@ -247,14 +497,14 @@ function LLMProvidersWidget() {
   const llm = useQuery({
     queryKey: ["llm-health"],
     queryFn: async (): Promise<LLMHealth> => {
-      const r = await fetch("/api/llm/health");
+      const r = await apiFetch("/api/llm/health");
       return r.json();
     },
     refetchInterval: 30000,
   });
 
   return (
-    <Panel title="LLM providers (priority order)">
+    <Panel title="LLM provider status">
       {llm.isLoading ? (
         <span className="text-slate-400 text-sm">…</span>
       ) : (
@@ -262,13 +512,16 @@ function LLMProvidersWidget() {
           {Object.entries(llm.data?.data ?? {})
             .sort(([, a], [, b]) => a.priority - b.priority)
             .map(([name, p]) => (
-              <div key={name} className="flex justify-between">
+              <div key={name} className="flex justify-between gap-3">
                 <span>
                   <code>{name}</code>{" "}
                   <span className="text-slate-400">prio {p.priority}</span>
                 </span>
-                <span className={p.available ? "text-emerald-600" : "text-slate-300"}>
-                  {p.available ? "configured" : "off"}
+                <span
+                  className={p.available ? "text-emerald-600" : "text-slate-400"}
+                  title={p.detail}
+                >
+                  {p.available ? "available" : p.detail || "off"}
                 </span>
               </div>
             ))}
@@ -281,10 +534,11 @@ function LLMProvidersWidget() {
 function ProbePanel() {
   const [prefer, setPrefer] = useState<string>("");
   const [last, setLast] = useState<ProbeResult | null>(null);
+  const [all, setAll] = useState<ProviderProbeResult[]>([]);
 
   const probe = useMutation({
     mutationFn: async (): Promise<ProbeResult> => {
-      const r = await fetch("/api/llm/probe", {
+      const r = await apiFetch("/api/llm/probe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prefer: prefer || null }),
@@ -293,6 +547,18 @@ function ProbePanel() {
       return body.data as ProbeResult;
     },
     onSuccess: setLast,
+  });
+  const probeAll = useMutation({
+    mutationFn: async (): Promise<ProviderProbeResult[]> => {
+      const r = await apiFetch("/api/llm/probe_all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await r.json();
+      return body.data as ProviderProbeResult[];
+    },
+    onSuccess: setAll,
   });
 
   return (
@@ -306,13 +572,6 @@ function ProbePanel() {
           <option value="">auto</option>
           <option value="claude-cli">claude-cli</option>
           <option value="codex-cli">codex-cli</option>
-          <option value="flywheel">flywheel</option>
-          <option value="deepseek">deepseek</option>
-          <option value="qwen">qwen</option>
-          <option value="glm">glm</option>
-          <option value="kimi">kimi</option>
-          <option value="gemini">gemini</option>
-          <option value="minimax">minimax</option>
         </select>
         <button
           className="bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
@@ -320,6 +579,13 @@ function ProbePanel() {
           onClick={() => probe.mutate()}
         >
           {probe.isPending ? "…" : "probe"}
+        </button>
+        <button
+          className="border border-slate-200 px-2 py-0.5 rounded hover:bg-slate-50 disabled:opacity-50"
+          disabled={probeAll.isPending}
+          onClick={() => probeAll.mutate()}
+        >
+          {probeAll.isPending ? "…" : "probe all"}
         </button>
         <span className="text-slate-400">10-token "ok" round-trip</span>
       </div>
@@ -359,6 +625,23 @@ function ProbePanel() {
           )}
         </div>
       )}
+      {all.length > 0 && (
+        <div className="mt-2 text-xs space-y-1">
+          {all.map((row) => (
+            <div key={row.provider} className="flex items-center justify-between rounded bg-slate-50 px-2 py-1">
+              <span>
+                <Pill ok={row.ok} small>
+                  {row.ok ? "ok" : "err"}
+                </Pill>{" "}
+                <code>{row.provider}</code>
+              </span>
+              <code className={row.ok ? "text-slate-500" : "text-red-700"}>
+                {row.ok ? `${row.model} · ${row.latency_ms}ms` : `${row.error_type}: ${row.error}`}
+              </code>
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -369,6 +652,7 @@ interface ProjectConfig {
   base_url: string;
   default_username: string;
   default_password: string;
+  default_password_is_set?: boolean;
   description?: string;
 }
 
@@ -384,7 +668,7 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: async (): Promise<{ data: ProjectConfig[] }> => {
-      const r = await fetch("/api/projects/");
+      const r = await apiFetch("/api/projects/");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -392,7 +676,7 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
   const proj = projects.data?.data.find((p) => p.project_id === projectId);
   if (!proj) return null;
 
-  const hasCreds = Boolean(proj.default_username && proj.default_password);
+  const hasCreds = Boolean(proj.default_username && proj.default_password_is_set);
 
   if (editing) {
     return (
@@ -458,16 +742,16 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
         <Row
           label="default_password"
           value={
-            proj.default_password ? (
+            proj.default_password_is_set ? (
               <span className="flex items-center gap-2">
                 <code className="text-xs">
-                  {showPwd ? proj.default_password : "•".repeat(Math.min(proj.default_password.length, 12))}
+                  {showPwd ? "(stored, not shown)" : "••••••••••••"}
                 </code>
                 <button
                   onClick={() => setShowPwd((v) => !v)}
                   className="text-xs text-slate-500 hover:text-slate-900"
                 >
-                  {showPwd ? "hide" : "show"}
+                  {showPwd ? "hide" : "reveal status"}
                 </button>
               </span>
             ) : (
@@ -505,12 +789,12 @@ function ProjectInlineEditForm({
   const [name, setName] = useState(initial.name);
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [username, setUsername] = useState(initial.default_username);
-  const [password, setPassword] = useState(initial.default_password);
+  const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
 
   const save = useMutation({
     mutationFn: async () => {
-      const r = await fetch("/api/projects/", {
+      const r = await apiFetch("/api/projects/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -518,7 +802,7 @@ function ProjectInlineEditForm({
           name: name.trim(),
           base_url: baseUrl.trim(),
           default_username: username.trim(),
-          default_password: password,
+          ...(password ? { default_password: password } : {}),
         }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
@@ -561,9 +845,10 @@ function ProjectInlineEditForm({
           <input
             type={showPwd ? "text" : "password"}
             className="border border-slate-200 rounded px-2 py-1 flex-1 font-mono"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder={initial.default_password_is_set ? "stored; leave blank to keep" : ""}
+        />
           <button
             type="button"
             onClick={() => setShowPwd((v) => !v)}
@@ -596,12 +881,53 @@ interface RuntimeKnob<T = number | boolean | string> {
   max?: number;
   choices?: string[];
   describe: string;
+  is_set?: boolean;
 }
 interface RuntimeSettingsResponse {
   data: {
     max_concurrent_runs: RuntimeKnob<number>;
     headless: RuntimeKnob<boolean>;
     executor_loop: RuntimeKnob<"auto" | "generic_openai" | "claude_cli">;
+    case_generation_provider: RuntimeKnob<string>;
+    case_execution_provider: RuntimeKnob<string>;
+    diagnosis_provider: RuntimeKnob<string>;
+    email_enabled: RuntimeKnob<boolean>;
+    email_on_run_completed: RuntimeKnob<boolean>;
+    email_on_diagnosis_generated: RuntimeKnob<boolean>;
+    smtp_host: RuntimeKnob<string>;
+    smtp_port: RuntimeKnob<number>;
+    smtp_username: RuntimeKnob<string>;
+    smtp_password: RuntimeKnob<string>;
+    smtp_from: RuntimeKnob<string>;
+    smtp_to: RuntimeKnob<string>;
+    smtp_use_tls: RuntimeKnob<boolean>;
+    smtp_use_ssl: RuntimeKnob<boolean>;
+    email_subject_prefix: RuntimeKnob<string>;
+    webhook_enabled: RuntimeKnob<boolean>;
+    webhook_url: RuntimeKnob<string>;
+    webhook_kind: RuntimeKnob<"generic" | "feishu" | "wecom">;
+    artifact_retention_days: RuntimeKnob<number>;
+  };
+}
+
+interface ArtifactCleanupResponse {
+  data: {
+    retention_days: number;
+    dry_run: boolean;
+    cutoff: string;
+    candidate_runs: number;
+    candidate_bytes: number;
+    deleted_runs: number;
+    deleted_bytes: number;
+    errors: string[];
+    candidates: Array<{
+      run_id: string;
+      project_id: string;
+      status: string;
+      path: string;
+      bytes: number;
+      files: number;
+    }>;
   };
 }
 
@@ -613,7 +939,7 @@ function RuntimeSettingsPanel() {
   const settings = useQuery({
     queryKey: ["runtime-settings"],
     queryFn: async (): Promise<RuntimeSettingsResponse> => {
-      const r = await fetch("/api/settings/runtime");
+      const r = await apiFetch("/api/settings/runtime");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -621,13 +947,20 @@ function RuntimeSettingsPanel() {
 
   const concurrencyKnob = settings.data?.data.max_concurrent_runs;
   const headlessKnob = settings.data?.data.headless;
-  const executorLoopKnob = settings.data?.data.executor_loop;
+  const caseGenerationProviderKnob = settings.data?.data.case_generation_provider;
+  const caseExecutionProviderKnob = settings.data?.data.case_execution_provider;
+  const diagnosisProviderKnob = settings.data?.data.diagnosis_provider;
+  const emailKnobs = settings.data?.data;
+  const artifactKnob = settings.data?.data.artifact_retention_days;
   const [draft, setDraft] = useState<number | null>(null);
+  const [artifactDraft, setArtifactDraft] = useState<number | null>(null);
+  const [emailDraft, setEmailDraft] = useState<Record<string, string | number | boolean>>({});
   const value = draft ?? concurrencyKnob?.value ?? 2;
+  const artifactRetention = artifactDraft ?? artifactKnob?.value ?? 30;
 
   const save = useMutation({
     mutationFn: async (body: Record<string, number | boolean | string>) => {
-      const r = await fetch("/api/settings/runtime", {
+      const r = await apiFetch("/api/settings/runtime", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -637,51 +970,122 @@ function RuntimeSettingsPanel() {
     },
     onSuccess: () => {
       setDraft(null);
+      setArtifactDraft(null);
       qc.invalidateQueries({ queryKey: ["runtime-settings"] });
       qc.invalidateQueries({ queryKey: ["llm-runner-status"] });
+    },
+  });
+  const testEmail = useMutation({
+    mutationFn: async () => {
+      const r = await apiFetch("/api/settings/email/test", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+  });
+
+  const emailValue = <T extends string | number | boolean>(key: string, fallback: T): T =>
+    (emailDraft[key] as T | undefined) ?? fallback;
+
+  const setEmailValue = (key: string, value: string | number | boolean) =>
+    setEmailDraft((prev) => ({ ...prev, [key]: value }));
+
+  const saveEmail = () => {
+    if (!emailKnobs) return;
+    const body: Record<string, string | number | boolean> = {
+      email_enabled: emailValue("email_enabled", emailKnobs.email_enabled.value),
+      email_on_run_completed: emailValue(
+        "email_on_run_completed",
+        emailKnobs.email_on_run_completed.value,
+      ),
+      email_on_diagnosis_generated: emailValue(
+        "email_on_diagnosis_generated",
+        emailKnobs.email_on_diagnosis_generated.value,
+      ),
+      smtp_host: emailValue("smtp_host", emailKnobs.smtp_host.value),
+      smtp_port: emailValue("smtp_port", emailKnobs.smtp_port.value),
+      smtp_username: emailValue("smtp_username", emailKnobs.smtp_username.value),
+      smtp_from: emailValue("smtp_from", emailKnobs.smtp_from.value),
+      smtp_to: emailValue("smtp_to", emailKnobs.smtp_to.value),
+      smtp_use_tls: emailValue("smtp_use_tls", emailKnobs.smtp_use_tls.value),
+      smtp_use_ssl: emailValue("smtp_use_ssl", emailKnobs.smtp_use_ssl.value),
+      email_subject_prefix: emailValue(
+        "email_subject_prefix",
+        emailKnobs.email_subject_prefix.value,
+      ),
+      webhook_enabled: emailValue("webhook_enabled", emailKnobs.webhook_enabled.value),
+      webhook_kind: emailValue("webhook_kind", emailKnobs.webhook_kind.value),
+    };
+    const password = String(emailDraft.smtp_password ?? "");
+    if (password) body.smtp_password = password;
+    const webhookUrl = String(emailDraft.webhook_url ?? "");
+    if (webhookUrl) body.webhook_url = webhookUrl;
+    save.mutate(body, { onSuccess: () => setEmailDraft({}) });
+  };
+  const testWebhook = useMutation({
+    mutationFn: async () => {
+      const r = await apiFetch("/api/settings/webhook/test", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+  });
+  const cleanupArtifacts = useMutation({
+    mutationFn: async (dryRun: boolean): Promise<ArtifactCleanupResponse> => {
+      const r = await apiFetch("/api/settings/artifacts/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ retention_days: artifactRetention, dry_run: dryRun }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
     },
   });
 
   return (
     <Panel title="Platform settings">
-      {settings.isLoading || !concurrencyKnob || !headlessKnob || !executorLoopKnob ? (
+      {settings.isLoading ||
+      !concurrencyKnob ||
+      !headlessKnob ||
+      !caseGenerationProviderKnob ||
+      !caseExecutionProviderKnob ||
+      !diagnosisProviderKnob ||
+      !artifactKnob ? (
         <span className="text-slate-400 text-sm">…</span>
       ) : (
         <div className="space-y-3 text-sm">
-          {/* executor loop */}
+          {/* model routing */}
           <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
-            <div className="flex flex-wrap items-center gap-2 mb-1">
-              <code className="text-xs text-slate-500">executor_loop</code>
-              <select
-                className="border border-slate-200 rounded px-2 py-0.5 text-sm"
-                value={executorLoopKnob.value}
-                onChange={(e) => save.mutate({ executor_loop: e.target.value })}
-                disabled={save.isPending}
-              >
-                <option value="auto">Auto: Michelle Loop 优先</option>
-                <option value="generic_openai">Michelle Loop: OpenAI-compatible</option>
-                <option value="claude_cli">Claude CLI Loop: legacy fallback</option>
-              </select>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <code className="text-xs text-slate-500">model_routing</code>
               <span className="text-xs text-slate-400">
-                default: <code>{String(executorLoopKnob.default)}</code>
+                generation / execution / diagnosis
               </span>
             </div>
-            <p className="text-xs text-slate-600">
-              Run 执行时优先走 Michelle 自有 JSON-action loop：OpenAI-compatible
-              模型决定下一步，Michelle 直接调用 Playwright MCP 并记录 timeline。
-              Claude CLI 保留为兼容模式。
+            <div className="grid gap-2 md:grid-cols-3">
+              <ProviderSelect
+                label="1. Generate cases"
+                knob={caseGenerationProviderKnob}
+                disabled={save.isPending}
+                onChange={(value) => save.mutate({ case_generation_provider: value })}
+              />
+              <ProviderSelect
+                label="2. Execute cases"
+                knob={caseExecutionProviderKnob}
+                disabled={save.isPending}
+                onChange={(value) => save.mutate({ case_execution_provider: value })}
+              />
+              <ProviderSelect
+                label="3. Diagnose failures"
+                knob={diagnosisProviderKnob}
+                disabled={save.isPending}
+                onChange={(value) => save.mutate({ diagnosis_provider: value })}
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-600">
+              Cost/reliability below is only telemetry. These three fields are the
+              actual model routing controls. Michelle owns the Playwright action loop
+              directly unless Execute cases is <code>claude-cli</code>, which switches
+              to the legacy Claude CLI browser loop.
             </p>
-            <div className="mt-2 grid gap-1 text-xs text-slate-500 sm:grid-cols-3">
-              <span>
-                <b className="font-medium text-slate-700">Auto</b> 按可用 provider 选择
-              </span>
-              <span>
-                <b className="font-medium text-slate-700">LiteLLM/Flywheel</b> 只是 provider 入口
-              </span>
-              <span>
-                <b className="font-medium text-slate-700">Runner status</b> 只检查配置和依赖
-              </span>
-            </div>
           </div>
           {/* concurrency */}
           <div>
@@ -742,8 +1146,552 @@ function RuntimeSettingsPanel() {
           {save.error && (
             <span className="text-red-600 text-xs">{(save.error as Error).message}</span>
           )}
+          {emailKnobs && (
+            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-3 mb-2">
+                <code className="text-xs text-slate-500">email_notifications</code>
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={emailValue("email_enabled", emailKnobs.email_enabled.value)}
+                    onChange={(e) => setEmailValue("email_enabled", e.target.checked)}
+                  />
+                  <span className="text-xs">enabled</span>
+                </label>
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={emailValue(
+                      "email_on_run_completed",
+                      emailKnobs.email_on_run_completed.value,
+                    )}
+                    onChange={(e) =>
+                      setEmailValue("email_on_run_completed", e.target.checked)
+                    }
+                  />
+                  <span className="text-xs">run completed</span>
+                </label>
+                <label className="inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={emailValue(
+                      "email_on_diagnosis_generated",
+                      emailKnobs.email_on_diagnosis_generated.value,
+                    )}
+                    onChange={(e) =>
+                      setEmailValue("email_on_diagnosis_generated", e.target.checked)
+                    }
+                  />
+                  <span className="text-xs">diagnosis done</span>
+                </label>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <EmailInput
+                  label="SMTP host"
+                  value={emailValue("smtp_host", emailKnobs.smtp_host.value)}
+                  onChange={(v) => setEmailValue("smtp_host", v)}
+                />
+                <EmailInput
+                  label="SMTP port"
+                  type="number"
+                  value={String(emailValue("smtp_port", emailKnobs.smtp_port.value))}
+                  onChange={(v) => setEmailValue("smtp_port", parseInt(v, 10) || 587)}
+                />
+                <EmailInput
+                  label="Username"
+                  value={emailValue("smtp_username", emailKnobs.smtp_username.value)}
+                  onChange={(v) => setEmailValue("smtp_username", v)}
+                />
+                <EmailInput
+                  label="Password"
+                  type="password"
+                  value={String(emailDraft.smtp_password ?? "")}
+                  placeholder={emailKnobs.smtp_password.is_set ? "stored; leave blank to keep" : ""}
+                  onChange={(v) => setEmailValue("smtp_password", v)}
+                />
+                <EmailInput
+                  label="From"
+                  value={emailValue("smtp_from", emailKnobs.smtp_from.value)}
+                  onChange={(v) => setEmailValue("smtp_from", v)}
+                />
+                <EmailInput
+                  label="To"
+                  value={emailValue("smtp_to", emailKnobs.smtp_to.value)}
+                  onChange={(v) => setEmailValue("smtp_to", v)}
+                />
+                <EmailInput
+                  label="Subject prefix"
+                  value={emailValue(
+                    "email_subject_prefix",
+                    emailKnobs.email_subject_prefix.value,
+                  )}
+                  onChange={(v) => setEmailValue("email_subject_prefix", v)}
+                />
+                <EmailInput
+                  label="Webhook URL"
+                  type="password"
+                  value={String(emailDraft.webhook_url ?? "")}
+                  placeholder={emailKnobs.webhook_url.is_set ? "stored; leave blank to keep" : ""}
+                  onChange={(v) => setEmailValue("webhook_url", v)}
+                />
+                <label className="text-xs text-slate-600">
+                  Webhook kind
+                  <select
+                    className="mt-1 w-full border border-slate-200 rounded px-2 py-1 text-sm bg-white"
+                    value={emailValue("webhook_kind", emailKnobs.webhook_kind.value)}
+                    onChange={(e) => setEmailValue("webhook_kind", e.target.value)}
+                  >
+                    <option value="generic">generic</option>
+                    <option value="feishu">Feishu</option>
+                    <option value="wecom">WeCom</option>
+                  </select>
+                </label>
+                <div className="flex items-end gap-4 text-xs">
+                  <label className="inline-flex items-center gap-1 pb-1">
+                    <input
+                      type="checkbox"
+                      checked={emailValue("smtp_use_tls", emailKnobs.smtp_use_tls.value)}
+                      onChange={(e) => setEmailValue("smtp_use_tls", e.target.checked)}
+                    />
+                    STARTTLS
+                  </label>
+                  <label className="inline-flex items-center gap-1 pb-1">
+                    <input
+                      type="checkbox"
+                      checked={emailValue("smtp_use_ssl", emailKnobs.smtp_use_ssl.value)}
+                      onChange={(e) => setEmailValue("smtp_use_ssl", e.target.checked)}
+                    />
+                    SSL
+                  </label>
+                  <label className="inline-flex items-center gap-1 pb-1">
+                    <input
+                      type="checkbox"
+                      checked={emailValue("webhook_enabled", emailKnobs.webhook_enabled.value)}
+                      onChange={(e) => setEmailValue("webhook_enabled", e.target.checked)}
+                    />
+                    webhook
+                  </label>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={saveEmail}
+                  disabled={save.isPending}
+                  className="text-xs bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {save.isPending ? "saving…" : "save email"}
+                </button>
+                <button
+                  onClick={() => testEmail.mutate()}
+                  disabled={testEmail.isPending}
+                  className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {testEmail.isPending ? "sending…" : "send test"}
+                </button>
+                <button
+                  onClick={() => testWebhook.mutate()}
+                  disabled={testWebhook.isPending}
+                  className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {testWebhook.isPending ? "sending…" : "test webhook"}
+                </button>
+                {testEmail.data && (
+                  <span className="text-xs text-emerald-700">
+                    {testEmail.data.data.detail}
+                  </span>
+                )}
+                {testEmail.error && (
+                  <span className="text-xs text-red-600">
+                    {(testEmail.error as Error).message}
+                  </span>
+                )}
+                {testWebhook.data && (
+                  <span className="text-xs text-emerald-700">
+                    {testWebhook.data.data.detail}
+                  </span>
+                )}
+                {testWebhook.error && (
+                  <span className="text-xs text-red-600">
+                    {(testWebhook.error as Error).message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <code className="text-xs text-slate-500">artifacts_cleanup</code>
+              <input
+                type="number"
+                min={artifactKnob.min}
+                max={artifactKnob.max}
+                value={artifactRetention}
+                onChange={(e) =>
+                  setArtifactDraft(parseInt(e.target.value, 10) || artifactKnob.value)
+                }
+                className="border border-slate-200 rounded px-2 py-0.5 w-20 text-sm font-mono"
+              />
+              <span className="text-xs text-slate-500">days</span>
+              <button
+                disabled={save.isPending || artifactRetention === artifactKnob.value}
+                onClick={() => save.mutate({ artifact_retention_days: artifactRetention })}
+                className="text-xs bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
+              >
+                {save.isPending ? "saving…" : "save"}
+              </button>
+              <button
+                disabled={cleanupArtifacts.isPending}
+                onClick={() => cleanupArtifacts.mutate(true)}
+                className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+              >
+                {cleanupArtifacts.isPending ? "checking…" : "dry run"}
+              </button>
+              <button
+                disabled={cleanupArtifacts.isPending}
+                onClick={() => cleanupArtifacts.mutate(false)}
+                className="text-xs bg-red-600 text-white px-2 py-0.5 rounded hover:bg-red-700 disabled:opacity-50"
+              >
+                clean now
+              </button>
+              <span className="text-xs text-slate-400">
+                default: <code>{String(artifactKnob.default)}</code>
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">{artifactKnob.describe}</p>
+            {cleanupArtifacts.data && (
+              <div className="mt-2 rounded bg-white border border-slate-100 p-2 text-xs text-slate-600">
+                <div className="flex flex-wrap gap-3">
+                  <span>
+                    candidates:{" "}
+                    <b className="text-slate-900">
+                      {cleanupArtifacts.data.data.candidate_runs}
+                    </b>
+                  </span>
+                  <span>
+                    size:{" "}
+                    <b className="text-slate-900">
+                      {formatBytes(cleanupArtifacts.data.data.candidate_bytes)}
+                    </b>
+                  </span>
+                  {!cleanupArtifacts.data.data.dry_run && (
+                    <span>
+                      deleted:{" "}
+                      <b className="text-slate-900">
+                        {cleanupArtifacts.data.data.deleted_runs} /{" "}
+                        {formatBytes(cleanupArtifacts.data.data.deleted_bytes)}
+                      </b>
+                    </span>
+                  )}
+                </div>
+                {cleanupArtifacts.data.data.errors.length > 0 && (
+                  <pre className="mt-1 text-red-600 whitespace-pre-wrap">
+                    {cleanupArtifacts.data.data.errors.slice(0, 3).join("\n")}
+                  </pre>
+                )}
+              </div>
+            )}
+            {cleanupArtifacts.error && (
+              <span className="text-red-600 text-xs">
+                {(cleanupArtifacts.error as Error).message}
+              </span>
+            )}
+          </div>
         </div>
       )}
+    </Panel>
+  );
+}
+
+function EmailInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="text-xs text-slate-600">
+      {label}
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full border border-slate-200 rounded px-2 py-1 text-sm bg-white"
+      />
+    </label>
+  );
+}
+
+function ProviderSelect({
+  label,
+  knob,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  knob: RuntimeKnob<string>;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="text-xs text-slate-600">
+      {label}
+      <select
+        className="mt-1 w-full border border-slate-200 rounded px-2 py-1 text-sm bg-white"
+        value={knob.value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      >
+        {(knob.choices ?? ["auto"]).map((choice) => (
+          <option key={choice} value={choice}>
+            {choice}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function AdminOpsPanel({ projectId }: { projectId: string }) {
+  const qc = useQueryClient();
+  const [importText, setImportText] = useState("");
+  const [memberUserId, setMemberUserId] = useState("");
+  const [memberRole, setMemberRole] = useState("viewer");
+  const users = useQuery({
+    queryKey: ["users"],
+    queryFn: async () => {
+      const r = await apiFetch("/api/auth/users");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+  const audit = useQuery({
+    queryKey: ["audit"],
+    queryFn: async () => {
+      const r = await apiFetch("/api/auth/audit?limit=20");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+  const projectMembers = useQuery({
+    queryKey: ["project-members", projectId],
+    enabled: Boolean(projectId),
+    queryFn: async () => {
+      const r = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/members`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+  const createUser = useMutation({
+    mutationFn: async () => {
+      const username = prompt("username");
+      const password = prompt("password");
+      const role = prompt("role: admin/reviewer/viewer", "viewer") || "viewer";
+      if (!username || !password) return null;
+      const r = await apiFetch("/api/auth/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password, role }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+  const importCases = useMutation({
+    mutationFn: async () => {
+      const parsed = JSON.parse(importText);
+      const cases = Array.isArray(parsed) ? parsed : parsed.data || parsed.cases;
+      const r = await apiFetch("/api/cases/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId, cases }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      setImportText("");
+      qc.invalidateQueries({ queryKey: ["cases-summary"] });
+    },
+  });
+  const upsertMember = useMutation({
+    mutationFn: async () => {
+      if (!memberUserId) return null;
+      const r = await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/members`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: memberUserId, role: memberRole }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      setMemberUserId("");
+      qc.invalidateQueries({ queryKey: ["project-members", projectId] });
+    },
+  });
+  const removeMember = useMutation({
+    mutationFn: async (userId: string) => {
+      const r = await apiFetch(
+        `/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+        { method: "DELETE" },
+      );
+      if (!r.ok) throw new Error(await r.text());
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-members", projectId] }),
+  });
+  const download = async (url: string, filename: string) => {
+    const r = await apiFetch(url);
+    if (!r.ok) throw new Error(await r.text());
+    const blob = await r.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  };
+
+  return (
+    <Panel title="Admin ops">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 text-sm">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs uppercase tracking-wide text-slate-400">Users</span>
+            <button
+              onClick={() => createUser.mutate()}
+              className="text-xs border border-slate-200 rounded px-2 py-0.5"
+            >
+              + user
+            </button>
+          </div>
+          <div className="space-y-1">
+            {(users.data?.data ?? []).map((u: any) => (
+              <div key={u.user_id} className="flex justify-between border-b border-slate-100 py-1">
+                <span>{u.username}</span>
+                <code className="text-xs text-slate-500">{u.role}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Project access</div>
+          <div className="space-y-1 mb-2 max-h-32 overflow-auto">
+            {(projectMembers.data?.data ?? []).map((m: any) => (
+              <div key={m.id} className="flex items-center justify-between border-b border-slate-100 py-1">
+                <span>{m.username}</span>
+                <span className="flex items-center gap-2">
+                  <code className="text-xs text-slate-500">{m.role}</code>
+                  <button
+                    onClick={() => removeMember.mutate(m.user_id)}
+                    className="text-xs text-red-700"
+                  >
+                    remove
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+          <select
+            value={memberUserId}
+            onChange={(e) => setMemberUserId(e.target.value)}
+            className="w-full border border-slate-200 rounded px-2 py-1 text-xs"
+          >
+            <option value="">select user</option>
+            {(users.data?.data ?? []).map((u: any) => (
+              <option key={u.user_id} value={u.user_id}>
+                {u.username}
+              </option>
+            ))}
+          </select>
+          <div className="mt-2 flex gap-2">
+            <select
+              value={memberRole}
+              onChange={(e) => setMemberRole(e.target.value)}
+              className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs"
+            >
+              <option value="viewer">viewer</option>
+              <option value="reviewer">reviewer</option>
+              <option value="admin">admin</option>
+            </select>
+            <button
+              disabled={!projectId || !memberUserId || upsertMember.isPending}
+              onClick={() => upsertMember.mutate()}
+              className="text-xs bg-slate-900 text-white rounded px-2 py-0.5 disabled:opacity-50"
+            >
+              grant
+            </button>
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Import / Export</div>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button
+              onClick={() =>
+                void download(
+                  `/api/cases/export?project_id=${encodeURIComponent(projectId)}&format=json`,
+                  "michelle-cases.json",
+                )
+              }
+              className="text-xs border border-slate-200 rounded px-2 py-0.5"
+            >
+              export cases JSON
+            </button>
+            <button
+              onClick={() =>
+                void download(
+                  `/api/cases/export?project_id=${encodeURIComponent(projectId)}&format=csv`,
+                  "michelle-cases.csv",
+                )
+              }
+              className="text-xs border border-slate-200 rounded px-2 py-0.5"
+            >
+              export cases CSV
+            </button>
+            <button
+              onClick={() => void download("/api/diagnosis/export", "michelle-diagnosis.json")}
+              className="text-xs border border-slate-200 rounded px-2 py-0.5"
+            >
+              export diagnosis
+            </button>
+          </div>
+          <textarea
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            rows={4}
+            className="w-full border border-slate-200 rounded p-2 font-mono text-xs"
+            placeholder='Paste exported cases JSON: {"data":[...]}'
+          />
+          <button
+            disabled={!projectId || !importText.trim() || importCases.isPending}
+            onClick={() => importCases.mutate()}
+            className="mt-2 text-xs bg-slate-900 text-white rounded px-2 py-0.5 disabled:opacity-50"
+          >
+            import cases
+          </button>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">Audit log</div>
+          <div className="space-y-1 max-h-48 overflow-auto">
+            {(audit.data?.data ?? []).map((a: any) => (
+              <div key={a.audit_id} className="border-b border-slate-100 py-1 text-xs">
+                <div>
+                  <code>{a.actor_username || "system"}</code> {a.action}
+                </div>
+                <div className="text-slate-400">{a.path}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </Panel>
   );
 }
@@ -858,4 +1806,10 @@ function Empty({ cta, to }: { cta: string; to: string }) {
       → {cta}
     </Link>
   );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }

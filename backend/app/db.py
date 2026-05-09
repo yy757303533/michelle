@@ -1,4 +1,4 @@
-"""Async SQLite via SQLModel.
+"""Async SQLModel database setup.
 
 Schema is owned by Alembic — `init_db()` runs `alembic upgrade head` on startup.
 For unit tests with `:memory:` URLs, we fall back to `metadata.create_all`
@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
@@ -47,9 +48,19 @@ async def init_db() -> None:
         _log.info("db.initialized.memory", url=settings.database_url)
         return
 
-    Path("./data").mkdir(parents=True, exist_ok=True)
+    if _is_sqlite_url(settings.database_url):
+        Path("./data").mkdir(parents=True, exist_ok=True)
     await _run_alembic_upgrade()
-    _log.info("db.initialized.alembic", url=settings.database_url)
+    _log.info("db.initialized.alembic", url=_safe_db_url(settings.database_url))
+
+
+def database_summary() -> dict[str, str | bool]:
+    return {
+        "url": _safe_db_url(settings.database_url),
+        "driver": engine.url.drivername,
+        "dialect": engine.url.get_backend_name(),
+        "is_sqlite": _is_sqlite_url(settings.database_url),
+    }
 
 
 async def _run_alembic_upgrade() -> None:
@@ -60,30 +71,31 @@ async def _run_alembic_upgrade() -> None:
     """
     import asyncio
 
-    try:
-        async with engine.connect() as conn:
-            ver = await conn.exec_driver_sql(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
-            )
-            has_version = ver.fetchone() is not None
-            biz = await conn.exec_driver_sql(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'"
-            )
-            has_biz = biz.fetchone() is not None
-        if has_biz and not has_version:
-            _log.info("db.alembic.stamp_existing_db_at_head")
-            stamp = await asyncio.create_subprocess_exec(
-                "uv",
-                "run",
-                "alembic",
-                "stamp",
-                "head",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await stamp.communicate()
-    except Exception as e:
-        _log.warning("db.alembic.stamp_check_failed", error=str(e)[:200])
+    if _is_sqlite_url(settings.database_url):
+        try:
+            async with engine.connect() as conn:
+                ver = await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'"
+                )
+                has_version = ver.fetchone() is not None
+                biz = await conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'"
+                )
+                has_biz = biz.fetchone() is not None
+            if has_biz and not has_version:
+                _log.info("db.alembic.stamp_existing_db_at_head")
+                stamp = await asyncio.create_subprocess_exec(
+                    "uv",
+                    "run",
+                    "alembic",
+                    "stamp",
+                    "head",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await stamp.communicate()
+        except Exception as e:
+            _log.warning("db.alembic.stamp_check_failed", error=str(e)[:200])
 
     proc = await asyncio.create_subprocess_exec(
         "uv",
@@ -103,6 +115,17 @@ async def _run_alembic_upgrade() -> None:
         )
         raise RuntimeError(f"alembic upgrade failed: {(stderr or stdout).decode()[:500]}")
     _log.debug("db.alembic.ok", out=stdout.decode()[-200:])
+
+
+def _is_sqlite_url(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
+def _safe_db_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.password:
+        return url
+    return url.replace(f":{parsed.password}@", ":***@")
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

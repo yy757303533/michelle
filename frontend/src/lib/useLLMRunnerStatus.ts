@@ -13,6 +13,7 @@
  *              and let the actual run surface the failure
  */
 import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "./adminAuth";
 
 export type LLMRunnerStatus = "ready" | "starting" | "down" | "unknown";
 
@@ -35,19 +36,23 @@ export interface LLMRunnerStatusResponse {
   latency_ms: number;
 }
 
+export function unknownRunnerStatus(detail: string): LLMRunnerStatusResponse {
+  return {
+    status: "unknown",
+    base_url: "",
+    detail,
+    latency_ms: 0,
+  };
+}
+
 export function useLLMRunnerStatus() {
   return useQuery<LLMRunnerStatusResponse>({
     queryKey: ["llm-runner-status"],
     queryFn: async () => {
       try {
-        const r = await fetch("/api/llm/runner_status");
+        const r = await apiFetch("/api/llm/runner_status");
         if (!r.ok) {
-          return {
-            status: "unknown" as const,
-            base_url: "",
-            detail: `HTTP ${r.status}`,
-            latency_ms: 0,
-          };
+          return unknownRunnerStatus(`HTTP ${r.status}`);
         }
         const j = await r.json();
         return j.data as LLMRunnerStatusResponse;
@@ -56,12 +61,7 @@ export function useLLMRunnerStatus() {
         // proxy from here. Don't block the Run button on this; the
         // backend down state will manifest elsewhere (top-level Backend
         // health pill on the dashboard).
-        return {
-          status: "unknown" as const,
-          base_url: "",
-          detail: "backend unreachable",
-          latency_ms: 0,
-        };
+        return unknownRunnerStatus("backend unreachable");
       }
     },
     // Poll every 5s. Cheap probe (2s timeout, no LLM call) so safe to be

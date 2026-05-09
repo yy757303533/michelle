@@ -6,26 +6,22 @@ Strategy:
   3. On LLMAuthError or LLMResponseFormatError → bubble up (config or bug).
   4. If all clients fail → re-raise the last `FallbackableLLMError`.
 
-Configuration order (highest priority first; lower number = higher priority):
+Supported provider order (highest priority first; lower number = higher priority):
 
   10  claude-cli   subscription, $0 main path
   15  codex-cli    OpenAI subscription, secondary CLI
-  20  flywheel     premium proxy (Opus / GPT-5.x) when quota allows
-  25  deepseek     cheap reasoning + chat (OpenAI-compatible)
-  30  qwen         Alibaba DashScope (OpenAI-compatible mode)
-  35  glm          智谱 (OpenAI-compatible)
-  40  kimi         Moonshot (OpenAI-compatible)
-  45  gemini       Google (OpenAI-compatible)
-  50  minimax      original Day-3 fallback, supports vision natively
-  60  relay        any OpenAI-compatible relay (OneAPI/NewAPI/OpenRouter…)
 
 Selection can be overridden per-call via `prefer=...`. All providers are
 opt-in: empty API keys/binaries → disabled, never tried.
+
+Other provider clients remain in the codebase behind tests, but are not part
+of the default product surface until we intentionally re-enable them.
 """
 
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass
 
 from app.config import settings
@@ -37,9 +33,6 @@ from app.llm.base import (
 )
 from app.llm.claude_cli import ClaudeCLIClient
 from app.llm.codex_cli import CodexCLIClient
-from app.llm.flywheel import FlywheelClient
-from app.llm.minimax import MiniMaxClient
-from app.llm.openai_compatible import OpenAICompatibleClient
 from app.obs import EVENTS, get_logger
 
 _log = get_logger(__name__)
@@ -61,20 +54,13 @@ def _codex_binary_present() -> bool:
     return shutil.which(settings.codex_cli_path or "codex") is not None
 
 
-def _oai(
-    name: str, key: str, base: str, model: str, *, supports_image: bool = False
-) -> OpenAICompatibleClient:
-    return OpenAICompatibleClient(
-        name=name,
-        api_key=key,
-        base_url=base,
-        default_model=model,
-        supports_image=supports_image,
-    )
-
-
 def build_default_clients() -> list[GatewayClient]:
-    """Construct clients based on env. Empty configs become disabled clients."""
+    """Construct the supported provider set.
+
+    Keep this list intentionally small for internal rollout. Extra provider
+    clients still exist as implementation modules, but they are not exposed or
+    used unless we explicitly add them back here.
+    """
     out: list[GatewayClient] = []
 
     out.append(
@@ -93,105 +79,6 @@ def build_default_clients() -> list[GatewayClient]:
             available=settings.codex_enabled and _codex_binary_present(),
         )
     )
-    out.append(
-        GatewayClient(
-            name="flywheel",
-            client=FlywheelClient(),
-            priority=20,
-            available=bool(settings.flywheel_token),
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="deepseek",
-            client=_oai(
-                "deepseek",
-                settings.deepseek_api_key,
-                settings.deepseek_base_url,
-                settings.deepseek_model,
-            ),
-            priority=25,
-            available=settings.has_deepseek,
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="qwen",
-            client=_oai(
-                "qwen",
-                settings.qwen_api_key,
-                settings.qwen_base_url,
-                settings.qwen_model,
-                supports_image=True,
-            ),
-            priority=30,
-            available=settings.has_qwen,
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="glm",
-            client=_oai(
-                "glm",
-                settings.glm_api_key,
-                settings.glm_base_url,
-                settings.glm_model,
-                supports_image=True,
-            ),
-            priority=35,
-            available=settings.has_glm,
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="kimi",
-            client=_oai(
-                "kimi",
-                settings.kimi_api_key,
-                settings.kimi_base_url,
-                settings.kimi_model,
-                supports_image=True,
-            ),
-            priority=40,
-            available=settings.has_kimi,
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="gemini",
-            client=_oai(
-                "gemini",
-                settings.gemini_api_key,
-                settings.gemini_base_url,
-                settings.gemini_model,
-                supports_image=True,
-            ),
-            priority=45,
-            available=settings.has_gemini,
-        )
-    )
-    out.append(
-        GatewayClient(
-            name="minimax",
-            client=MiniMaxClient(),
-            priority=50,
-            available=bool(settings.minimax_api_key),
-        )
-    )
-    if settings.has_relay:
-        out.append(
-            GatewayClient(
-                name=settings.relay_name or "relay",
-                client=_oai(
-                    settings.relay_name or "relay",
-                    settings.relay_api_key,
-                    settings.relay_base_url,
-                    settings.relay_model,
-                ),
-                priority=60,
-                available=True,
-            )
-        )
     return sorted(out, key=lambda g: g.priority)
 
 
@@ -216,6 +103,7 @@ class LLMGateway:
         prompt_version: str,
         prefer: str | None = None,
         skip: list[str] | None = None,
+        fallback: bool = True,
         **kwargs,
     ) -> LLMResult:
         """Send a chat request, falling through providers as needed.
@@ -223,6 +111,7 @@ class LLMGateway:
         Args:
             prefer: provider name to try first (must be available)
             skip: provider names to never try in this call
+            fallback: when False, only the selected first provider is tried
         """
         skip_set = set(skip or [])
 
@@ -232,34 +121,71 @@ class LLMGateway:
                 if g.name == prefer and g.available and g.name not in skip_set:
                     ordered.append(g)
                     break
-        for g in self.clients:
-            if g.available and g.name not in skip_set and g not in ordered:
-                ordered.append(g)
+        if fallback:
+            for g in self.clients:
+                if g.available and g.name not in skip_set and g not in ordered:
+                    ordered.append(g)
+        elif not prefer:
+            for g in self.clients:
+                if g.available and g.name not in skip_set:
+                    ordered.append(g)
+                    break
 
         if not ordered:
             raise LLMError(
-                "no LLM provider available — check Claude CLI / MINIMAX_API_KEY / FLYWHEEL_TOKEN",
+                "no LLM provider available — check Claude CLI or CODEX_ENABLED/CODEX_CLI_PATH",
                 provider="gateway",
             )
 
         last_err: FallbackableLLMError | None = None
         for i, g in enumerate(ordered):
+            t0 = time.monotonic()
             try:
-                return await g.client.chat(prompt, prompt_version=prompt_version, **kwargs)
-            except FallbackableLLMError as e:
-                next_provider = ordered[i + 1].name if i + 1 < len(ordered) else None
-                _log.warning(
-                    EVENTS.LLM_FALLBACK.name,
-                    from_provider=g.name,
-                    to_provider=next_provider,
-                    reason=type(e).__name__,
-                    detail=str(e)[:200],
+                result = await g.client.chat(prompt, prompt_version=prompt_version, **kwargs)
+                await _record_llm_call(
+                    provider=result.provider or g.name,
+                    model=result.model,
+                    prompt_version=prompt_version,
+                    ok=True,
+                    latency_ms=result.latency_ms,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cost_usd=result.cost_usd,
                 )
+                return result
+            except FallbackableLLMError as e:
+                await _record_llm_call(
+                    provider=e.provider or g.name,
+                    model="",
+                    prompt_version=prompt_version,
+                    ok=False,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                )
+                next_provider = ordered[i + 1].name if i + 1 < len(ordered) else None
+                if next_provider is not None:
+                    _log.warning(
+                        EVENTS.LLM_FALLBACK.name,
+                        from_provider=g.name,
+                        to_provider=next_provider,
+                        reason=type(e).__name__,
+                        detail=str(e)[:200],
+                    )
                 last_err = e
                 continue
-            except LLMError:
+            except LLMError as e:
                 # Non-fallthrough errors bubble immediately (auth, parse).
                 _log.error(EVENTS.LLM_FAILED.name, provider=g.name)
+                await _record_llm_call(
+                    provider=g.name,
+                    model="",
+                    prompt_version=prompt_version,
+                    ok=False,
+                    error_type="LLMError",
+                    error_message=str(e),
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                )
                 raise
 
         # All providers exhausted
@@ -280,9 +206,17 @@ class LLMGateway:
         """
         out: dict[str, dict] = {}
         for g in self.clients:
+            detail = "available"
+            if g.name == "claude-cli" and not g.available:
+                detail = f"binary not found: {settings.claude_cli_path or 'claude'}"
+            if g.name == "codex-cli" and not settings.codex_enabled:
+                detail = "disabled by CODEX_ENABLED=false"
+            elif g.name == "codex-cli" and not g.available:
+                detail = f"binary not found: {settings.codex_cli_path or 'codex'}"
             out[g.name] = {
                 "available": g.available,
                 "priority": g.priority,
+                "detail": detail,
             }
         return out
 
@@ -302,3 +236,40 @@ def reset_gateway() -> None:
     """For tests / config changes."""
     global _gateway
     _gateway = None
+
+
+async def _record_llm_call(
+    *,
+    provider: str,
+    model: str,
+    prompt_version: str,
+    ok: bool,
+    error_type: str = "",
+    error_message: str = "",
+    latency_ms: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_usd: float | None = None,
+) -> None:
+    try:
+        from app.db import async_session_maker
+        from app.models import LLMCall
+
+        async with async_session_maker() as session:
+            session.add(
+                LLMCall(
+                    provider=provider,
+                    model=model,
+                    prompt_version=prompt_version,
+                    ok=ok,
+                    error_type=error_type,
+                    error_message=error_message[:500],
+                    latency_ms=latency_ms,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=cost_usd,
+                )
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 - metrics must not break LLM calls
+        _log.debug("llm.metrics.record_failed", error=str(exc)[:200])

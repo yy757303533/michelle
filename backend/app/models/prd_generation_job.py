@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, Column, Index, text
 from sqlmodel import Field, SQLModel
 
 from app.models._types import TZDateTime
@@ -28,12 +28,21 @@ def _utcnow() -> datetime:
 
 class PRDGenerationJob(SQLModel, table=True):
     __tablename__ = "prd_generation_jobs"
+    __table_args__ = (
+        Index(
+            "ix_prd_generation_one_active_per_prd",
+            "prd_id",
+            unique=True,
+            sqlite_where=text("status in ('pending', 'running')"),
+            postgresql_where=text("status in ('pending', 'running')"),
+        ),
+    )
 
     job_id: str = Field(primary_key=True)
     prd_id: str = Field(index=True)
     project_id: str = Field(index=True)
 
-    status: str = "pending"  # pending | running | done | failed
+    status: str = "pending"  # pending | running | done | failed | cancelled
     total_chapters: int = 0
     completed_chapters: int = 0
     saved_cases: int = 0

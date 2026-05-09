@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import tempfile
 import time
+from pathlib import Path
 
+from app.config import settings
 from app.llm.base import (
     BaseChatClient,
     LLMAuthError,
@@ -50,10 +53,10 @@ class CodexCLIClient(BaseChatClient):
         self,
         *,
         binary: str = "codex",
-        default_timeout: int = 180,
+        default_timeout: int | None = None,
     ):
         self.binary = binary
-        self.default_timeout = default_timeout
+        self.default_timeout = default_timeout or settings.codex_timeout_seconds
         self.enabled = shutil.which(binary) is not None
 
     async def chat(
@@ -75,7 +78,7 @@ class CodexCLIClient(BaseChatClient):
             )
         if image:
             raise LLMResponseFormatError(
-                "codex CLI client does not currently relay images; route image input to a multimodal provider (minimax / gemini)",
+                "codex CLI client does not currently relay images",
                 provider=self.name,
             )
 
@@ -84,25 +87,50 @@ class CodexCLIClient(BaseChatClient):
         # Codex CLI prompt format: `codex exec "<prompt>"` (non-interactive).
         # If a system prompt is supplied, we prepend it as a separate paragraph.
         full = f"{system}\n\n{prompt}" if system else prompt
-        cmd: list[str] = [self.binary, "exec", full]
+        out_file = tempfile.NamedTemporaryFile(prefix="michelle-codex-", suffix=".txt", delete=False)
+        out_path = out_file.name
+        out_file.close()
+        cmd: list[str] = [
+            self.binary,
+            "exec",
+            "--ephemeral",
+            "--ignore-rules",
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "--output-last-message",
+            out_path,
+        ]
+        if settings.codex_model:
+            cmd += ["--model", settings.codex_model]
+        if settings.codex_reasoning_effort:
+            cmd += ["-c", f"model_reasoning_effort={settings.codex_reasoning_effort}"]
+        cmd.append(full)
 
         timeout = timeout_seconds or self.default_timeout
-        log.info("llm.completion.start", model_hint="codex-default", timeout=timeout)
+        model_hint = settings.codex_model or "codex-default"
+        log.info("llm.completion.start", model_hint=model_hint, timeout=timeout)
 
         t0 = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd="/private/tmp",
+            )
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError as exc:
             proc.kill()
             await proc.wait()
+            Path(out_path).unlink(missing_ok=True)
             raise LLMTimeoutError(
                 f"codex CLI timed out after {timeout}s", provider=self.name
             ) from exc
+        except FileNotFoundError as exc:
+            Path(out_path).unlink(missing_ok=True)
+            raise LLMAuthError(f"codex CLI not found at {self.binary!r}", provider=self.name) from exc
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
@@ -110,6 +138,7 @@ class CodexCLIClient(BaseChatClient):
 
         if proc.returncode != 0:
             blob = stderr or stdout
+            Path(out_path).unlink(missing_ok=True)
             if _looks_like_auth_error(blob):
                 raise LLMAuthError(f"codex CLI auth: {blob[:200]}", provider=self.name)
             if _looks_like_rate_limit(blob):
@@ -119,10 +148,11 @@ class CodexCLIClient(BaseChatClient):
                 provider=self.name,
             )
 
-        text = stdout.strip()
+        text = _read_output_last_message(out_path) or stdout.strip()
+        Path(out_path).unlink(missing_ok=True)
         result = LLMResult(
             text=text,
-            model="codex-default",
+            model=model_hint,
             provider=self.name,
             latency_ms=latency,
             metadata={"stderr_tail": stderr[-200:] if stderr else ""},
@@ -134,3 +164,11 @@ class CodexCLIClient(BaseChatClient):
             output_chars=len(text),
         )
         return result
+
+
+def _read_output_last_message(path: str) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text

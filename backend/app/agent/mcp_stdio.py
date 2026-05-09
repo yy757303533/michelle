@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.agent.mcp_config import build_playwright_mcp_config
+from app.config import settings
 
 
 class MCPClientError(RuntimeError):
@@ -54,18 +56,27 @@ class StdioMCPClient:
             stderr=asyncio.subprocess.PIPE,
             env=_mcp_subprocess_env(self.cwd),
         )
-        await self._request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "michelle", "version": "0.1.0"},
-            },
-        )
-        await self._notify("notifications/initialized", {})
-        return self
+        try:
+            await self._request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "michelle", "version": "0.1.0"},
+                },
+            )
+            await self._notify("notifications/initialized", {})
+            return self
+        except Exception:
+            await self._stop_proc()
+            raise
 
     async def __aexit__(self, *_exc) -> None:
+        if self._proc is None:
+            return
+        await self._stop_proc()
+
+    async def _stop_proc(self) -> None:
         if self._proc is None:
             return
         if self._proc.returncode is None:
@@ -120,20 +131,31 @@ class StdioMCPClient:
         if self._proc is None or self._proc.stdout is None:
             raise MCPClientError("MCP process not started")
         try:
-            return await _read_framed_json(self._proc.stdout, self.timeout_seconds)
+            return await _read_stdio_json(self._proc.stdout, self.timeout_seconds)
         except TimeoutError as exc:
-            raise MCPClientError("timed out waiting for MCP response") from exc
+            stderr = await self._read_stderr_preview()
+            detail = _classify_mcp_stderr(stderr) if stderr else ""
+            msg = "timed out waiting for MCP response"
+            if detail:
+                msg += f"; {detail}"
+            raise MCPClientError(msg) from exc
         except EOFError as exc:
-            stderr = ""
-            if self._proc.stderr is not None:
-                try:
-                    chunk = await asyncio.wait_for(self._proc.stderr.read(4000), timeout=0.2)
-                    stderr = chunk.decode("utf-8", errors="replace")
-                except TimeoutError:
-                    stderr = ""
+            stderr = await self._read_stderr_preview()
+            detail = _classify_mcp_stderr(stderr)
+            if detail:
+                raise MCPClientError(f"MCP process exited unexpectedly: {detail}") from exc
             raise MCPClientError(f"MCP process exited unexpectedly: {stderr[:500]}") from exc
         except json.JSONDecodeError as exc:
             raise MCPClientError("MCP returned malformed JSON frame") from exc
+
+    async def _read_stderr_preview(self) -> str:
+        if self._proc is None or self._proc.stderr is None:
+            return ""
+        try:
+            chunk = await asyncio.wait_for(self._proc.stderr.read(4000), timeout=0.2)
+            return chunk.decode("utf-8", errors="replace")
+        except TimeoutError:
+            return ""
 
 
 def build_playwright_stdio_client(
@@ -142,6 +164,7 @@ def build_playwright_stdio_client(
     headless: bool,
     isolated: bool = True,
     extra_args: list[str] | None = None,
+    timeout_seconds: int | None = None,
 ) -> StdioMCPClient:
     cfg = build_playwright_mcp_config(
         headless=headless,
@@ -153,7 +176,12 @@ def build_playwright_stdio_client(
         command=server["command"],
         args=list(server.get("args") or []),
         cwd=cwd,
-        timeout_seconds=90,
+        timeout_seconds=max(
+            30,
+            timeout_seconds
+            if timeout_seconds is not None
+            else settings.playwright_mcp_startup_timeout_seconds,
+        ),
     )
 
 
@@ -171,17 +199,96 @@ def _mcp_subprocess_env(cwd: Path) -> dict[str, str]:
     ):
         env.pop(key, None)
 
-    cache_dir = cwd / ".npm-cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    env.setdefault("NPM_CONFIG_CACHE", str(cache_dir))
+    env.setdefault("NPM_CONFIG_CACHE", str(settings.playwright_mcp_cache_path))
+    if settings.playwright_mcp_npm_registry:
+        env.setdefault("NPM_CONFIG_REGISTRY", settings.playwright_mcp_npm_registry)
     env.setdefault("NO_PROXY", "*")
     return env
 
 
+async def probe_playwright_mcp(*, timeout_seconds: int | None = None) -> dict[str, Any]:
+    """Start Playwright MCP and verify initialize + tools/list completes."""
+    probe_dir = settings.artifacts_path / ".mcp-probe"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    timeout = timeout_seconds or settings.playwright_mcp_startup_timeout_seconds
+    t0 = time.monotonic()
+    try:
+        async with build_playwright_stdio_client(
+            cwd=probe_dir,
+            headless=True,
+            isolated=True,
+            timeout_seconds=timeout,
+        ) as client:
+            tools = await client.list_tools()
+    except MCPClientError as exc:
+        detail = str(exc)
+        npm_hint = _latest_npm_log_hint(settings.playwright_mcp_cache_path)
+        if npm_hint and "npx failed" not in detail:
+            detail = f"{detail}; latest npm log: {npm_hint}"
+        return {
+            "ok": False,
+            "detail": detail,
+            "elapsed_ms": int((time.monotonic() - t0) * 1000),
+            "cache_dir": str(settings.playwright_mcp_cache_path),
+        }
+    return {
+        "ok": True,
+        "detail": f"ready; {len(tools)} tools",
+        "elapsed_ms": int((time.monotonic() - t0) * 1000),
+        "cache_dir": str(settings.playwright_mcp_cache_path),
+        "tools": [t.name for t in tools],
+    }
+
+
+def _classify_mcp_stderr(stderr: str) -> str:
+    if not stderr:
+        return ""
+    compact = " ".join(stderr.strip().split())
+    if "npm error" in stderr.lower() or "fetcherror" in stderr.lower():
+        if any(s in stderr for s in ("ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED", "EPERM")):
+            return f"npx failed to fetch/start @playwright/mcp ({compact[:500]})"
+        return f"npx failed to start @playwright/mcp ({compact[:500]})"
+    return compact[:500]
+
+
+def _latest_npm_log_hint(cache_dir: Path) -> str:
+    logs_dir = cache_dir / "_logs"
+    if not logs_dir.exists():
+        return ""
+    logs = sorted(logs_dir.glob("*-debug-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not logs:
+        return ""
+    try:
+        text = logs[0].read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [
+        " ".join(line.strip().split())
+        for line in text.splitlines()
+        if any(token in line for token in ("ETIMEDOUT", "ENOTFOUND", "ECONNREFUSED", "EPERM"))
+        or "error" in line.lower()
+    ]
+    return "; ".join(lines[-5:])[:800]
+
+
 def _encode_message(payload: dict[str, Any]) -> bytes:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-    return header + body
+    return (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+async def _read_stdio_json(reader: asyncio.StreamReader, timeout_seconds: int) -> dict[str, Any]:
+    line = await asyncio.wait_for(reader.readline(), timeout_seconds)
+    if not line:
+        raise EOFError
+    if line.lower().startswith(b"content-length:"):
+        header = await _read_remaining_header(reader, line)
+        content_length = _content_length(header)
+        if content_length <= 0:
+            raise MCPClientError("MCP frame missing Content-Length")
+        body = await asyncio.wait_for(reader.readexactly(content_length), timeout_seconds)
+        data = json.loads(body.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    data = json.loads(line.decode("utf-8"))
+    return data if isinstance(data, dict) else {}
 
 
 async def _read_framed_json(reader: asyncio.StreamReader, timeout_seconds: int) -> dict[str, Any]:
@@ -192,6 +299,21 @@ async def _read_framed_json(reader: asyncio.StreamReader, timeout_seconds: int) 
     body = await asyncio.wait_for(reader.readexactly(content_length), timeout_seconds)
     data = json.loads(body.decode("utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+async def _read_remaining_header(reader: asyncio.StreamReader, first_line: bytes) -> bytes:
+    buf = bytearray(first_line)
+    if buf.endswith(b"\r\n\r\n") or buf.endswith(b"\n\n"):
+        return bytes(buf)
+    while True:
+        line = await reader.readline()
+        if not line:
+            raise EOFError
+        buf.extend(line)
+        if buf.endswith(b"\r\n\r\n") or buf.endswith(b"\n\n"):
+            return bytes(buf)
+        if len(buf) > 8192:
+            raise MCPClientError("MCP response header too large")
 
 
 async def _read_header(reader: asyncio.StreamReader) -> bytes:

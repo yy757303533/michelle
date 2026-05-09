@@ -15,6 +15,15 @@ def test_parse_action_accepts_fenced_json() -> None:
     assert action == {"tool": "browser_snapshot", "arguments": {}}
 
 
+def test_parse_action_accepts_json_with_trailing_prose() -> None:
+    action = _parse_action(
+        '{"final":{"case_status":"passed","step_count":1,'
+        '"assertion_results":[{"description":"x","passed":true,"evidence":"visible"}],'
+        '"failure_summary":""}}\n\nDone.'
+    )
+    assert action["final"]["case_status"] == "passed"
+
+
 def test_render_turn_prompt_includes_execution_guardrails() -> None:
     prompt = _render_turn_prompt(
         "open the login page",

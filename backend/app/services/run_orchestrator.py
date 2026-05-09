@@ -13,10 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from app.agent.claude_runner import (
     ClaudeRunnerError,
@@ -30,7 +32,7 @@ from app.agent.trace_parser import StepEvent as ParsedStep
 from app.config import settings
 from app.db import async_session_maker
 from app.llm import render
-from app.models import Project, Run, StepEvent, TestCase
+from app.models import Diagnosis, Project, Run, StepEvent, TestCase
 from app.obs import EVENTS, bind_request_context, get_logger
 from app.services._concurrency import ResizableLimiter
 from app.services.report_html import run_to_report_input, write_report_files
@@ -178,6 +180,23 @@ def _step_intent(parsed: ParsedStep) -> str | None:
     return parsed.tool_name
 
 
+def _step_phase(parsed: ParsedStep) -> str:
+    """Classify a tool call into test-framework style phases.
+
+    Michelle is not pytest, but keeping the same mental model makes failures
+    easier to triage: setup/preparation, concrete action, assertion/evidence,
+    and cleanup.
+    """
+    name = (parsed.tool_name or "").lower()
+    if any(k in name for k in ("close", "cleanup")):
+        return "cleanup"
+    if any(k in name for k in ("snapshot", "screenshot", "console", "network")):
+        return "assertion"
+    if any(k in name for k in ("navigate", "install", "resize")):
+        return "prepare"
+    return "action"
+
+
 async def _next_step_offset(session: AsyncSession, run_id: str) -> int:
     """Return one past the highest step_index already persisted for this run.
 
@@ -206,6 +225,7 @@ def _persist_step_events(
         ev = StepEvent(
             run_id=run_id,
             step_index=step_offset + s.step_index,
+            phase=_step_phase(s),
             event=EVENTS.AGENT_STEP_EXECUTED.name,
             intent=_step_intent(s),
             tool_name=s.tool_name,
@@ -224,6 +244,49 @@ def _persist_step_events(
         )
         session.add(ev)
         rows.append(ev)
+    return rows
+
+
+def _assertion_step_events(
+    *,
+    run_id: str,
+    parsed: ParsedRun,
+    step_offset: int,
+) -> list[StepEvent]:
+    """Persist model final assertions as first-class timeline events.
+
+    The browser tools tell us what happened; the final payload tells us what
+    the model believes passed or failed. Storing assertions separately gives
+    diagnosis a clean failure point instead of burying the reason in the final
+    RESULT text.
+    """
+    pr = parsed.summary.parsed_result or {}
+    assertions = pr.get("assertion_results")
+    if not isinstance(assertions, list):
+        return []
+
+    rows: list[StepEvent] = []
+    next_index = step_offset + len(parsed.steps)
+    for raw in assertions:
+        if not isinstance(raw, dict):
+            continue
+        description = str(raw.get("description") or "assertion").strip()[:500]
+        evidence = str(raw.get("evidence") or "").strip()
+        passed = bool(raw.get("passed"))
+        ev = StepEvent(
+            run_id=run_id,
+            step_index=next_index,
+            phase="assertion",
+            event="agent.assertion.evaluated",
+            intent=description or "assertion",
+            tool_name="assertion",
+            tool_args={"description": description},
+            tool_result={"passed": passed, "evidence": evidence[:4000]},
+            status="ok" if passed else "failed",
+            error_message=None if passed else (evidence or description)[:500],
+        )
+        rows.append(ev)
+        next_index += 1
     return rows
 
 
@@ -281,8 +344,6 @@ async def execute_case(
 
         prompt = render_execute_prompt(case, project)
         rd = run_dir_for(case.project_id, run_id)
-        # Stash the prompt for forensics
-        (rd / "prompt.txt").write_text(prompt, encoding="utf-8")
 
         # Treat configured target credentials as secrets — they get baked into
         # the prompt and would otherwise leak via stdout/stderr files,
@@ -294,6 +355,9 @@ async def execute_case(
             for s in (project.default_password, settings.default_target_password)
             if s and len(s) >= 3
         ]
+        # Stash a redacted prompt for forensics. The runner still receives the
+        # real prompt so it can authenticate against the target app.
+        (rd / "prompt.txt").write_text(_redact_text(prompt, secrets), encoding="utf-8")
 
         # Read live headless preference. Operator can toggle from the
         # dashboard to watch the agent drive Chromium during debugging.
@@ -395,6 +459,8 @@ async def _persist_results(
     report viewer can render attempt boundaries via the gap."""
     step_offset = await _next_step_offset(session, run.run_id)
     _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset)
+    for ev in _assertion_step_events(run_id=run.run_id, parsed=parsed, step_offset=step_offset):
+        session.add(ev)
 
     status, err = _infer_status(parsed)
     run.status = status
@@ -421,6 +487,7 @@ async def _load_step_events(session: AsyncSession, run_id: str) -> list[StepEven
 def _step_event_summary(s: ParsedStep) -> dict[str, Any]:
     return {
         "step_index": s.step_index,
+        "phase": _step_phase(s),
         "tool_name": s.tool_name,
         "tool_args": s.tool_args,
         "is_playwright": s.is_playwright,
@@ -431,6 +498,14 @@ def _step_event_summary(s: ParsedStep) -> dict[str, Any]:
         "screenshot_path": s.screenshot_path,
         "is_error": s.result_is_error,
     }
+
+
+def _redact_text(text: str, secrets: list[str]) -> str:
+    out = text
+    for secret in secrets:
+        if secret and len(secret) >= 3:
+            out = out.replace(secret, "***")
+    return out
 
 
 # ── Helper for the API to start a run ──────────────────────────────────────
@@ -474,6 +549,7 @@ async def create_run_row(
 # (Settings panel on the dashboard) overrides it at runtime via _resync_limiter.
 MAX_CONCURRENT_RUNS = max(1, int(getattr(settings, "max_concurrent_runs", 2)))
 _run_limiter: ResizableLimiter | None = None
+_RUN_TASKS: dict[str, asyncio.Task] = {}
 
 
 async def _resolve_concurrency() -> int:
@@ -502,9 +578,90 @@ async def _limiter() -> ResizableLimiter:
 def kick_off(case_id: str, run_id: str, env: str, *, timeout_seconds: int = 300) -> asyncio.Task:
     """Fire-and-forget background runner. Concurrency is gated by a semaphore
     sized to MAX_CONCURRENT_RUNS so a 50-case batch doesn't fork 50 Chromiums."""
-    return asyncio.create_task(
+    task = asyncio.create_task(
         _safe_execute(case_id=case_id, run_id=run_id, env=env, timeout_seconds=timeout_seconds)
     )
+    _RUN_TASKS[run_id] = task
+
+    def _forget(_task: asyncio.Task) -> None:
+        _RUN_TASKS.pop(run_id, None)
+
+    task.add_done_callback(_forget)
+    return task
+
+
+async def cancel_run(*, run_id: str, reason: str = "cancelled by user") -> bool:
+    """Cancel a pending/running run.
+
+    Returns True when a run row existed and its side effects were rolled back,
+    False when the run was already terminal or missing.
+    """
+    async with async_session_maker() as session:
+        run = await session.get(Run, run_id)
+        if run is None or run.status not in {"pending", "running"}:
+            return False
+        _log.info("orchestrator.run.rollback_cancel", run_id=run_id, reason=reason[:200])
+        await rollback_run_scope(session, run_id=run_id, delete_run=True)
+
+    task = _RUN_TASKS.get(run_id)
+    if task and not task.done():
+        task.cancel()
+    return True
+
+
+def active_run_ids() -> set[str]:
+    """Run ids with a live asyncio task in this backend process."""
+    return {rid for rid, task in _RUN_TASKS.items() if not task.done()}
+
+
+async def rollback_run_scope(
+    session: AsyncSession,
+    *,
+    run_id: str,
+    delete_run: bool = False,
+) -> int:
+    """Remove side effects owned by one run execution scope.
+
+    Used by user cancellation and retry compensation. A normal failed run is
+    still kept for diagnosis; rollback is only for abandoned attempts.
+    """
+    run = await session.get(Run, run_id)
+    project_id = run.project_id if run is not None else ""
+
+    deleted = 0
+    for model in (Diagnosis, StepEvent):
+        rows = (await session.execute(select(model).where(model.run_id == run_id))).scalars().all()
+        for row in rows:
+            await session.delete(row)
+            deleted += 1
+
+    if run is not None:
+        if delete_run:
+            await session.delete(run)
+            deleted += 1
+        else:
+            run.status = "pending"
+            run.started_at = None
+            run.ended_at = None
+            run.duration_ms = None
+            run.artifacts_dir = None
+            run.report_html_path = None
+            run.trace_jsonl_path = None
+            run.input_tokens = 0
+            run.output_tokens = 0
+            run.error_message = None
+
+    await session.commit()
+
+    if project_id:
+        rd = run_dir_for(project_id, run_id)
+        try:
+            if rd.exists():
+                shutil.rmtree(rd)
+        except Exception:  # noqa: BLE001
+            _log.exception("orchestrator.rollback_artifacts_failed", run_id=run_id, path=str(rd))
+
+    return deleted
 
 
 # ── Run with retry + classification ────────────────────────────────────────
@@ -550,16 +707,23 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
                 env=env,
                 timeout_seconds=timeout_seconds,
             )
+        except asyncio.CancelledError:
+            await _rollback_run_by_id(run_id=run_id, delete_run=True)
+            _log.info("orchestrator.run.cancelled", run_id=run_id, attempt=attempt)
+            raise
         except Exception as exc:  # noqa: BLE001
             await _persist_abort(run_id=run_id, error=str(exc))
+            await _notify_run_completed_email(run_id=run_id)
             _log.exception("orchestrator.background.failed", run_id=run_id, attempt=attempt)
             return
 
         if run.status not in {"failed", "aborted"}:
+            await _notify_run_completed_email(run_id=run_id)
             return
 
         if not _looks_transient(run.error_message):
             await _classify_and_persist(run_id=run_id)
+            await _notify_run_completed_email(run_id=run_id)
             return
 
         _log.info(
@@ -569,6 +733,7 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
             reason="transient error in attempt 1",
             error=(run.error_message or "")[:200],
         )
+        await _rollback_run_by_id(run_id=run_id, delete_run=False)
         try:
             run = await execute_case(
                 case_id=case_id,
@@ -577,8 +742,13 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
                 timeout_seconds=timeout_seconds,
                 attempt=attempt + 1,
             )
+        except asyncio.CancelledError:
+            await _rollback_run_by_id(run_id=run_id, delete_run=True)
+            _log.info("orchestrator.run.cancelled", run_id=run_id, attempt=attempt + 1)
+            raise
         except Exception as exc:  # noqa: BLE001
             await _persist_abort(run_id=run_id, error=f"retry crashed: {exc}")
+            await _notify_run_completed_email(run_id=run_id)
             return
 
         # If retry passed but first attempt failed → mark flaky and re-render
@@ -587,9 +757,11 @@ async def _safe_execute(*, case_id: str, run_id: str, env: str, timeout_seconds:
         if run.status == "passed":
             await _mark_status(run_id=run_id, status="flaky", note="passed on retry")
             await _rerender_report(run_id=run_id)
+            await _notify_run_completed_email(run_id=run_id)
         else:
             await _classify_and_persist(run_id=run_id)
             await _rerender_report(run_id=run_id)
+            await _notify_run_completed_email(run_id=run_id)
 
 
 async def _persist_abort(*, run_id: str, error: str) -> None:
@@ -603,6 +775,24 @@ async def _persist_abort(*, run_id: str, error: str) -> None:
                 await session.commit()
     except Exception:  # noqa: BLE001
         _log.exception("orchestrator.persist_abort.failed", run_id=run_id)
+
+
+async def _rollback_run_by_id(*, run_id: str, delete_run: bool) -> None:
+    try:
+        async with async_session_maker() as session:
+            await rollback_run_scope(session, run_id=run_id, delete_run=delete_run)
+    except Exception:  # noqa: BLE001
+        _log.exception("orchestrator.rollback_run.failed", run_id=run_id)
+
+
+async def _notify_run_completed_email(*, run_id: str) -> None:
+    try:
+        from app.services.email_notifications import notify_run_completed
+
+        async with async_session_maker() as session:
+            await notify_run_completed(run_id=run_id, session=session)
+    except Exception:  # noqa: BLE001
+        _log.exception("orchestrator.email_notification_failed", run_id=run_id)
 
 
 async def _mark_status(*, run_id: str, status: str, note: str = "") -> None:

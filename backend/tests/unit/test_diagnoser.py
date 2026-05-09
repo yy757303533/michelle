@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
-from app.llm.base import LLMResult
+from app.llm.base import LLMError, LLMResult
 from app.models import Diagnosis, Pattern, Run, StepEvent, TestCase
 from app.services.diagnoser import (
     DiagnoserError,
@@ -75,6 +75,7 @@ async def db():
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with maker() as s:
         yield s
+    await engine.dispose()
 
 
 def _seed_failed_run(s: AsyncSession) -> tuple[Run, TestCase]:
@@ -177,6 +178,20 @@ async def test_diagnose_run_rejects_passed_run(db):
     await db.commit()
     with pytest.raises(DiagnoserError):
         await diagnose_run(run_id="ok", session=db)
+
+
+@pytest.mark.asyncio
+async def test_diagnose_run_llm_failure_leaves_no_partial_row(db):
+    _seed_failed_run(db)
+    await db.commit()
+
+    with patch("app.services.diagnoser.get_gateway") as gw_mock:
+        gw_mock.return_value.chat = AsyncMock(side_effect=LLMError("down", provider="mock"))
+        with pytest.raises(DiagnoserError):
+            await diagnose_run(run_id="R1", session=db)
+
+    rows = (await db.execute(select(Diagnosis))).scalars().all()
+    assert rows == []
 
 
 @pytest.mark.asyncio

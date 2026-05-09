@@ -29,6 +29,7 @@ from app.llm import get_gateway, prompt_id, render
 from app.llm.base import LLMError
 from app.models import Diagnosis, Run, StepEvent, TestCase
 from app.obs import EVENTS, get_logger
+from app.runtime_config import get_diagnosis_provider
 
 _log = get_logger(__name__)
 
@@ -117,31 +118,13 @@ async def diagnose_run(
     )
     gw = get_gateway()
 
-    # Provider routing for diagnosis:
-    #
-    # If we have a screenshot, prefer the strongest vision model available.
-    # Empirically (informal A/B): claude-opus-4.7 > GPT-5.5 > MiniMax-Text-01
-    # on UI screenshot reasoning — opus catches small details (text in
-    # screenshots, layout cues) that the others miss and hallucinates less.
-    #
-    # We can't route to local `claude-cli` because subscription `-p` mode
-    # rejects --image without CLAUDE_CODE_SESSION_ACCESS_TOKEN. So instead
-    # we route to Flywheel using anthropic/claude-opus-4.7 — same model,
-    # via API, gateway-billed.
-    #
-    # Order:
-    #   1. flywheel  — Opus 4.7 (or whatever FLYWHEEL_MODEL_PREMIUM is) ← preferred
-    #   2. minimax   — fast & cheap, native multimodal
-    #   3. kimi / gemini / qwen / glm — OpenAI-compat multimodal channels
-    chosen_prefer = prefer_provider
+    # Provider routing for diagnosis. Internal rollout currently supports
+    # claude-cli and codex-cli only, so image input is downgraded to text if
+    # neither CLI can relay screenshots.
+    chosen_prefer = prefer_provider or await get_diagnosis_provider(session)
     skip_for_image: list[str] = []
-    # Always prefer Flywheel (or another API-billed channel) for diagnosis,
-    # not just for image inputs. The local `claude-cli` subscription path is
-    # operationally fragile (login expiry, session-end hooks, rate limits)
-    # and silently breaks auto-diagnosis when the user is signed out. Route
-    # text-only diagnosis through the same provider order as vision.
     if chosen_prefer is None:
-        for cand in ("flywheel", "minimax", "kimi", "gemini", "qwen", "glm"):
+        for cand in ("claude-cli", "codex-cli"):
             if gw.get(cand) is not None:
                 chosen_prefer = cand
                 break
@@ -175,7 +158,7 @@ async def diagnose_run(
             result = await gw.chat(
                 prompt,
                 prompt_version=pv_id,
-                prefer=prefer_provider,
+                prefer=prefer_provider or await get_diagnosis_provider(session),
                 image=None,
                 json_mode=True,
                 max_tokens=600,
@@ -211,6 +194,12 @@ async def diagnose_run(
         category=category_v,
         confidence=confidence_v,
     )
+    try:
+        from app.services.email_notifications import notify_diagnosis_generated
+
+        await notify_diagnosis_generated(diag_id=diag_id_v, session=session)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("diagnoser.email_notification_failed", diag_id=diag_id_v, error=str(exc)[:200])
     return diag
 
 
@@ -218,6 +207,7 @@ async def record_feedback(
     *,
     diag_id: str,
     feedback: str,
+    reason: str = "",
     note: str = "",
     session: AsyncSession,
 ) -> Diagnosis:
@@ -232,7 +222,11 @@ async def record_feedback(
 
     was_confirmed = diag.human_feedback == "confirmed"
     diag.human_feedback = feedback
-    diag.feedback_note = note[:1000]
+    reason = reason.strip()
+    detail = note.strip()
+    if reason:
+        detail = f"[reason:{reason}] {detail}".strip()
+    diag.feedback_note = detail[:1000]
     diag.feedback_at = datetime.now(UTC)
     await session.commit()
 
@@ -272,19 +266,25 @@ def _render_prompt(
 
     failed_step_summary = ""
     if failed_step is not None:
+        evidence = ""
+        if isinstance(failed_step.tool_result, dict):
+            evidence = str(failed_step.tool_result.get("evidence") or "")[:500]
         failed_step_summary = (
             f"step_index: {failed_step.step_index}\n"
+            f"phase: {getattr(failed_step, 'phase', 'action')}\n"
             f"tool: {failed_step.tool_name}\n"
             f"intent: {failed_step.intent or '(none)'}\n"
             f"status: {failed_step.status}\n"
-            f"error: {failed_step.error_message or '(no explicit error)'}"
+            f"error: {failed_step.error_message or '(no explicit error)'}\n"
+            f"evidence: {evidence or '(none)'}"
         )
 
     # Tail: last 30 step events as a compact list
     tail_lines: list[str] = []
     for s in steps[-30:]:
         tail_lines.append(
-            f"[{s.step_index}] {s.tool_name or '?'} status={s.status}"
+            f"[{s.step_index}] phase={getattr(s, 'phase', 'action')} "
+            f"{s.tool_name or '?'} status={s.status}"
             f" url={(s.tool_result or {}).get('page_url') or '-'}"
             f" err={(s.error_message or '-')[:100]}"
         )
@@ -328,6 +328,16 @@ def _read_screenshot_for_step(*, run: Run, failed_step: StepEvent | None) -> byt
         candidates.append(base / f"step-{idx}.png")
         if idx > 0:
             candidates.append(base / f"step-{idx - 1}.png")
+        try:
+            step_images = sorted(base.rglob("step-*.png"))
+            before_or_at = []
+            for img in step_images:
+                m = re.search(r"step-(\d+)\.png$", img.name)
+                if m and int(m.group(1)) <= idx:
+                    before_or_at.append((int(m.group(1)), img))
+            candidates.extend(img for _, img in sorted(before_or_at, reverse=True)[:3])
+        except OSError:
+            pass
     candidates.append(base / "final.png")
 
     for c in candidates:

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "../lib/adminAuth";
 
 interface ProjectRow {
   project_id: string;
@@ -15,7 +16,7 @@ export function ProjectTargetBadge({ projectId }: { projectId: string }) {
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: async (): Promise<{ data: ProjectRow[] }> => {
-      const r = await fetch("/api/projects/");
+      const r = await apiFetch("/api/projects/");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },

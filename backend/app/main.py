@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -37,13 +38,71 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
         # logger picks up via _add_trace_id processor.
         request_id = uuid4().hex
         bind_request_context(request_id=request_id, path=request.url.path, method=request.method)
+        started = time.perf_counter()
         try:
             response = await call_next(request)
         except Exception:
             log.exception("request.failed")
             raise
+        duration_ms = int((time.perf_counter() - started) * 1000)
         response.headers["X-Request-Id"] = request_id
+        user = getattr(request.state, "user", None) or {}
+        log.info(
+            "http.request",
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            query=request.url.query,
+            actor=str(user.get("username", "")),
+            actor_role=str(user.get("role", "")),
+        )
         return response
+
+
+class AdminTokenMiddleware(BaseHTTPMiddleware):
+    """Lightweight local-admin guard.
+
+    When ADMIN_TOKEN is set, protect all unsafe /api methods plus settings
+    reads. This keeps default local dev frictionless while giving shared
+    deployments a simple gate around credentials, runtime knobs, and actions.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        from app.auth import ROLE_RANK, user_from_request
+
+        if settings.app_env == "test":
+            return await call_next(request)
+
+        user = await user_from_request(request)
+        request.state.user = user
+        auth_enabled = True
+        if auth_enabled and request.url.path.startswith("/api"):
+            public = request.url.path in {"/api/auth/login"}
+            role = str((user or {}).get("role", ""))
+            needs_auth = request.method != "OPTIONS"
+            if request.url.path.startswith("/api/auth/users") or request.url.path.startswith(
+                "/api/auth/audit"
+            ):
+                needs_auth = True
+                required_rank = ROLE_RANK["admin"]
+            elif request.url.path.startswith("/api/settings"):
+                required_rank = ROLE_RANK["admin"]
+            else:
+                required_rank = (
+                    ROLE_RANK["viewer"]
+                    if request.method in {"GET", "HEAD"}
+                    else ROLE_RANK["reviewer"]
+                )
+            if not public and needs_auth and not user:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"code": "unauthorized", "message": "login required"}},
+                )
+            if not public and user and ROLE_RANK.get(role, 0) < required_rank:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": {"code": "forbidden", "message": "insufficient role"}},
+                )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -53,8 +112,10 @@ async def lifespan(app: FastAPI):
 
     # Wire internal business hooks (run.failed → auto-diagnose, etc.)
     from app.agent.hooks import install_default_hooks
+    from app.auth import ensure_bootstrap_admin
 
     install_default_hooks()
+    await ensure_bootstrap_admin()
 
     # Startup heal: any run still marked `running`/`pending` was orphaned
     # by a previous process (uvicorn --reload, crash, SIGKILL, …). The
@@ -100,6 +161,7 @@ def create_app() -> FastAPI:
         expose_headers=["X-Request-Id"],
     )
     app.add_middleware(TraceIdMiddleware)
+    app.add_middleware(AdminTokenMiddleware)
 
     app.include_router(api_router)
 
@@ -109,10 +171,10 @@ def create_app() -> FastAPI:
             "status": "ok",
             "version": __version__,
             "env": settings.app_env,
+            "auth_required": True,
             "providers": {
-                "claude": True,
-                "minimax": settings.has_minimax,
-                "flywheel": settings.has_flywheel,
+                "claude-cli": True,
+                "codex-cli": settings.codex_enabled,
                 "logfire": settings.has_logfire,
             },
         }

@@ -1,10 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
+import { apiFetch } from "../lib/adminAuth";
+import {
+  parseStoredAutoGeneration,
+  selectNextChapterBatch,
+  serializeAutoGeneration,
+  type StoredAutoGenerationState,
+} from "../lib/prdAutoGeneration";
 
 const PRD_URL_KEY = "prd_id";
+const CHAPTERS_PER_RUN_KEY = "prd_chapters_per_run";
+const AUTO_GENERATION_KEY_PREFIX = "prd_auto_generation";
+const RECOMMENDED_CHAPTERS_PER_RUN = 5;
 
 /** Read `?prd_id=` from the URL without going through the router so we
  * don't have to declare a search schema on the file route. */
@@ -19,6 +29,27 @@ function writePrdIdToUrl(prdId: string) {
   if (prdId) url.searchParams.set(PRD_URL_KEY, prdId);
   else url.searchParams.delete(PRD_URL_KEY);
   window.history.replaceState({}, "", url.toString());
+}
+
+function readChaptersPerRun(): string {
+  if (typeof window === "undefined") return String(RECOMMENDED_CHAPTERS_PER_RUN);
+  return window.localStorage.getItem(CHAPTERS_PER_RUN_KEY) ?? String(RECOMMENDED_CHAPTERS_PER_RUN);
+}
+
+function autoGenerationStorageKey(prdId: string): string {
+  return `${AUTO_GENERATION_KEY_PREFIX}:${prdId}`;
+}
+
+function readStoredAutoGeneration(prdId: string): StoredAutoGenerationState | null {
+  if (typeof window === "undefined") return null;
+  return parseStoredAutoGeneration(window.localStorage.getItem(autoGenerationStorageKey(prdId)));
+}
+
+function writeStoredAutoGeneration(prdId: string, state: StoredAutoGenerationState | null) {
+  if (typeof window === "undefined") return;
+  const key = autoGenerationStorageKey(prdId);
+  if (state) window.localStorage.setItem(key, serializeAutoGeneration(state));
+  else window.localStorage.removeItem(key);
 }
 
 export const Route = createFileRoute("/prd")({
@@ -63,8 +94,9 @@ interface GenerateAcceptResponse {
   data: {
     job_id: string;
     prd_id: string;
-    status: "pending" | "running" | "done" | "failed";
+    status: "pending" | "running" | "done" | "failed" | "cancelled";
     total_chapters: number;
+    reused?: boolean;
   };
 }
 
@@ -73,7 +105,7 @@ interface GenerationJob {
     job_id: string;
     prd_id: string;
     project_id: string;
-    status: "pending" | "running" | "done" | "failed";
+    status: "pending" | "running" | "done" | "failed" | "cancelled";
     total_chapters: number;
     completed_chapters: number;
     saved_cases: number;
@@ -84,6 +116,16 @@ interface GenerationJob {
   };
 }
 
+interface GenerationJobsResponse {
+  data: GenerationJob["data"][];
+}
+
+type AutoGenerationState = StoredAutoGenerationState;
+
+interface GenerateVariables {
+  chapterIndices: number[];
+}
+
 interface PRDListItem {
   prd_id: string;
   project_id: string;
@@ -91,6 +133,22 @@ interface PRDListItem {
   version: number;
   chapter_count: number;
   uploaded_at: string;
+}
+
+interface RuntimeKnob<T = string> {
+  value: T;
+  default: T;
+  min?: number;
+  max?: number;
+  choices?: string[];
+  describe: string;
+}
+
+interface RuntimeSettingsResponse {
+  data: {
+    case_generation_provider: RuntimeKnob<string>;
+    case_generation_preflight_timeout_seconds: RuntimeKnob<number>;
+  };
 }
 
 function PrdPage() {
@@ -104,12 +162,16 @@ function PrdPage() {
   const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [autoGeneration, setAutoGeneration] = useState<AutoGenerationState | null>(null);
+  const handledTerminalJobIds = useRef<Set<string>>(new Set());
   // `?prd_id=` survives navigation away and back. Without it, the
   // user uploads a 90-chapter PRD, hops to /cases to check a result,
   // returns, and the chapter list is gone — all transient state
   // disappeared with the unmounted component. Persisting just the id
   // is enough: the chapters live on the server, we re-fetch on mount.
   const [activePrdId, setActivePrdIdState] = useState<string>(readPrdIdFromUrl);
+  const [preflightTimeoutInput, setPreflightTimeoutInput] = useState("20");
+  const [chaptersPerRunInput, setChaptersPerRunInput] = useState(readChaptersPerRun);
 
   const setActivePrdId = (id: string) => {
     setActivePrdIdState(id);
@@ -120,10 +182,100 @@ function PrdPage() {
     queryKey: ["prd-list", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<{ data: PRDListItem[] }> => {
-      const r = await fetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/prd/?project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
   });
+
+  const runtimeSettings = useQuery({
+    queryKey: ["runtime-settings"],
+    queryFn: async (): Promise<RuntimeSettingsResponse> => {
+      const r = await apiFetch("/api/settings/runtime");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  useEffect(() => {
+    const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+    if (typeof value === "number") setPreflightTimeoutInput(String(value));
+  }, [runtimeSettings.data]);
+
+  async function updateRuntimeTimeout(seconds: number): Promise<RuntimeSettingsResponse> {
+    const r = await apiFetch("/api/settings/runtime", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case_generation_preflight_timeout_seconds: seconds }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const data = (await r.json()) as RuntimeSettingsResponse;
+    qc.setQueryData(["runtime-settings"], data);
+    setPreflightTimeoutInput(String(data.data.case_generation_preflight_timeout_seconds.value));
+    return data;
+  }
+
+  function parseTimeoutInput(): number {
+    const raw = Number.parseInt(preflightTimeoutInput, 10);
+    const spec = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds;
+    const min = spec?.min ?? 5;
+    const max = spec?.max ?? 300;
+    if (!Number.isFinite(raw) || raw < min || raw > max) {
+      throw new Error(`timeout must be between ${min}s and ${max}s`);
+    }
+    return raw;
+  }
+
+  async function saveTimeoutIfChanged(): Promise<number> {
+    const seconds = parseTimeoutInput();
+    const current =
+      runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+    if (current !== seconds) await updateRuntimeTimeout(seconds);
+    return seconds;
+  }
+
+  const saveTimeout = useMutation({
+    mutationFn: updateRuntimeTimeout,
+    onError: () => {
+      const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+      if (typeof value === "number") setPreflightTimeoutInput(String(value));
+    },
+  });
+
+  function persistTimeoutFromInput() {
+    try {
+      const seconds = parseTimeoutInput();
+      if (
+        seconds !== runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value
+      ) {
+        saveTimeout.mutate(seconds);
+      }
+    } catch {
+      const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+      setPreflightTimeoutInput(String(value ?? 20));
+    }
+  }
+
+  function parseChaptersPerRunInput(): number {
+    const raw = Number.parseInt(chaptersPerRunInput, 10);
+    if (!Number.isFinite(raw) || raw < 1 || raw > 90) {
+      throw new Error("chapters per run must be between 1 and 90");
+    }
+    return raw;
+  }
+
+  function persistChaptersPerRunFromInput() {
+    try {
+      const value = parseChaptersPerRunInput();
+      setChaptersPerRunInput(String(value));
+      window.localStorage.setItem(CHAPTERS_PER_RUN_KEY, String(value));
+    } catch {
+      setChaptersPerRunInput(String(RECOMMENDED_CHAPTERS_PER_RUN));
+      window.localStorage.setItem(
+        CHAPTERS_PER_RUN_KEY,
+        String(RECOMMENDED_CHAPTERS_PER_RUN),
+      );
+    }
+  }
 
   // Cases for the current project, used to overlay "✓ N cases generated"
   // per chapter so the user can see what was produced even after navigating
@@ -139,7 +291,7 @@ function PrdPage() {
     enabled: Boolean(projectId && uploaded),
     refetchInterval: 5000,
     queryFn: async (): Promise<{ data: CaseRow[] }> => {
-      const r = await fetch(
+      const r = await apiFetch(
         `/api/cases/?project_id=${encodeURIComponent(projectId)}&limit=1000`,
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -154,7 +306,7 @@ function PrdPage() {
     queryKey: ["prd-detail", activePrdId],
     enabled: Boolean(activePrdId),
     queryFn: async (): Promise<UploadResponse> => {
-      const r = await fetch(`/api/prd/${activePrdId}`);
+      const r = await apiFetch(`/api/prd/${activePrdId}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -165,17 +317,22 @@ function PrdPage() {
       setUploaded(hydrate.data.data);
       setSelected(new Set(hydrate.data.data.chapters.map((c) => c.position)));
       setActiveJobId(null);
+      setAutoGeneration(readStoredAutoGeneration(hydrate.data.data.prd_id));
+      handledTerminalJobIds.current.clear();
     }
     if (!activePrdId) {
       setUploaded(null);
       setSelected(new Set());
       setActiveJobId(null);
+      setAutoGeneration(null);
+      if (uploaded?.prd_id) writeStoredAutoGeneration(uploaded.prd_id, null);
+      handledTerminalJobIds.current.clear();
     }
-  }, [hydrate.data, activePrdId]);
+  }, [hydrate.data, activePrdId, uploaded?.prd_id]);
 
   const upload = useMutation({
     mutationFn: async (): Promise<UploadResponse> => {
-      const r = await fetch("/api/prd/upload", {
+      const r = await apiFetch("/api/prd/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -190,6 +347,9 @@ function PrdPage() {
     onSuccess: (resp) => {
       setUploaded(resp.data);
       setActiveJobId(null);
+      setAutoGeneration(null);
+      writeStoredAutoGeneration(resp.data.prd_id, null);
+      handledTerminalJobIds.current.clear();
       setSelected(new Set(resp.data.chapters.map((c) => c.position)));
       setActivePrdId(resp.data.prd_id);
       qc.invalidateQueries({ queryKey: ["prd-list"] });
@@ -198,7 +358,7 @@ function PrdPage() {
 
   const deletePrd = useMutation({
     mutationFn: async (prdId: string) => {
-      const r = await fetch(`/api/prd/${prdId}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/prd/${prdId}`, { method: "DELETE" });
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
     },
     onSuccess: (_void, prdId) => {
@@ -210,17 +370,20 @@ function PrdPage() {
   });
 
   const generate = useMutation({
-    mutationFn: async (): Promise<GenerateAcceptResponse> => {
+    mutationFn: async ({ chapterIndices }: GenerateVariables): Promise<GenerateAcceptResponse> => {
       if (!uploaded) throw new Error("upload first");
-      const r = await fetch(`/api/prd/${uploaded.prd_id}/generate`, {
+      await saveTimeoutIfChanged();
+      if (chapterIndices.length === 0) throw new Error("no chapters queued");
+      const r = await apiFetch(`/api/prd/${uploaded.prd_id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // Sort numerically — Set iteration order is insertion order, which
-          // produces an unstable list when the user toggles checkboxes off
-          // and back on.
-          chapter_indices: [...selected].sort((a, b) => a - b),
+          chapter_indices: chapterIndices,
           max_cases_per_chapter: 8,
+          prefer_provider:
+            runtimeSettings.data?.data.case_generation_provider.value === "auto"
+              ? null
+              : runtimeSettings.data?.data.case_generation_provider.value,
         }),
       });
       if (!r.ok) throw new Error(await r.text());
@@ -228,10 +391,132 @@ function PrdPage() {
     },
     onSuccess: (resp) => {
       setActiveJobId(resp.data.job_id);
+      qc.invalidateQueries({ queryKey: ["prd-jobs", resp.data.prd_id] });
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["cases-summary"] });
     },
   });
+
+  const cancelJob = useMutation({
+    mutationFn: async (jobId: string): Promise<GenerationJob> => {
+      const r = await apiFetch(`/api/prd/jobs/${jobId}/cancel`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      setActiveJobId(resp.data.job_id);
+      qc.invalidateQueries({ queryKey: ["prd-job", resp.data.job_id] });
+      qc.invalidateQueries({ queryKey: ["prd-jobs", resp.data.prd_id] });
+    },
+  });
+
+  function deriveHandledChapterIndices(selectedChapterIndices: number[]): number[] {
+    if (!uploaded) return [];
+    const generatedFromWithCases = new Set(
+      (projectCases.data?.data ?? [])
+        .map((row) => row.generated_from)
+        .filter((value): value is string => Boolean(value)),
+    );
+    const alreadyHandled = new Set<number>();
+    for (const chapter of uploaded.chapters) {
+      const signature = `chapter:${chapter.level}:${chapter.normalized_title}`;
+      if (generatedFromWithCases.has(signature)) alreadyHandled.add(chapter.position);
+    }
+    for (const priorJob of jobs.data?.data ?? []) {
+      if (priorJob.status !== "done") continue;
+      for (const result of priorJob.results) {
+        if (!result.error) alreadyHandled.add(result.chapter_index);
+      }
+    }
+    const processedChapterIndices = selectedChapterIndices.filter((index) =>
+      alreadyHandled.has(index),
+    );
+    return processedChapterIndices;
+  }
+
+  function startAutoGeneration() {
+    if (!uploaded) return;
+    let batchSize: number;
+    try {
+      batchSize = parseChaptersPerRunInput();
+    } catch {
+      setChaptersPerRunInput(String(RECOMMENDED_CHAPTERS_PER_RUN));
+      window.localStorage.setItem(
+        CHAPTERS_PER_RUN_KEY,
+        String(RECOMMENDED_CHAPTERS_PER_RUN),
+      );
+      batchSize = RECOMMENDED_CHAPTERS_PER_RUN;
+    }
+    window.localStorage.setItem(CHAPTERS_PER_RUN_KEY, String(batchSize));
+    const selectedChapterIndices = [...selected].sort((a, b) => a - b);
+    const processedChapterIndices = deriveHandledChapterIndices(selectedChapterIndices);
+    const firstBatch = selectNextChapterBatch({
+      selectedChapterIndices,
+      processedChapterIndices,
+      batchSize,
+    });
+    const nextState = {
+      active: firstBatch.length > 0,
+      selectedChapterIndices,
+      processedChapterIndices,
+      batchSize,
+    };
+    setAutoGeneration(nextState);
+    writeStoredAutoGeneration(uploaded.prd_id, nextState);
+    handledTerminalJobIds.current.clear();
+    if (firstBatch.length > 0) {
+      generate.mutate({ chapterIndices: firstBatch });
+    }
+  }
+
+  function cancelAutoGeneration(jobId: string) {
+    setAutoGeneration((state) => {
+      const nextState = state ? { ...state, active: false } : null;
+      if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, nextState);
+      return nextState;
+    });
+    cancelJob.mutate(jobId);
+  }
+
+  const jobs = useQuery({
+    queryKey: ["prd-jobs", uploaded?.prd_id],
+    enabled: Boolean(uploaded?.prd_id),
+    refetchInterval: (q) => {
+      const rows = (q.state.data as GenerationJobsResponse | undefined)?.data ?? [];
+      return rows.some((j) => j.status === "pending" || j.status === "running")
+        ? 2000
+        : 5000;
+    },
+    queryFn: async (): Promise<GenerationJobsResponse> => {
+      if (!uploaded) throw new Error("upload first");
+      const r = await apiFetch(`/api/prd/${uploaded.prd_id}/jobs`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  const activeServerJob =
+    jobs.data?.data.find((j) => j.status === "pending" || j.status === "running") ?? null;
+
+  useEffect(() => {
+    if (activeServerJob && activeServerJob.job_id !== activeJobId) {
+      setActiveJobId(activeServerJob.job_id);
+    }
+  }, [activeServerJob, activeJobId]);
+
+  useEffect(() => {
+    if (!uploaded || !activeServerJob || autoGeneration) return;
+    const selectedChapterIndices = [...selected].sort((a, b) => a - b);
+    if (selectedChapterIndices.length <= activeServerJob.total_chapters) return;
+    const restoredState = {
+      active: true,
+      selectedChapterIndices,
+      processedChapterIndices: deriveHandledChapterIndices(selectedChapterIndices),
+      batchSize: Math.max(1, activeServerJob.total_chapters),
+    };
+    setAutoGeneration(restoredState);
+    writeStoredAutoGeneration(uploaded.prd_id, restoredState);
+  }, [activeServerJob, autoGeneration, selected, uploaded]);
 
   /** Poll the active generation job until it reaches a terminal state. */
   const job = useQuery({
@@ -239,14 +524,88 @@ function PrdPage() {
     enabled: Boolean(activeJobId),
     refetchInterval: (q) => {
       const status = (q.state.data as GenerationJob | undefined)?.data?.status;
-      return status === "done" || status === "failed" ? false : 2000;
+      return status === "done" || status === "failed" || status === "cancelled" ? false : 2000;
     },
     queryFn: async (): Promise<GenerationJob> => {
-      const r = await fetch(`/api/prd/jobs/${activeJobId}`);
+      const r = await apiFetch(`/api/prd/jobs/${activeJobId}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
   });
+
+  const effectiveJob = job.data?.data ?? activeServerJob;
+  const isGenerating =
+    effectiveJob?.status === "running" ||
+    effectiveJob?.status === "pending" ||
+    generate.isPending;
+  useEffect(() => {
+    if (!autoGeneration?.active || !effectiveJob) return;
+    if (
+      effectiveJob.status !== "done" &&
+      effectiveJob.status !== "failed" &&
+      effectiveJob.status !== "cancelled"
+    ) {
+      return;
+    }
+    if (handledTerminalJobIds.current.has(effectiveJob.job_id)) return;
+    handledTerminalJobIds.current.add(effectiveJob.job_id);
+
+    if (effectiveJob.status !== "done") {
+      setAutoGeneration((state) => {
+        const nextState = state ? { ...state, active: false } : null;
+        if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, nextState);
+        return nextState;
+      });
+      return;
+    }
+
+    const processedChapterIndices = [
+      ...new Set([
+        ...autoGeneration.processedChapterIndices,
+        ...effectiveJob.results.map((result) => result.chapter_index),
+      ]),
+    ];
+    const nextBatch = selectNextChapterBatch({
+      selectedChapterIndices: autoGeneration.selectedChapterIndices,
+      processedChapterIndices,
+      batchSize: autoGeneration.batchSize,
+    });
+    const nextState = {
+      ...autoGeneration,
+      active: nextBatch.length > 0,
+      processedChapterIndices,
+    };
+    setAutoGeneration(nextState);
+    if (uploaded) {
+      writeStoredAutoGeneration(uploaded.prd_id, nextBatch.length > 0 ? nextState : null);
+    }
+    if (nextBatch.length > 0) {
+      generate.mutate({ chapterIndices: nextBatch });
+    }
+  }, [autoGeneration, effectiveJob, generate, uploaded]);
+
+  const chaptersPerRun = (() => {
+    const parsed = Number.parseInt(chaptersPerRunInput, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) return RECOMMENDED_CHAPTERS_PER_RUN;
+    return Math.min(90, parsed);
+  })();
+  const runChapterCount = Math.min(selected.size, chaptersPerRun);
+  const autoProgress = (() => {
+    if (!autoGeneration) return null;
+    const currentJobIndices =
+      effectiveJob?.status === "pending" || effectiveJob?.status === "running"
+        ? effectiveJob.results.map((result) => result.chapter_index)
+        : [];
+    const processed = new Set([
+      ...autoGeneration.processedChapterIndices,
+      ...currentJobIndices,
+    ]);
+    return {
+      total: autoGeneration.selectedChapterIndices.length,
+      processed: Math.min(processed.size, autoGeneration.selectedChapterIndices.length),
+      active: autoGeneration.active,
+    };
+  })();
 
   const toggleChapter = (pos: number) => {
     const next = new Set(selected);
@@ -517,22 +876,85 @@ function PrdPage() {
           </div>
 
           <div>
-            <button
-              className="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50"
-              disabled={
-                selected.size === 0 ||
-                generate.isPending ||
-                job.data?.data.status === "running" ||
-                job.data?.data.status === "pending"
-              }
-              onClick={() => generate.mutate()}
-            >
-              {generate.isPending
-                ? "scheduling…"
-                : job.data?.data.status === "running" || job.data?.data.status === "pending"
-                  ? `generating ${job.data.data.completed_chapters}/${job.data.data.total_chapters}…`
-                  : `Generate cases for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="bg-emerald-700 text-white text-sm px-3 py-1.5 rounded hover:bg-emerald-800 disabled:opacity-50"
+                disabled={
+                  selected.size === 0 ||
+                  jobs.isLoading ||
+                  isGenerating ||
+                  saveTimeout.isPending
+                }
+                onClick={startAutoGeneration}
+              >
+                {generate.isPending
+                  ? "scheduling…"
+                  : effectiveJob?.status === "running" || effectiveJob?.status === "pending"
+                    ? autoProgress?.active
+                      ? `generating ${autoProgress.processed}/${autoProgress.total} selected…`
+                      : `generating ${effectiveJob.completed_chapters}/${effectiveJob.total_chapters}…`
+                    : `Generate cases for ${runChapterCount} chapter${runChapterCount === 1 ? "" : "s"}`}
+              </button>
+              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
+                Chapters/run
+                <input
+                  type="number"
+                  min={1}
+                  max={90}
+                  step={1}
+                  value={chaptersPerRunInput}
+                  disabled={generate.isPending || isGenerating}
+                  onChange={(e) => setChaptersPerRunInput(e.target.value)}
+                  onBlur={persistChaptersPerRunFromInput}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
+                />
+              </label>
+              {autoProgress ? (
+                <span className="text-xs text-slate-500">
+                  {Math.max(autoProgress.total - autoProgress.processed, 0)} selected remaining
+                </span>
+              ) : selected.size > runChapterCount ? (
+                <span className="text-xs text-slate-500">
+                  {selected.size - runChapterCount} queued for auto-run
+                </span>
+              ) : null}
+              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
+                Timeout
+                <input
+                  type="number"
+                  min={runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.min ?? 5}
+                  max={runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.max ?? 300}
+                  step={5}
+                  value={preflightTimeoutInput}
+                  disabled={runtimeSettings.isLoading || saveTimeout.isPending || isGenerating}
+                  onChange={(e) => setPreflightTimeoutInput(e.target.value)}
+                  onBlur={persistTimeoutFromInput}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
+                />
+                s
+              </label>
+              <span className="text-xs text-slate-500">
+                provider:{" "}
+                <code>
+                  {runtimeSettings.data?.data.case_generation_provider.value ?? "auto"}
+                </code>
+              </span>
+            </div>
+            {saveTimeout.error && (
+              <pre className="text-xs text-red-600 whitespace-pre-wrap mt-2">
+                {(saveTimeout.error as Error).message}
+              </pre>
+            )}
             {generate.error && (
               <pre className="text-xs text-red-600 whitespace-pre-wrap mt-2">
                 {(generate.error as Error).message}
@@ -541,13 +963,15 @@ function PrdPage() {
           </div>
 
           {/* Live job progress. Survives page reload because activeJobId is
-              in React state populated from the mutation; could be promoted
-              to URL/localStorage if "stay informed across reloads" is
-              required, but for now reload = lose the visible progress
-              (the chapter overlay above still shows real cases as they
-              save, so no information is actually lost). */}
-          {job.data && (
-            <JobProgressPanel job={job.data.data} />
+              in React state populated from the mutation or restored from
+              /api/prd/<id>/jobs after refresh. */}
+          {effectiveJob && (
+            <JobProgressPanel
+              job={effectiveJob}
+              onCancel={() => cancelAutoGeneration(effectiveJob.job_id)}
+              cancelling={cancelJob.isPending}
+              autoProgress={autoProgress}
+            />
           )}
         </div>
       )}
@@ -643,14 +1067,30 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function JobProgressPanel({ job }: { job: GenerationJob["data"] }) {
-  const isTerminal = job.status === "done" || job.status === "failed";
-  const pct = job.total_chapters
+function JobProgressPanel({
+  job,
+  onCancel,
+  cancelling,
+  autoProgress,
+}: {
+  job: GenerationJob["data"];
+  onCancel: () => void;
+  cancelling: boolean;
+  autoProgress: { total: number; processed: number; active: boolean } | null;
+}) {
+  const isTerminal =
+    job.status === "done" || job.status === "failed" || job.status === "cancelled";
+  const batchPct = job.total_chapters
     ? Math.round((job.completed_chapters / job.total_chapters) * 100)
     : 0;
+  const pct = autoProgress?.active && autoProgress.total > 0
+    ? Math.round((autoProgress.processed / autoProgress.total) * 100)
+    : batchPct;
   const colour =
     job.status === "failed"
       ? "bg-red-50 border-red-200"
+      : job.status === "cancelled"
+        ? "bg-slate-50 border-slate-200"
       : job.status === "done"
         ? "bg-emerald-50 border-emerald-200"
         : "bg-blue-50 border-blue-200";
@@ -662,8 +1102,16 @@ function JobProgressPanel({ job }: { job: GenerationJob["data"] }) {
           {job.status === "pending" && "Job queued…"}
           {job.status === "running" && (
             <>
-              Generating {job.completed_chapters}/{job.total_chapters} chapters
+              {autoProgress?.active
+                ? `Generating ${autoProgress.processed}/${autoProgress.total} selected chapters`
+                : `Generating ${job.completed_chapters}/${job.total_chapters} chapters`}
               {" · "}
+              {autoProgress?.active && (
+                <>
+                  current batch {job.completed_chapters}/{job.total_chapters}
+                  {" · "}
+                </>
+              )}
               <span className="text-emerald-700">{job.saved_cases} cases saved</span>
             </>
           )}
@@ -676,9 +1124,22 @@ function JobProgressPanel({ job }: { job: GenerationJob["data"] }) {
           {job.status === "failed" && (
             <span className="text-red-700">✗ Job failed: {job.error || "unknown error"}</span>
           )}
+          {job.status === "cancelled" && (
+            <span className="text-slate-600">Job cancelled</span>
+          )}
         </div>
         {!isTerminal && (
-          <span className="text-xs text-slate-500 font-mono tabular-nums">{pct}%</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 font-mono tabular-nums">{pct}%</span>
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelling}
+              className="text-xs border border-slate-300 bg-white px-2 py-0.5 rounded hover:bg-slate-50 disabled:opacity-50"
+            >
+              {cancelling ? "cancelling…" : "cancel"}
+            </button>
+          </div>
         )}
       </div>
       {!isTerminal && (

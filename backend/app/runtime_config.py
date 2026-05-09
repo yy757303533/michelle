@@ -28,6 +28,16 @@ from app.config import settings
 from app.models import RuntimeSetting
 
 EXECUTOR_LOOPS = {"auto", "generic_openai", "claude_cli"}
+LLM_PROVIDER_CHOICES = {
+    "auto",
+    "claude-cli",
+    "codex-cli",
+}
+EXECUTION_PROVIDER_CHOICES = {
+    "auto",
+    "claude-cli",
+    "codex-cli",
+}
 
 
 def _coerce_bool(v: Any) -> bool:
@@ -38,6 +48,28 @@ def _coerce_executor_loop(v: Any) -> str:
     value = str(v or "").strip()
     if value not in EXECUTOR_LOOPS:
         raise ValueError(f"unknown executor_loop: {value}")
+    return value
+
+
+def _coerce_int(v: Any) -> int:
+    return int(v)
+
+
+def _coerce_str(v: Any) -> str:
+    return str(v or "")
+
+
+def _coerce_llm_provider(v: Any) -> str:
+    value = str(v or "auto").strip()
+    if value not in LLM_PROVIDER_CHOICES:
+        raise ValueError(f"unknown LLM provider: {value}")
+    return value
+
+
+def _coerce_execution_provider(v: Any) -> str:
+    value = str(v or "auto").strip()
+    if value not in EXECUTION_PROVIDER_CHOICES:
+        raise ValueError(f"unknown execution provider: {value}")
     return value
 
 
@@ -71,6 +103,122 @@ KNOBS: dict[str, dict[str, Any]] = {
             "no generic provider is configured."
         ),
     },
+    "case_generation_provider": {
+        "type": _coerce_llm_provider,
+        "choices": [
+            "auto",
+            "claude-cli",
+            "codex-cli",
+        ],
+        "describe": (
+            "Preferred LLM provider for PRD-to-case generation. Auto follows "
+            "gateway priority and fallback order."
+        ),
+    },
+    "case_generation_preflight_timeout_seconds": {
+        "type": _coerce_int,
+        "min": 5,
+        "max": 300,
+        "describe": (
+            "Seconds to wait for the PRD-to-case generation provider preflight "
+            "before failing fast."
+        ),
+    },
+    "case_execution_provider": {
+        "type": _coerce_execution_provider,
+        "choices": [
+            "auto",
+            "claude-cli",
+            "codex-cli",
+        ],
+        "describe": (
+            "Preferred execution provider. claude-cli uses Claude CLI Loop; "
+            "all other providers use Michelle Loop."
+        ),
+    },
+    "diagnosis_provider": {
+        "type": _coerce_llm_provider,
+        "choices": [
+            "auto",
+            "claude-cli",
+            "codex-cli",
+        ],
+        "describe": "Preferred LLM provider for failed-run AI diagnosis.",
+    },
+    "email_enabled": {
+        "type": _coerce_bool,
+        "describe": "Enable SMTP email notifications.",
+    },
+    "email_on_run_completed": {
+        "type": _coerce_bool,
+        "describe": "Send an email when a run reaches its final status.",
+    },
+    "email_on_diagnosis_generated": {
+        "type": _coerce_bool,
+        "describe": "Send an email when AI diagnosis finishes.",
+    },
+    "smtp_host": {
+        "type": _coerce_str,
+        "describe": "SMTP server hostname.",
+    },
+    "smtp_port": {
+        "type": _coerce_int,
+        "min": 1,
+        "max": 65535,
+        "describe": "SMTP server port.",
+    },
+    "smtp_username": {
+        "type": _coerce_str,
+        "describe": "SMTP username. Leave empty if your server does not require auth.",
+    },
+    "smtp_password": {
+        "type": _coerce_str,
+        "secret": True,
+        "describe": "SMTP password or app password. Stored locally in runtime settings.",
+    },
+    "smtp_from": {
+        "type": _coerce_str,
+        "describe": "Sender email address.",
+    },
+    "smtp_to": {
+        "type": _coerce_str,
+        "describe": "Recipient email addresses, separated by comma or newline.",
+    },
+    "smtp_use_tls": {
+        "type": _coerce_bool,
+        "describe": "Use STARTTLS after connecting.",
+    },
+    "smtp_use_ssl": {
+        "type": _coerce_bool,
+        "describe": "Use SMTP over SSL from the start.",
+    },
+    "email_subject_prefix": {
+        "type": _coerce_str,
+        "describe": "Prefix added to all Michelle notification subjects.",
+    },
+    "webhook_enabled": {
+        "type": _coerce_bool,
+        "describe": "Enable generic webhook notifications.",
+    },
+    "webhook_url": {
+        "type": _coerce_str,
+        "secret": True,
+        "describe": "Webhook URL for Feishu/WeCom/Slack-compatible bots or custom receivers.",
+    },
+    "webhook_kind": {
+        "type": _coerce_str,
+        "choices": ["generic", "feishu", "wecom"],
+        "describe": "Webhook payload style.",
+    },
+    "artifact_retention_days": {
+        "type": _coerce_int,
+        "min": 1,
+        "max": 365,
+        "describe": (
+            "Delete run artifact directories older than this many days. "
+            "Pending/running runs are always skipped."
+        ),
+    },
 }
 
 
@@ -82,6 +230,26 @@ _BOOTSTRAP_DEFAULTS: dict[str, Any] = {
     "executor_loop": lambda: (
         settings.executor_loop if settings.executor_loop in EXECUTOR_LOOPS else "auto"
     ),
+    "case_generation_provider": lambda: "auto",
+    "case_generation_preflight_timeout_seconds": lambda: 20,
+    "case_execution_provider": lambda: "auto",
+    "diagnosis_provider": lambda: "auto",
+    "email_enabled": lambda: False,
+    "email_on_run_completed": lambda: True,
+    "email_on_diagnosis_generated": lambda: True,
+    "smtp_host": lambda: "",
+    "smtp_port": lambda: 587,
+    "smtp_username": lambda: "",
+    "smtp_password": lambda: "",
+    "smtp_from": lambda: "",
+    "smtp_to": lambda: "",
+    "smtp_use_tls": lambda: True,
+    "smtp_use_ssl": lambda: False,
+    "email_subject_prefix": lambda: "[Michelle]",
+    "webhook_enabled": lambda: False,
+    "webhook_url": lambda: "",
+    "webhook_kind": lambda: "generic",
+    "artifact_retention_days": lambda: 30,
 }
 
 
@@ -135,6 +303,72 @@ async def get_executor_loop(session: AsyncSession | None = None) -> str:
         return str(await _read_raw(s, "executor_loop"))
 
 
+async def get_case_generation_provider(session: AsyncSession | None = None) -> str | None:
+    """Preferred provider for PRD-to-case generation. None means gateway auto."""
+    if session is not None:
+        value = str(await _read_raw(session, "case_generation_provider"))
+        return None if value == "auto" else value
+    async with _db.async_session_maker() as s:
+        value = str(await _read_raw(s, "case_generation_provider"))
+        return None if value == "auto" else value
+
+
+async def get_case_generation_preflight_timeout(session: AsyncSession | None = None) -> int:
+    """Provider preflight timeout for PRD-to-case generation."""
+    if session is not None:
+        return int(await _read_raw(session, "case_generation_preflight_timeout_seconds"))
+    async with _db.async_session_maker() as s:
+        return int(await _read_raw(s, "case_generation_preflight_timeout_seconds"))
+
+
+async def get_case_execution_provider(session: AsyncSession | None = None) -> str | None:
+    """Preferred provider for generic case execution. None means gateway auto."""
+    if session is not None:
+        value = str(await _read_raw(session, "case_execution_provider"))
+        return None if value == "auto" else value
+    async with _db.async_session_maker() as s:
+        value = str(await _read_raw(s, "case_execution_provider"))
+        return None if value == "auto" else value
+
+
+async def get_diagnosis_provider(session: AsyncSession | None = None) -> str | None:
+    """Preferred provider for failed-run diagnosis. None means diagnosis default."""
+    if session is not None:
+        value = str(await _read_raw(session, "diagnosis_provider"))
+        return None if value == "auto" else value
+    async with _db.async_session_maker() as s:
+        value = str(await _read_raw(s, "diagnosis_provider"))
+        return None if value == "auto" else value
+
+
+async def get_email_config(session: AsyncSession | None = None) -> dict[str, Any]:
+    """Return typed email notification settings."""
+
+    async def _build(s: AsyncSession) -> dict[str, Any]:
+        return {
+            "enabled": bool(await _read_raw(s, "email_enabled")),
+            "on_run_completed": bool(await _read_raw(s, "email_on_run_completed")),
+            "on_diagnosis_generated": bool(await _read_raw(s, "email_on_diagnosis_generated")),
+            "host": str(await _read_raw(s, "smtp_host")),
+            "port": int(await _read_raw(s, "smtp_port")),
+            "username": str(await _read_raw(s, "smtp_username")),
+            "password": str(await _read_raw(s, "smtp_password")),
+            "from_addr": str(await _read_raw(s, "smtp_from")),
+            "to_addrs": str(await _read_raw(s, "smtp_to")),
+            "use_tls": bool(await _read_raw(s, "smtp_use_tls")),
+            "use_ssl": bool(await _read_raw(s, "smtp_use_ssl")),
+            "subject_prefix": str(await _read_raw(s, "email_subject_prefix")),
+            "webhook_enabled": bool(await _read_raw(s, "webhook_enabled")),
+            "webhook_url": str(await _read_raw(s, "webhook_url")),
+            "webhook_kind": str(await _read_raw(s, "webhook_kind")),
+        }
+
+    if session is not None:
+        return await _build(session)
+    async with _db.async_session_maker() as s:
+        return await _build(s)
+
+
 # ── Read/write surface used by the HTTP layer ────────────────────────────
 
 
@@ -147,13 +381,16 @@ async def snapshot(session: AsyncSession) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for key, spec in KNOBS.items():
         out[key] = {
-            "value": await _read_raw(session, key),
+            "value": "" if spec.get("secret") else await _read_raw(session, key),
             "default": env_default(key),
             "min": spec.get("min"),
             "max": spec.get("max"),
             "choices": spec.get("choices"),
             "describe": spec.get("describe", ""),
         }
+        if spec.get("secret"):
+            row = await session.get(RuntimeSetting, key)
+            out[key]["is_set"] = bool(row and row.value)
     return out
 
 

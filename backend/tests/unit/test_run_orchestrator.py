@@ -13,7 +13,7 @@ from sqlmodel import SQLModel, select
 from app.agent.claude_runner import RunOutcome
 from app.agent.trace_parser import ParsedRun, RunSummary
 from app.agent.trace_parser import StepEvent as ParsedStep
-from app.models import Project, StepEvent, TestCase
+from app.models import Diagnosis, Project, Run, StepEvent, TestCase
 from app.services import run_orchestrator
 from app.services.run_orchestrator import (
     _format_assertions,
@@ -22,6 +22,7 @@ from app.services.run_orchestrator import (
     create_run_row,
     execute_case,
     render_execute_prompt,
+    rollback_run_scope,
 )
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
@@ -54,6 +55,7 @@ async def session(monkeypatch) -> AsyncSession:
     monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
     async with maker() as s:
         yield s
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -293,8 +295,10 @@ async def test_execute_case_passed_path(seeded, session):
     )
     assert len(rows) == 2
     assert rows[0].tool_name == "browser_navigate"
+    assert rows[0].phase == "prepare"
     assert rows[0].status == "ok"
     assert rows[1].tool_name == "browser_type"
+    assert rows[1].phase == "action"
 
 
 @pytest.mark.asyncio
@@ -319,6 +323,50 @@ async def test_execute_case_failed_path(seeded, session):
     failed = [r for r in rows if r.status == "failed"]
     assert len(failed) == 1
     assert failed[0].tool_name == "browser_type"
+
+
+@pytest.mark.asyncio
+async def test_execute_case_persists_final_assertions(seeded, session):
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+    outcome = _mock_outcome(status_text="failed", with_failure=False)
+    outcome.parsed.summary.success = False
+    outcome.parsed.summary.parsed_result = {
+        "case_status": "failed",
+        "failure_summary": "home URL was not reached",
+        "assertion_results": [
+            {
+                "description": "URL changes to /home",
+                "passed": False,
+                "evidence": "Page URL remained http://example.com/login",
+            }
+        ],
+    }
+
+    with patch(
+        "app.services.run_orchestrator.run_claude_with_playwright",
+        AsyncMock(return_value=outcome),
+    ):
+        out = await execute_case(case_id=case.case_id, run_id=run.run_id)
+
+    assert out.status == "failed"
+    rows = (
+        (
+            await session.execute(
+                select(StepEvent)
+                .where(StepEvent.run_id == run.run_id)
+                .order_by(StepEvent.step_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assertion = rows[-1]
+    assert assertion.phase == "assertion"
+    assert assertion.event == "agent.assertion.evaluated"
+    assert assertion.status == "failed"
+    assert "Page URL remained" in (assertion.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -368,3 +416,132 @@ async def test_execute_case_creates_artifacts(seeded, session, tmp_path, monkeyp
     payload = json.loads(trace_lines[0])
     assert payload["tool_name"] == "browser_navigate"
     assert payload["page_title"] == "Example"
+
+
+@pytest.mark.asyncio
+async def test_execute_case_redacts_password_from_prompt_artifact(
+    seeded, session, tmp_path, monkeypatch
+):
+    proj, case = seeded
+    proj.default_username = "admin"
+    proj.default_password = "super-secret-password"
+    await session.commit()
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    from app import storage
+
+    monkeypatch.setattr(storage, "artifacts_root", lambda: tmp_path)
+
+    with patch(
+        "app.services.run_orchestrator.run_claude_with_playwright",
+        AsyncMock(return_value=_mock_outcome(status_text="passed")),
+    ):
+        await execute_case(case_id=case.case_id, run_id=run.run_id)
+
+    prompt_text = (tmp_path / case.project_id / run.run_id / "prompt.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "super-secret-password" not in prompt_text
+    assert "***" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_rollback_run_scope_deletes_side_effects(seeded, session, tmp_path, monkeypatch):
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+    session.add(StepEvent(run_id=run.run_id, step_index=0, event="agent.step.executed"))
+    session.add(
+        Diagnosis(
+            diag_id="diag-1",
+            run_id=run.run_id,
+            case_id=case.case_id,
+            diagnoser_prompt_version="v",
+            diagnoser_model="m",
+            category="unknown",
+        )
+    )
+    await session.commit()
+
+    rd = tmp_path / case.project_id / run.run_id
+    rd.mkdir(parents=True)
+    (rd / "report.html").write_text("x")
+    monkeypatch.setattr(run_orchestrator, "run_dir_for", lambda _project, _run: rd)
+
+    deleted = await rollback_run_scope(session, run_id=run.run_id, delete_run=True)
+
+    assert deleted == 3
+    assert await session.get(Run, run.run_id) is None
+    assert (
+        await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id))
+    ).scalars().all() == []
+    assert not rd.exists()
+
+
+@pytest.mark.asyncio
+async def test_retry_rolls_back_first_attempt_side_effects(seeded, session, monkeypatch):
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    calls = 0
+
+    async def fake_execute_case(**kw):
+        nonlocal calls
+        calls += 1
+        row = await session.get(Run, kw["run_id"])
+        assert row is not None
+        if calls == 1:
+            session.add(
+                StepEvent(
+                    run_id=kw["run_id"],
+                    step_index=0,
+                    event="agent.step.executed",
+                    error_message="timeout",
+                    status="failed",
+                )
+            )
+            row.status = "failed"
+            row.error_message = "navigation timeout"
+        else:
+            previous = (
+                (await session.execute(select(StepEvent).where(StepEvent.run_id == kw["run_id"])))
+                .scalars()
+                .all()
+            )
+            assert previous == []
+            session.add(StepEvent(run_id=kw["run_id"], step_index=0, event="agent.step.executed"))
+            row.status = "passed"
+            row.error_message = None
+        await session.commit()
+        return row
+
+    async def noop(**_kw):
+        return None
+
+    monkeypatch.setattr(run_orchestrator, "execute_case", fake_execute_case)
+    monkeypatch.setattr(run_orchestrator, "_notify_run_completed_email", noop)
+    monkeypatch.setattr(run_orchestrator, "_rerender_report", noop)
+    monkeypatch.setattr(run_orchestrator, "_run_limiter", None)
+    monkeypatch.setattr(run_orchestrator, "MAX_CONCURRENT_RUNS", 1)
+
+    await run_orchestrator._safe_execute(
+        case_id=case.case_id,
+        run_id=run.run_id,
+        env="default",
+        timeout_seconds=10,
+    )
+
+    assert calls == 2
+    refreshed = await session.get(Run, run.run_id)
+    assert refreshed is not None
+    await session.refresh(refreshed)
+    assert refreshed.status == "flaky"
+    rows = (
+        (await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "ok"

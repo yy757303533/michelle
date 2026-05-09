@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: michelle-postgres
+    environment:
+      POSTGRES_DB: michelle
+      POSTGRES_USER: michelle
+      POSTGRES_PASSWORD: michelle
+    ports:
+      - "5432:5432"
+    volumes:
+      - michelle-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U michelle -d michelle"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  michelle-postgres-data:

@@ -36,6 +36,7 @@ async def memory_db(monkeypatch):
     monkeypatch.setattr(db_mod, "engine", engine)
     monkeypatch.setattr(db_mod, "async_session_maker", maker)
     yield maker
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -602,6 +603,30 @@ async def test_manual_create_lands_pending(session, app_client):
     assert data["review_status"] == "pending"
     assert data["auth_state"] == "logged-out"
     assert data["priority"] == "P0"
+
+
+@pytest.mark.asyncio
+async def test_manual_create_case_ids_are_global_across_projects(session, app_client):
+    session.add(Project(project_id="demo-a", name="demo-a"))
+    session.add(Project(project_id="demo-b", name="demo-b"))
+    await session.commit()
+
+    async def create(project_id: str):
+        return await app_client.post(
+            "/api/cases/",
+            json={
+                "project_id": project_id,
+                "name": f"manual {project_id}",
+                "steps": [{"intent": "open"}],
+            },
+        )
+
+    first = await create("demo-a")
+    second = await create("demo-b")
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["data"]["case_id"] != second.json()["data"]["case_id"]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCurrentProject } from "../lib/useCurrentProject";
+import { apiFetch } from "../lib/adminAuth";
 
 interface ProjectRow {
   project_id: string;
@@ -9,6 +10,7 @@ interface ProjectRow {
   description?: string;
   default_username?: string;
   default_password?: string;
+  default_password_is_set?: boolean;
 }
 
 interface ProjectsResponse {
@@ -29,7 +31,7 @@ export function ProjectSwitcher() {
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: async (): Promise<ProjectsResponse> => {
-      const r = await fetch("/api/projects/");
+      const r = await apiFetch("/api/projects/");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -139,7 +141,7 @@ function ProjectForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
   const [username, setUsername] = useState(initial?.default_username ?? "");
-  const [password, setPassword] = useState(initial?.default_password ?? "");
+  const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
 
   const save = useMutation({
@@ -148,12 +150,12 @@ function ProjectForm({
         name: name.trim(),
         base_url: baseUrl.trim(),
         default_username: username.trim(),
-        default_password: password,
       };
+      if (password) body.default_password = password;
       // Sending project_id triggers update on the server; omitting it
       // triggers create + auto-id mint.
       if (initial?.project_id) body.project_id = initial.project_id;
-      const r = await fetch("/api/projects/", {
+      const r = await apiFetch("/api/projects/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -202,6 +204,7 @@ function ProjectForm({
             placeholder="••••"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            title={initial?.default_password_is_set ? "stored; leave blank to keep" : undefined}
           />
           <button
             type="button"

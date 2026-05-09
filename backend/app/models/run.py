@@ -54,6 +54,7 @@ class StepEvent(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     run_id: str = Field(index=True)
     step_index: int
+    phase: str = Field(default="action", index=True)
 
     event: str  # agent.step.executed | agent.assertion.evaluated | ...
     intent: str | None = None
@@ -69,6 +70,26 @@ class StepEvent(SQLModel, table=True):
     error_message: str | None = None
 
     occurred_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
+
+
+class LLMCall(SQLModel, table=True):
+    __tablename__ = "llm_calls"
+
+    id: int | None = Field(default=None, primary_key=True)
+    provider: str = Field(index=True)
+    model: str = ""
+    prompt_version: str = Field(index=True)
+    ok: bool = True
+    error_type: str = ""
+    error_message: str = ""
+    latency_ms: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = None
+    created_at: datetime = Field(
         default_factory=_utcnow,
         sa_column=Column(TZDateTime(), nullable=False),
     )

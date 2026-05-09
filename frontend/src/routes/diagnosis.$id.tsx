@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { apiFetch } from "../lib/adminAuth";
 
 export const Route = createFileRoute("/diagnosis/$id")({
   component: DiagnosisDetailPage,
@@ -50,11 +51,12 @@ function DiagnosisDetailPage() {
   const { id } = Route.useParams();
   const qc = useQueryClient();
   const [note, setNote] = useState("");
+  const [reason, setReason] = useState("");
 
   const byRun = useQuery({
     queryKey: ["diagnosis-by-run", id],
     queryFn: async (): Promise<ByRunResponse> => {
-      const r = await fetch(`/api/diagnosis/by-run/${id}`);
+      const r = await apiFetch(`/api/diagnosis/by-run/${id}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -66,7 +68,7 @@ function DiagnosisDetailPage() {
 
   const generate = useMutation({
     mutationFn: async () => {
-      const r = await fetch(`/api/diagnosis/by-run/${id}/generate`, {
+      const r = await apiFetch(`/api/diagnosis/by-run/${id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overwrite_existing: true }),
@@ -79,16 +81,17 @@ function DiagnosisDetailPage() {
 
   const feedback = useMutation({
     mutationFn: async (args: { diag_id: string; feedback: string }) => {
-      const r = await fetch(`/api/diagnosis/${args.diag_id}/feedback`, {
+      const r = await apiFetch(`/api/diagnosis/${args.diag_id}/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feedback: args.feedback, note }),
+        body: JSON.stringify({ feedback: args.feedback, reason, note }),
       });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
     onSuccess: () => {
       setNote("");
+      setReason("");
       qc.invalidateQueries({ queryKey: ["diagnosis-by-run", id] });
     },
   });
@@ -107,6 +110,11 @@ function DiagnosisDetailPage() {
         <h1 className="text-2xl font-semibold">
           run <span className="font-mono text-base">{id.slice(0, 12)}…</span>
         </h1>
+      </div>
+
+      <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        AI diagnosis is advisory. Confirm manually before acting on issues involving data,
+        permissions, payments, environment drift, account state, or missing screenshots.
       </div>
 
       {byRun.isLoading && <div className="text-slate-400 text-sm">loading…</div>}
@@ -189,7 +197,19 @@ function DiagnosisDetailPage() {
                   rows={2}
                   placeholder="optional note: why was the diagnosis right or wrong?"
                 />
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    className="border border-slate-200 rounded px-2 py-1 text-sm"
+                  >
+                    <option value="">reason</option>
+                    <option value="category_wrong">category wrong</option>
+                    <option value="evidence_insufficient">evidence insufficient</option>
+                    <option value="fix_not_actionable">fix not actionable</option>
+                    <option value="model_hallucinated">model hallucinated</option>
+                    <option value="other">other</option>
+                  </select>
                   <button
                     disabled={feedback.isPending}
                     onClick={() =>

@@ -12,7 +12,6 @@ from app.llm.base import (
     RateLimitError,
 )
 from app.llm.claude_cli import ClaudeCLIClient
-from app.llm.flywheel import FlywheelClient
 from app.llm.gateway import (
     GatewayClient,
     LLMGateway,
@@ -20,7 +19,6 @@ from app.llm.gateway import (
     get_gateway,
     reset_gateway,
 )
-from app.llm.minimax import MiniMaxClient
 from app.llm.prompts.registry import PromptNotFoundError, load_prompt, prompt_id, render
 
 __all__ = [
@@ -36,8 +34,6 @@ __all__ = [
     "LLMResponseFormatError",
     # clients
     "ClaudeCLIClient",
-    "MiniMaxClient",
-    "FlywheelClient",
     # gateway
     "GatewayClient",
     "LLMGateway",

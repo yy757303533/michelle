@@ -69,5 +69,11 @@ jobs:
       - name: typecheck
         run: pnpm exec tsc -b
 
+      - name: frontend tests
+        run: pnpm test --run
+
+      - name: frontend lint gate
+        run: pnpm lint
+
       - name: build
         run: pnpm build

@@ -7,8 +7,9 @@ import os
 from app.agent import claude_env
 
 
-def test_build_claude_env_dotenv_empty_value_clears_shell_export(monkeypatch):
+def test_build_claude_env_dotenv_empty_value_keeps_shell_export(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://shell.example.invalid")
+    monkeypatch.setattr(claude_env.settings, "anthropic_base_url", "")
     monkeypatch.setattr(
         claude_env,
         "read_dotenv_anthropic_overrides",
@@ -17,7 +18,7 @@ def test_build_claude_env_dotenv_empty_value_clears_shell_export(monkeypatch):
 
     env = claude_env.build_claude_subprocess_env()
 
-    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["ANTHROPIC_BASE_URL"] == "https://shell.example.invalid"
 
 
 def test_build_claude_env_dotenv_value_wins_over_shell(monkeypatch):

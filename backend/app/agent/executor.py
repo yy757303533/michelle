@@ -1,11 +1,12 @@
 """Executor-loop strategy resolution.
 
-UI exposes three operator choices:
+UI exposes a single execution-model choice:
 
-* `auto` — prefer Michelle's generic OpenAI-compatible loop; fall back to
-  Claude CLI only when no generic provider is configured.
-* `generic_openai` — Michelle-owned JSON-action loop driven by the LLM gateway.
-* `claude_cli` — legacy compatibility path using Claude CLI's built-in loop.
+* `case_execution_provider=claude-cli` — use the legacy Claude CLI browser loop.
+* any other value — use Michelle's JSON-action loop and route model calls to
+  that provider.
+
+`executor_loop` still exists as a hidden legacy override for old deployments.
 
 This module is intentionally side-effect light. It never runs `claude -p` just
 to decide availability; it only checks config/binaries and lets an actual run
@@ -22,11 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.llm.gateway import get_gateway
-from app.runtime_config import get_executor_loop
+from app.runtime_config import get_case_execution_provider, get_executor_loop
 
 ExecutorLoop = str
 
-GENERIC_PROVIDER_SKIP = {"claude-cli", "codex-cli", "minimax"}
+GENERIC_PROVIDER_SKIP = {"claude-cli"}
 
 
 @dataclass(frozen=True)
@@ -44,10 +45,8 @@ class ExecutorStatus:
 def generic_openai_providers() -> list[str]:
     """Available LLM gateway providers suitable for the generic loop.
 
-    The first implementation is a JSON-action loop, so it does not require
-    native function-calling yet. We still exclude local subscription CLIs and
-    the native MiniMax client because this strategy is meant to be portable via
-    OpenAI-compatible provider/gateway config.
+    Claude CLI is excluded because selecting it means using Claude's own
+    browser loop. Codex CLI can drive Michelle's JSON-action loop.
     """
 
     gw = get_gateway()
@@ -70,11 +69,57 @@ def npx_available() -> bool:
 
 
 async def resolve_executor_status(session: AsyncSession | None = None) -> ExecutorStatus:
+    execution_provider = await get_case_execution_provider(session)
     configured = await get_executor_loop(session)
     providers = generic_openai_providers()
     generic_available = bool(providers)
     claude_available = claude_cli_available()
     has_npx = npx_available()
+
+    if execution_provider == "claude-cli":
+        return _resolve_claude_cli(
+            configured="provider:claude-cli",
+            generic_available=generic_available,
+            providers=providers,
+            claude_available=claude_available,
+            has_npx=has_npx,
+            detail_ready="Claude CLI loop ready because Execute cases = claude-cli",
+        )
+
+    if execution_provider is not None:
+        resolved = "generic_openai"
+        if execution_provider not in providers:
+            return ExecutorStatus(
+                status="down",
+                configured_loop=f"provider:{execution_provider}",
+                resolved_loop=resolved,
+                detail=f"selected execution provider is not available: {execution_provider}",
+                generic_available=False,
+                generic_providers=providers,
+                claude_cli_available=claude_available,
+                npx_available=has_npx,
+            )
+        if not has_npx:
+            return ExecutorStatus(
+                status="down",
+                configured_loop=f"provider:{execution_provider}",
+                resolved_loop=resolved,
+                detail="npx not found; @playwright/mcp cannot start",
+                generic_available=True,
+                generic_providers=providers,
+                claude_cli_available=claude_available,
+                npx_available=False,
+            )
+        return ExecutorStatus(
+            status="ready",
+            configured_loop=f"provider:{execution_provider}",
+            resolved_loop=resolved,
+            detail=f"Michelle Loop ready via {execution_provider}",
+            generic_available=True,
+            generic_providers=providers,
+            claude_cli_available=claude_available,
+            npx_available=has_npx,
+        )
 
     if configured == "generic_openai":
         resolved = "generic_openai"
@@ -112,38 +157,13 @@ async def resolve_executor_status(session: AsyncSession | None = None) -> Execut
         )
 
     if configured == "claude_cli":
-        resolved = "claude_cli"
-        if not claude_available:
-            return ExecutorStatus(
-                status="down",
-                configured_loop=configured,
-                resolved_loop=resolved,
-                detail=f"claude CLI not found: {settings.claude_cli_path or 'claude'}",
-                generic_available=generic_available,
-                generic_providers=providers,
-                claude_cli_available=False,
-                npx_available=has_npx,
-            )
-        if not has_npx:
-            return ExecutorStatus(
-                status="down",
-                configured_loop=configured,
-                resolved_loop=resolved,
-                detail="npx not found; @playwright/mcp cannot start",
-                generic_available=generic_available,
-                generic_providers=providers,
-                claude_cli_available=True,
-                npx_available=False,
-            )
-        return ExecutorStatus(
-            status="ready",
-            configured_loop=configured,
-            resolved_loop=resolved,
-            detail="Claude CLI loop ready (legacy compatibility mode)",
+        return _resolve_claude_cli(
+            configured=configured,
             generic_available=generic_available,
-            generic_providers=providers,
-            claude_cli_available=True,
-            npx_available=has_npx,
+            providers=providers,
+            claude_available=claude_available,
+            has_npx=has_npx,
+            detail_ready="Claude CLI loop ready (legacy compatibility mode)",
         )
 
     # Auto: prefer generic when configured. If generic is configured but a
@@ -206,5 +226,49 @@ async def resolve_executor_status(session: AsyncSession | None = None) -> Execut
         generic_available=False,
         generic_providers=providers,
         claude_cli_available=False,
+        npx_available=has_npx,
+    )
+
+
+def _resolve_claude_cli(
+    *,
+    configured: str,
+    generic_available: bool,
+    providers: list[str],
+    claude_available: bool,
+    has_npx: bool,
+    detail_ready: str,
+) -> ExecutorStatus:
+    resolved = "claude_cli"
+    if not claude_available:
+        return ExecutorStatus(
+            status="down",
+            configured_loop=configured,
+            resolved_loop=resolved,
+            detail=f"claude CLI not found: {settings.claude_cli_path or 'claude'}",
+            generic_available=generic_available,
+            generic_providers=providers,
+            claude_cli_available=False,
+            npx_available=has_npx,
+        )
+    if not has_npx:
+        return ExecutorStatus(
+            status="down",
+            configured_loop=configured,
+            resolved_loop=resolved,
+            detail="npx not found; @playwright/mcp cannot start",
+            generic_available=generic_available,
+            generic_providers=providers,
+            claude_cli_available=True,
+            npx_available=False,
+        )
+    return ExecutorStatus(
+        status="ready",
+        configured_loop=configured,
+        resolved_loop=resolved,
+        detail=detail_ready,
+        generic_available=generic_available,
+        generic_providers=providers,
+        claude_cli_available=True,
         npx_available=has_npx,
     )

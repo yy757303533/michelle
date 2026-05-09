@@ -9,6 +9,7 @@ import {
 } from "../components/LLMRunnerStatusLight";
 import { fmtDateTime, fmtMs } from "../lib/datetime";
 import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
+import { apiFetch } from "../lib/adminAuth";
 
 const RERUNNABLE = new Set(["failed", "aborted", "flaky"]);
 
@@ -59,7 +60,7 @@ function RunsListPage() {
     queryKey: ["runs", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
-      const r = await fetch(`/api/runs/?limit=200&project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/runs/?limit=200&project_id=${encodeURIComponent(projectId)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -77,7 +78,7 @@ function RunsListPage() {
       // Dedupe — a case might have failed multiple times; rerunning it
       // should fire ONE new run, not N.
       const unique = [...new Set(caseIds)];
-      const r = await fetch("/api/runs/", {
+      const r = await apiFetch("/api/runs/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ case_ids: unique, env: "default" }),
@@ -181,6 +182,14 @@ function RunsListPage() {
         </p>
         <div className="mt-2 flex items-center gap-2">
           <LLMRunnerStatusLight data={llmRunner.data} loading={llmRunner.isLoading} />
+          <a
+            href={`/api/projects/${encodeURIComponent(projectId)}/report.html`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-700 hover:border-slate-400"
+          >
+            project aggregate report ↗
+          </a>
           {runnerBlocked && (
             <span className="text-xs text-amber-700">
               Rerun is disabled until the selected execution loop is ready.

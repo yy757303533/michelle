@@ -15,7 +15,7 @@ Three layers:
                     │   async def chat(prompt, **) -> LLMResult
                     ▼
   ┌────────────────────────────────────────────────────┐
-  │ ClaudeCLIClient | MiniMaxClient | FlywheelClient   │
+  │ ClaudeCLIClient | CodexCLIClient                   │
   └────────────────────────────────────────────────────┘
 """
 
@@ -34,10 +34,10 @@ class LLMResult(BaseModel):
     """Final assistant text. Empty string if model returned no content."""
 
     model: str = ""
-    """Model identifier as reported by the provider (e.g. 'claude-opus-4-7', 'MiniMax-Text-01')."""
+    """Model identifier as reported by the provider."""
 
     provider: str = ""
-    """Logical provider name (e.g. 'claude-cli', 'minimax', 'flywheel')."""
+    """Logical provider name (e.g. 'claude-cli', 'codex-cli')."""
 
     input_tokens: int = 0
     output_tokens: int = 0

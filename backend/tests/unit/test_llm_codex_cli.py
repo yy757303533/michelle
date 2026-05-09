@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,6 +38,51 @@ async def test_codex_happy_path_returns_stdout():
         r = await c.chat("hi", prompt_version="probe_v1")
     assert r.text == "ok answer"
     assert r.provider == "codex-cli"
+
+
+@pytest.mark.asyncio
+async def test_codex_exec_uses_noninteractive_fast_path():
+    with patch("app.llm.codex_cli.shutil.which", return_value="/usr/bin/codex"):
+        c = CodexCLIClient()
+    proc = _mk_proc(stdout=b"ok\n")
+    create = AsyncMock(return_value=proc)
+
+    with patch("app.llm.codex_cli.asyncio.create_subprocess_exec", create):
+        await c.chat("hi", prompt_version="probe_v1")
+
+    args = create.call_args.args
+    kwargs = create.call_args.kwargs
+    assert args[:2] == ("codex", "exec")
+    assert "--ephemeral" in args
+    assert "--ignore-rules" in args
+    assert "--skip-git-repo-check" in args
+    assert "--output-last-message" in args
+    assert kwargs["stdin"] == asyncio.subprocess.DEVNULL
+    assert kwargs["cwd"] == "/private/tmp"
+
+
+@pytest.mark.asyncio
+async def test_codex_prefers_output_last_message_file(tmp_path):
+    with patch("app.llm.codex_cli.shutil.which", return_value="/usr/bin/codex"):
+        c = CodexCLIClient()
+    proc = _mk_proc(stdout=b"session header\nfinal answer\n")
+
+    async def _spawn(*args, **kwargs):
+        out_path = args[args.index("--output-last-message") + 1]
+        tmp_path.joinpath("seen").write_text(out_path)
+        return proc
+
+    async def _communicate():
+        out_path = tmp_path.joinpath("seen").read_text()
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("final answer\n")
+        return b"session header\nfinal answer\n", b""
+
+    proc.communicate = AsyncMock(side_effect=_communicate)
+    with patch("app.llm.codex_cli.asyncio.create_subprocess_exec", AsyncMock(side_effect=_spawn)):
+        r = await c.chat("hi", prompt_version="probe_v1")
+
+    assert r.text == "final answer"
 
 
 @pytest.mark.asyncio

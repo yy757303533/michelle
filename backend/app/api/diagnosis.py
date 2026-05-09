@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
+from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
 from app.models import Diagnosis, Pattern, Run
 from app.services.diagnoser import (
@@ -28,11 +30,20 @@ class GenerateRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     feedback: Literal["confirmed", "wrong", "partially_correct"]
+    reason: Literal[
+        "",
+        "category_wrong",
+        "evidence_insufficient",
+        "fix_not_actionable",
+        "model_hallucinated",
+        "other",
+    ] = ""
     note: str = ""
 
 
 @router.get("/")
 async def list_diagnoses(
+    request: Request,
     run_id: str | None = None,
     case_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
@@ -44,7 +55,41 @@ async def list_diagnoses(
     if case_id:
         stmt = stmt.where(Diagnosis.case_id == case_id)
     rows = (await session.execute(stmt)).scalars().all()
+    if rows:
+        allowed = await accessible_project_ids(getattr(request.state, "user", None), session)
+        if allowed is not None:
+            run_ids = [r.run_id for r in rows]
+            runs = (
+                (await session.execute(select(Run).where(Run.run_id.in_(run_ids)))).scalars().all()
+            )
+            allowed_runs = {r.run_id for r in runs if r.project_id in allowed}
+            rows = [r for r in rows if r.run_id in allowed_runs]
     return {"data": [r.model_dump() for r in rows]}
+
+
+@router.get("/export")
+async def export_diagnoses(
+    request: Request,
+    run_id: str | None = None,
+    case_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    stmt = select(Diagnosis).order_by(desc(Diagnosis.created_at))
+    if run_id:
+        stmt = stmt.where(Diagnosis.run_id == run_id)
+    if case_id:
+        stmt = stmt.where(Diagnosis.case_id == case_id)
+    rows = (await session.execute(stmt)).scalars().all()
+    if rows:
+        allowed = await accessible_project_ids(getattr(request.state, "user", None), session)
+        if allowed is not None:
+            run_ids = [r.run_id for r in rows]
+            runs = (
+                (await session.execute(select(Run).where(Run.run_id.in_(run_ids)))).scalars().all()
+            )
+            allowed_runs = {r.run_id for r in runs if r.project_id in allowed}
+            rows = [r for r in rows if r.run_id in allowed_runs]
+    return JSONResponse({"data": [r.model_dump() for r in rows]})
 
 
 @router.get("/patterns/")
@@ -61,8 +106,18 @@ async def list_patterns(
 
 
 @router.get("/by-run/{run_id}")
-async def get_diagnoses_by_run(run_id: str, session: AsyncSession = Depends(get_session)) -> dict:
+async def get_diagnoses_by_run(
+    run_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """All diagnoses + matching sediment patterns for one run."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_project_role(
+        getattr(request.state, "user", None), run.project_id, "viewer", session
+    )
     diags = (
         (
             await session.execute(
@@ -96,12 +151,16 @@ async def get_diagnoses_by_run(run_id: str, session: AsyncSession = Depends(get_
 @router.post("/by-run/{run_id}/generate")
 async def trigger_diagnosis_for_run(
     run_id: str,
-    body: GenerateRequest,
+    request: Request,
+    body: GenerateRequest = Body(default_factory=GenerateRequest),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     run = await session.get(Run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
+    await require_project_role(
+        getattr(request.state, "user", None), run.project_id, "reviewer", session
+    )
     try:
         diag = await diagnose_run(
             run_id=run_id,
@@ -115,10 +174,19 @@ async def trigger_diagnosis_for_run(
 
 
 @router.get("/{diag_id}")
-async def get_diagnosis(diag_id: str, session: AsyncSession = Depends(get_session)) -> dict:
+async def get_diagnosis(
+    diag_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     row = await session.get(Diagnosis, diag_id)
     if row is None:
         raise HTTPException(status_code=404, detail="diagnosis not found")
+    run = await session.get(Run, row.run_id)
+    if run is not None:
+        await require_project_role(
+            getattr(request.state, "user", None), run.project_id, "viewer", session
+        )
     return {"data": row.model_dump()}
 
 
@@ -126,15 +194,38 @@ async def get_diagnosis(diag_id: str, session: AsyncSession = Depends(get_sessio
 async def submit_feedback(
     diag_id: str,
     body: FeedbackRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     try:
+        row = await session.get(Diagnosis, diag_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="diagnosis not found")
+        run = await session.get(Run, row.run_id)
+        if run is not None:
+            await require_project_role(
+                getattr(request.state, "user", None), run.project_id, "reviewer", session
+            )
         diag = await record_feedback(
             diag_id=diag_id,
             feedback=body.feedback,
+            reason=body.reason,
             note=body.note,
             session=session,
         )
     except DiagnoserError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"data": diag.model_dump()}
+    data = diag.model_dump()
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="diagnosis.feedback",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="diagnosis",
+        target_id=diag_id,
+        detail=f"feedback={body.feedback}; reason={body.reason or ''}",
+        session=session,
+    )
+    await session.commit()
+    return {"data": data}

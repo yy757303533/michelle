@@ -33,9 +33,7 @@ RESULT_LINE_RE = re.compile(r"^\s*RESULT\s*=\s*(\{.*\})\s*$", re.MULTILINE)
 _PAGE_URL_RE = re.compile(r"^- Page URL:\s*(.+)$", re.MULTILINE)
 _PAGE_TITLE_RE = re.compile(r"^- Page Title:\s*(.+)$", re.MULTILINE)
 _CONSOLE_SUMMARY_RE = re.compile(r"^- Console:\s*(\d+)\s+errors,\s*(\d+)\s+warnings", re.MULTILINE)
-_SCREENSHOT_FILE_RE = re.compile(
-    r"\[Screenshot of viewport\]\((.+?)\)|filename['\"]:\s*['\"]([^'\"]+)['\"]"
-)
+_SCREENSHOT_FILE_RE = re.compile(r"\[Screenshot of viewport\]\((.+?)\)")
 
 
 @dataclass
@@ -146,8 +144,25 @@ def _parse_tool_result_text(text: str) -> dict[str, Any]:
         fields["console_errors"] = int(m.group(1))
         fields["console_warnings"] = int(m.group(2))
     if m := _SCREENSHOT_FILE_RE.search(text):
-        fields["screenshot_path"] = m.group(1) or m.group(2)
+        path = _clean_screenshot_path(m.group(1))
+        if path:
+            fields["screenshot_path"] = path
     return fields
+
+
+def _clean_screenshot_path(path: str) -> str | None:
+    path = (path or "").strip()
+    if not path:
+        return None
+    lower = path.lower()
+    if "/.npm-cache/" in lower or "/node_modules/" in lower or lower.endswith("/appicon.png"):
+        return None
+    if lower.startswith(("http://", "https://", "data:")):
+        return None
+    suffix = Path(path).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        return None
+    return path
 
 
 def _flatten_tool_result_content(content: Any) -> str:

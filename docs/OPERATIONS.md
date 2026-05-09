@@ -33,18 +33,17 @@ make setup        # backend uv sync + frontend pnpm install + 校验 CLI
 cp .env.example .env
 ```
 
-`.env` 默认空也能跑（claude CLI 是兜底）。要启用其他通道按下面表格填：
+`.env` 默认空也能跑（claude CLI 是兜底）。当前产品只支持
+`claude-cli` 和 `codex-cli`，要启用 Codex 按下面表格填：
 
 | 变量 | 作用 | 拿到方式 |
 |---|---|---|
-| `FLYWHEEL_TOKEN` | Flywheel 代理（Opus 4.7 / GPT-5.5 等高端模型，含视觉） | 站点签发 |
-| `MINIMAX_API_KEY` | MiniMax-Text-01 / M2.7（原生多模态，便宜） | platform.minimax.io |
-| `KIMI_API_KEY` / `QWEN_API_KEY` / `GLM_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` | OpenAI 兼容备选 | 各家官网 |
-| `RELAY_*` | 任意 OpenAI 兼容中转站（OneAPI / NewAPI / OpenRouter） | 自己搭或第三方 |
+| `CLAUDE_CLI_PATH` | Claude CLI 路径 | 默认 `claude` |
+| `CODEX_ENABLED` / `CODEX_CLI_PATH` | 启用 Codex CLI provider | `codex` 已安装且登录 |
 | `LOGFIRE_TOKEN` | 把日志送到 Logfire 看 trace 视图 | logfire.pydantic.dev |
 | `DEFAULT_TARGET_URL` / `_USERNAME` / `_PASSWORD` | Day 2 smoke 默认目标，也是 demo 用的 the demo target | 自填 |
 
-**所有未配置的通道会自动跳过，不影响别的通道工作。**
+**未启用 Codex 时，平台只会使用 Claude CLI。**
 
 ### 启动
 
@@ -186,7 +185,7 @@ curl http://localhost:8000/api/llm/health
 
 # 1-token "ok" 探活某通道
 curl -X POST http://localhost:8000/api/llm/probe \
-  -H 'Content-Type: application/json' -d '{"prefer":"flywheel"}'
+  -H 'Content-Type: application/json' -d '{"prefer":"codex-cli"}'
 ```
 
 ### 3.2 Claude Code Skills（终端最快）
@@ -260,11 +259,17 @@ cd backend && uv run alembic upgrade head        # 重建表
 
 要关掉自动诊断，改 `backend/app/agent/hooks.py` 的 `install_default_hooks`，注释掉 `register("run.failed", _on_run_failed_auto_diagnose)` 即可。
 
-### 切换主 LLM 通道
+### 切换 LLM 路由
 
-`.env` 里把要用的通道 key 填上即可。优先级是固定的（claude > codex > flywheel > deepseek > qwen > glm > kimi > gemini > minimax > relay），但每次 `gateway.chat` 可以传 `prefer="..."` / `skip=[...]` 临时改。Web UI 的 `Probe` 面板下拉可以选任意通道做活性测试。
+Dashboard → Platform settings → model_routing 里配置三件事：
 
-诊断默认会优先选有视觉能力的通道（flywheel → minimax → kimi → gemini → qwen → glm），claude-cli 和 codex-cli 因为 `-p` 模式不能传 image，会被 `skip_for_image` 自动剔除。
+- Generate cases
+- Execute cases
+- Diagnose failures
+
+可选 provider 只有 `auto` / `claude-cli` / `codex-cli`。其中
+Execute cases 选 `claude-cli` 会走 Claude CLI Loop；选 `codex-cli`
+会走 Michelle Loop，由 Codex 输出 JSON action，Michelle 调 Playwright MCP。
 
 ### 重新生成已 approved 章节的用例
 
@@ -305,11 +310,9 @@ http://localhost:8000/api/projects/<project_id>/report.html
 | Run 长时间 pending 不动 | 多半是 `claude -p` 鉴权挂了。开终端跑 `claude -p "ok" --output-format json` 单独验证 |
 | Run 跑完但 status=`aborted` `no playwright tool calls observed` | claude 没成功调用 MCP 工具——通常是 prompt 问题或 MCP 没起来。看 `artifacts/.../claude.stream.jsonl` 第一行能不能看到 `mcpServers ready` |
 | Run 跑完但截图全是空白 | Chromium headless 模式 + 网站异常。把 `RunRequest.headless` 改成 `False` 看真实窗口 |
-| 诊断按钮点了没反应 / 一直 loading | 看后端日志 `diagnoser.llm_failed*`。多半是所有视觉通道都没配 key。先 `curl /api/llm/probe -d '{"prefer":"minimax"}'` 探活 |
+| 诊断按钮点了没反应 / 一直 loading | 看后端日志 `diagnoser.llm_failed*`。先在 Dashboard Probe 里测 `claude-cli` / `codex-cli` |
 | 上传同一份 PRD 不停涨 version | 这是当前默认行为（每次都新版本）；要去重需要在 `api/prd.py:upload_prd` 加 content_hash 比对，自己改一下 |
 | `data/michelle.db is locked` | SQLite 同时被多个进程写。退出所有 `uvicorn` / `pytest`，再起 |
-| 视觉诊断说 `Flywheel quota exceeded` | 自动 fallback 到下一家。要换到 minimax 优先：`prefer="minimax"` |
-| `tests/integration/test_minimax_real.py` 跳过了 | 需要 `MINIMAX_REAL_TEST=1 MINIMAX_API_KEY=... pytest tests/integration` |
 
 ---
 
@@ -357,11 +360,9 @@ cd frontend && pnpm update               # JS deps
 
 ### 新增 LLM 通道
 
-1. 实现 `app/llm/base.py:BaseChatClient`（看现有 `flywheel.py` 是参考）
-2. 在 `app/llm/gateway.py` 注册（指定 priority）
-3. `Settings` 里加配置项（`config.py`）
-4. `tests/unit/test_llm_<name>.py` 加 mock httpx 测试
-5. 可选：`tests/integration/test_<name>_real.py` 用 env 门控
+当前内部试点只保留 `claude-cli` 和 `codex-cli`。后续确实需要第三方
+provider 时，再实现 `app/llm/base.py:BaseChatClient`，注册到
+`app/llm/gateway.py`，补配置项和单测。
 
 ### 新增业务事件名
 

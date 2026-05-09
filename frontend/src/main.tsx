@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import "./index.css";
 import { routeTree } from "./routeTree.gen";
+import { installAdminFetchHeader } from "./lib/adminAuth";
+
+installAdminFetchHeader();
 
 const router = createRouter({ routeTree });
 

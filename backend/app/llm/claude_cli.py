@@ -88,7 +88,7 @@ class ClaudeCLIClient(BaseChatClient):
             # `claude -p` does not reliably support image attachments — the
             # `--file image1:<path>` flag requires `CLAUDE_CODE_SESSION_ACCESS_TOKEN`
             # and a runtime that's not the subscription CLI. The diagnoser
-            # routes vision calls through Flywheel/MiniMax for this reason.
+            # retries vision diagnosis as text-only for this reason.
             raise LLMResponseFormatError(
                 "claude CLI does not support image input in -p mode; "
                 "route this call to a vision-capable provider",

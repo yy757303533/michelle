@@ -29,6 +29,7 @@ async def memory_db(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "artifacts_root", lambda: tmp_path)
 
     yield maker, tmp_path
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -98,6 +99,9 @@ async def test_list_artifacts_finds_files(memory_db, app_client):
     images = [f for f in r.json()["data"] if f["is_image"]]
     assert len(images) == 1
     assert images[0]["name"] == "step-1.png"
+    assert images[0]["kind"] == "screenshot"
+    trace = next(f for f in r.json()["data"] if f["name"] == "trace.jsonl")
+    assert trace["kind"] == "trace"
 
 
 @pytest.mark.asyncio
@@ -207,3 +211,30 @@ async def test_jsonl_content_type(memory_db, app_client):
     r = await app_client.get("/api/runs/r6/artifacts/trace.jsonl")
     assert r.status_code == 200
     assert "ndjson" in r.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_html_artifact_is_download_not_inline(memory_db, app_client):
+    maker, root = memory_db
+    async with maker() as s:
+        s.add(
+            Run(
+                run_id="r7",
+                trace_id="t",
+                project_id="demo",
+                case_id="c",
+                case_version=1,
+                env="x",
+                status="passed",
+            )
+        )
+        await s.commit()
+    rd = root / "demo" / "r7"
+    rd.mkdir(parents=True, exist_ok=True)
+    (rd / "debug.html").write_text("<script>window.x=1</script>", encoding="utf-8")
+
+    r = await app_client.get("/api/runs/r7/artifacts/debug.html")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert "attachment" in r.headers.get("content-disposition", "").lower()

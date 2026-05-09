@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlmodel import SQLModel
 
+import app.db as db_mod
 from app.llm.gateway import GatewayClient, LLMGateway
+from app.models import LLMCall
 from tests.unit.test_llm_gateway import FakeClient
 
 
@@ -55,6 +58,46 @@ async def test_llm_probe_endpoint_returns_result():
 
 
 @pytest.mark.asyncio
+async def test_llm_probe_with_prefer_only_tests_requested_provider():
+    from app.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post("/api/llm/probe", json={"prefer": "backup"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["ok"] is True
+    assert body["data"]["provider"] == "backup"
+
+
+@pytest.mark.asyncio
+async def test_llm_probe_with_unavailable_prefer_does_not_fallback():
+    from app.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post("/api/llm/probe", json={"prefer": "missing"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"]["ok"] is False
+    assert body["data"]["provider"] == "missing"
+    assert body["data"]["error_type"] == "ProviderUnavailable"
+
+
+@pytest.mark.asyncio
+async def test_llm_probe_all_checks_each_available_provider():
+    from app.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post("/api/llm/probe_all", json={})
+    assert r.status_code == 200
+    body = r.json()["data"]
+    assert [row["provider"] for row in body] == ["primary", "backup"]
+    assert all(row["ok"] for row in body)
+
+
+@pytest.mark.asyncio
 async def test_llm_runner_status_reports_auto_generic(monkeypatch):
     import app.api.llm as llm_api
     from app.agent.executor import ExecutorStatus
@@ -67,9 +110,9 @@ async def test_llm_runner_status_reports_auto_generic(monkeypatch):
             status="ready",
             configured_loop="auto",
             resolved_loop="generic_openai",
-            detail="auto selected generic loop via qwen",
+            detail="auto selected generic loop via codex-cli",
             generic_available=True,
-            generic_providers=["qwen"],
+            generic_providers=["codex-cli"],
             claude_cli_available=True,
             npx_available=True,
         )
@@ -122,3 +165,34 @@ async def test_llm_runner_status_reports_missing_executor(monkeypatch):
     body = r.json()["data"]
     assert body["status"] == "down"
     assert body["mode"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_clear_llm_metrics_deletes_history():
+    from app.main import app
+
+    async with db_mod.engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    async with db_mod.async_session_maker() as session:
+        session.add(
+            LLMCall(
+                provider="codex-cli",
+                model="m",
+                prompt_version="p",
+                ok=False,
+                error_type="QuotaExceededError",
+                error_message="insufficient balance",
+            )
+        )
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        before = await ac.get("/api/llm/metrics")
+        r = await ac.delete("/api/llm/metrics")
+        after = await ac.get("/api/llm/metrics")
+
+    assert before.json()["data"]["totals"]["calls"] == 1
+    assert r.status_code == 200
+    assert r.json()["data"]["deleted"] == 1
+    assert after.json()["data"]["totals"]["calls"] == 0

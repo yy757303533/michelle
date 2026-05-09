@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -52,12 +54,25 @@ def _add_service(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
 def setup_logging() -> None:
     """Configure structlog + stdlib logging. Call once at startup."""
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if settings.log_file:
+        log_path = Path(settings.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                log_path,
+                maxBytes=max(1024, settings.log_max_bytes),
+                backupCount=max(0, settings.log_backup_count),
+                encoding="utf-8",
+            )
+        )
 
-    # stdlib root logger → stderr at the chosen level
+    # stdlib root logger → stderr + optional rotating file at the chosen level
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stderr,
+        handlers=handlers,
         level=level,
+        force=True,
     )
 
     processors: list[Processor] = [
@@ -76,7 +91,7 @@ def setup_logging() -> None:
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 

@@ -48,12 +48,16 @@ class TestCase(SQLModel, table=True):
     preconditions: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     steps: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     assertions: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    quality: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
 
     # Provenance
     source: str = "ai-generated"  # ai-generated | manual | imported
     prompt_version: str | None = None
     model_version: str | None = None
     generated_from: str | None = None  # e.g. "prd:<prd_id>:chapter:<idx>"
+    generation_job_id: str | None = Field(default=None, index=True)
+    """Batch/task id that created this case. Used for atomic cancellation
+    rollback of AI-generated batches before human review takes ownership."""
 
     # Review
     review_status: str = "pending"  # pending | approved | rejected

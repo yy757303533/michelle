@@ -5,10 +5,9 @@ Michelle has two separate Claude CLI call sites:
 * `app.agent.claude_runner` — execution agent with `@playwright/mcp`
 * `app.llm.claude_cli` — simple text completion provider
 
-Both must see the same Anthropic-compatible gateway settings. In practice the
-repo `.env` should win over a developer's interactive shell exports, otherwise
-`ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` from `~/.zshrc` can silently change how
-Michelle executes cases.
+Both must see the same Anthropic-compatible gateway settings. Repo `.env`
+values win when present, but empty `.env` placeholders should not erase a
+developer's interactive shell exports from `.zshrc`.
 """
 
 from __future__ import annotations
@@ -30,9 +29,8 @@ def read_dotenv_anthropic_overrides() -> dict[str, str]:
     """Read Anthropic/Claude CLI overrides directly from Michelle's `.env`.
 
     `pydantic-settings` intentionally gives the parent process environment
-    precedence over `.env`. For subprocesses we want the opposite: Michelle's
-    local `.env` is the runtime contract for the platform, while shell exports
-    are often personal defaults for interactive Claude sessions.
+    precedence over `.env`. For subprocesses, non-empty Michelle `.env` values
+    are the runtime contract; empty placeholders mean "inherit if available."
     """
 
     candidates = [
@@ -76,12 +74,10 @@ def build_claude_subprocess_env(*, michelle_run: bool = False) -> dict[str, str]
         if v:
             env[k] = v
 
-    # Then force repo `.env` values on top of inherited shell exports. Empty
-    # values intentionally *clear* inherited ANTHROPIC_* values so a developer's
-    # interactive shell defaults cannot hijack Michelle's runtime.
+    # Then force non-empty repo `.env` values on top of inherited shell exports.
+    # Empty placeholders intentionally do nothing so `.zshrc`-configured Claude
+    # gateways remain usable in local development.
     for k, v in read_dotenv_anthropic_overrides().items():
         if v:
             env[k] = v
-        else:
-            env.pop(k, None)
     return env

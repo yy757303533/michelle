@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as RunsRouteImport } from './routes/runs'
+import { Route as QueueRouteImport } from './routes/queue'
 import { Route as PrdRouteImport } from './routes/prd'
 import { Route as CasesRouteImport } from './routes/cases'
 import { Route as IndexRouteImport } from './routes/index'
@@ -20,6 +21,11 @@ import { Route as DiagnosisIdRouteImport } from './routes/diagnosis.$id'
 const RunsRoute = RunsRouteImport.update({
   id: '/runs',
   path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QueueRoute = QueueRouteImport.update({
+  id: '/queue',
+  path: '/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrdRoute = PrdRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
   '/prd': typeof PrdRoute
+  '/queue': typeof QueueRoute
   '/runs': typeof RunsRouteWithChildren
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
   '/prd': typeof PrdRoute
+  '/queue': typeof QueueRoute
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
   '/runs': typeof RunsIndexRoute
@@ -75,6 +83,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
   '/prd': typeof PrdRoute
+  '/queue': typeof QueueRoute
   '/runs': typeof RunsRouteWithChildren
   '/diagnosis/$id': typeof DiagnosisIdRoute
   '/runs/$id': typeof RunsIdRoute
@@ -86,17 +95,26 @@ export interface FileRouteTypes {
     | '/'
     | '/cases'
     | '/prd'
+    | '/queue'
     | '/runs'
     | '/diagnosis/$id'
     | '/runs/$id'
     | '/runs/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/cases' | '/prd' | '/diagnosis/$id' | '/runs/$id' | '/runs'
+  to:
+    | '/'
+    | '/cases'
+    | '/prd'
+    | '/queue'
+    | '/diagnosis/$id'
+    | '/runs/$id'
+    | '/runs'
   id:
     | '__root__'
     | '/'
     | '/cases'
     | '/prd'
+    | '/queue'
     | '/runs'
     | '/diagnosis/$id'
     | '/runs/$id'
@@ -107,6 +125,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CasesRoute: typeof CasesRoute
   PrdRoute: typeof PrdRoute
+  QueueRoute: typeof QueueRoute
   RunsRoute: typeof RunsRouteWithChildren
   DiagnosisIdRoute: typeof DiagnosisIdRoute
 }
@@ -118,6 +137,13 @@ declare module '@tanstack/react-router' {
       path: '/runs'
       fullPath: '/runs'
       preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/queue': {
+      id: '/queue'
+      path: '/queue'
+      fullPath: '/queue'
+      preLoaderRoute: typeof QueueRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/prd': {
@@ -181,6 +207,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CasesRoute: CasesRoute,
   PrdRoute: PrdRoute,
+  QueueRoute: QueueRoute,
   RunsRoute: RunsRouteWithChildren,
   DiagnosisIdRoute: DiagnosisIdRoute,
 }
