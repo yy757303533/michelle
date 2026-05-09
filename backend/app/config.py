@@ -88,14 +88,14 @@ class Settings(BaseSettings):
 
     @property
     def artifacts_path(self) -> Path:
-        p = Path(self.artifacts_dir)
+        p = Path(self.artifacts_dir).resolve()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
     @property
     def playwright_mcp_cache_path(self) -> Path:
         p = (
-            Path(self.playwright_mcp_cache_dir)
+            Path(self.playwright_mcp_cache_dir).resolve()
             if self.playwright_mcp_cache_dir
             else (self.artifacts_path / ".npm-cache")
         )

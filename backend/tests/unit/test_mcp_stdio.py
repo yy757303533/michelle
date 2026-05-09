@@ -69,3 +69,16 @@ def test_mcp_subprocess_env_strips_proxy_and_uses_shared_cache(tmp_path, monkeyp
     assert "all_proxy" not in env
     assert env["NO_PROXY"] == "*"
     assert env["NPM_CONFIG_CACHE"] == str(tmp_path / "artifacts" / ".npm-cache")
+
+
+def test_mcp_subprocess_env_resolves_relative_cache_from_app_cwd(tmp_path, monkeypatch):
+    app_cwd = tmp_path / "backend"
+    run_cwd = app_cwd / "artifacts" / "project" / "run"
+    run_cwd.mkdir(parents=True)
+    monkeypatch.chdir(app_cwd)
+    monkeypatch.setattr("app.config.settings.artifacts_dir", "./artifacts")
+    monkeypatch.setattr("app.config.settings.playwright_mcp_cache_dir", "")
+
+    env = _mcp_subprocess_env(run_cwd)
+
+    assert env["NPM_CONFIG_CACHE"] == str(app_cwd / "artifacts" / ".npm-cache")
