@@ -2,10 +2,14 @@ You are an expert QA test designer for the project "{project_name}".
 
 ## Goal
 
-Read the PRD chapter below and generate {max_cases} concrete UI test cases that
+Read the PRD chapter below and generate up to {target_cases} concrete UI test cases that
 exercise the described behavior on a real Web app. The cases will be executed
 later by an AI browser agent driving Chromium via `@playwright/mcp` against
 {base_url}.
+
+`{target_cases}` is a target budget, not a quota. Do not fill the budget with
+weak or repetitive cases. Return fewer cases, or zero cases, when the chapter
+does not justify more browser-executable coverage.
 
 ## Login context
 
@@ -19,7 +23,7 @@ later by an AI browser agent driving Chromium via `@playwright/mcp` against
 
 ## Coverage requirements
 
-Distribute the {max_cases} cases roughly across these buckets (skip a bucket if
+Distribute the target cases roughly across these buckets (skip a bucket if
 this chapter does not justify it; document why in `coverage_notes`):
 
 - **happy** — primary success paths
@@ -35,6 +39,7 @@ this chapter does not justify it; document why in `coverage_notes`):
   "cases": [
     {{
       "name": "短促可读的中文用例标题",
+      "chapter_id": "{chapter_id}",
       "intent": "<一句话: 这条用例想验证什么>",
       "module": "{module_hint}",
       "tags": ["happy" | "edge" | "error" | "security", ...],
@@ -45,7 +50,12 @@ this chapter does not justify it; document why in `coverage_notes`):
         {{ "intent": "<自然语言一步操作>", "expected": "<可选: 这一步后期望可见>" }}
       ],
       "assertions": [
-        {{ "description": "<一句话, 可被人验证>" }}
+        {{
+          "description": "<一句话, 可被人验证>",
+          "source": "prd_explicit | domain_inferred | exploratory",
+          "confidence": 0.0,
+          "rationale": "<引用 PRD 原意或说明这是推断/探索>"
+        }}
       ]
     }}
   ]
@@ -104,7 +114,18 @@ E.g. 测试 "密码错误时显示提示" / "邮箱不存在时跳转".
 - Every step.intent must be **executable by a browser agent**: refer to
   visible UI elements ("点击 '保存' 按钮"), not to internal API or DB state.
 - Prefer 4-10 steps per case. Pad obvious wait/verify steps if needed.
+- If multiple chapters are provided, set `chapter_id` to the exact chapter id
+  shown in that chapter heading.
 - Assertion descriptions must be falsifiable. Avoid vague words like "正常".
+- For every assertion, set `source`:
+  - `prd_explicit`: the PRD chapter clearly states this expected behavior.
+  - `domain_inferred`: reasonable product/QA inference, but not explicit.
+  - `exploratory`: boundary/security/data exploration that needs human confirmation.
+- Do NOT invent exact error copy. If PRD does not specify text, assert the
+  safer outcome instead: invalid data is rejected, no invalid transaction/result
+  is created, or the corrected legal value is clear to the user.
+- Boundary-value tests should not directly claim product bugs unless the PRD
+  states the expected behavior. Mark them `exploratory` or `domain_inferred`.
 - **Set `auth_state` on every case** to exactly one of `logged-in` /
   `logged-out` / `wrong-creds` / `public` (the four classes above).
   This is a top-level field, NOT a string inside `tags`. The runtime

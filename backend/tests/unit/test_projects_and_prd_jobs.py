@@ -16,6 +16,10 @@ import app.db as db_mod
 from app.models import PRD, PRDGenerationJob, Project, TestCase
 
 
+async def _noop_async(*_args, **_kwargs):
+    return None
+
+
 @pytest.fixture
 async def memory_db(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -267,7 +271,7 @@ async def test_run_job_walks_chapters_and_marks_done(memory_db, monkeypatch):
                         "level": 2,
                         "title": f"C{i}",
                         "normalized_title": f"c{i}",
-                        "body": "x",
+                        "body": f"User can view C{i} page.",
                         "hash": f"h{i}",
                         "position": i,
                     }
@@ -314,7 +318,23 @@ async def test_run_job_walks_chapters_and_marks_done(memory_db, monkeypatch):
         await session.commit()
         return saved, _StubBatch()
 
+    async def _stub_batch(*, session, chapters, project_id, **kw):
+        out = []
+        for chapter in chapters:
+            saved, batch = await _stub(
+                session=session,
+                chapter=chapter,
+                project_id=project_id,
+                **kw,
+            )
+            out.append((chapter, saved, batch))
+        return out
+
     monkeypatch.setattr(worker, "generate_cases_for_chapter", _stub)
+    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(
+        worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
+    )
 
     await worker.run_job(job_id)
 
@@ -325,6 +345,204 @@ async def test_run_job_walks_chapters_and_marks_done(memory_db, monkeypatch):
         assert job.completed_chapters == 2
         assert job.saved_cases == 4  # 2 chapters × 2 cases each
         assert len(job.results) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_job_batches_adjacent_actionable_chapters(memory_db, monkeypatch):
+    from app.models import Project as ProjModel
+    from app.services import prd_generation_worker as worker
+
+    async with memory_db() as s:
+        s.add(ProjModel(project_id="demo", name="demo", base_url="http://x"))
+        s.add(
+            PRD(
+                prd_id="p1",
+                project_id="demo",
+                name="P",
+                raw_markdown="",
+                content_hash="h",
+                chapters=[
+                    {
+                        "level": 2,
+                        "title": f"C{i}",
+                        "normalized_title": f"c{i}",
+                        "body": f"User can view C{i} page.",
+                        "hash": f"h{i}",
+                        "position": i,
+                    }
+                    for i in range(4)
+                ],
+                version=1,
+            )
+        )
+        await s.commit()
+
+    job_id = await worker.create_job(
+        prd_id="p1",
+        project_id="demo",
+        request_payload={"chapter_indices": [0, 1, 2, 3], "max_cases_per_chapter": 8},
+        total_chapters=4,
+    )
+
+    calls: list[list[str]] = []
+
+    class _StubBatch:
+        def __init__(self, notes: str):
+            self.coverage_notes = notes
+
+    async def _stub_batch(*, session, chapters, project_id, generation_job_id=None, **_kw):
+        from app.models import TestCase
+
+        calls.append([c.normalized_title for c in chapters])
+        out = []
+        for chapter in chapters:
+            tc = TestCase(
+                case_id=f"TC-{chapter.normalized_title}",
+                project_id=project_id,
+                name=f"case {chapter.normalized_title}",
+                intent="x",
+                generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
+                generation_job_id=generation_job_id,
+                tags=[],
+                preconditions=[],
+                steps=[{"intent": "open page"}],
+                assertions=[],
+                manual_edited_fields=[],
+                review_status="pending",
+            )
+            session.add(tc)
+            out.append((chapter, [tc], _StubBatch(f"notes {chapter.normalized_title}")))
+        await session.commit()
+        return out
+
+    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(
+        worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
+    )
+
+    await worker.run_job(job_id)
+
+    assert calls == [["c0", "c1", "c2", "c3"]]
+    async with memory_db() as s:
+        job = await s.get(PRDGenerationJob, job_id)
+        assert job is not None
+        assert job.status == "done"
+        assert job.completed_chapters == 4
+        assert job.saved_cases == 4
+
+
+@pytest.mark.asyncio
+async def test_run_job_skips_metadata_chapter_without_llm(memory_db, monkeypatch):
+    from app.models import Project as ProjModel
+    from app.services import prd_generation_worker as worker
+
+    async with memory_db() as s:
+        s.add(ProjModel(project_id="demo", name="demo", base_url="http://x"))
+        s.add(
+            PRD(
+                prd_id="p1",
+                project_id="demo",
+                name="P",
+                raw_markdown="",
+                content_hash="h",
+                chapters=[
+                    {
+                        "level": 2,
+                        "title": "Document Information",
+                        "normalized_title": "document information",
+                        "body": "- Version: V1.0.0\n- Status: Production\n- Created Date: 2024",
+                        "hash": "h0",
+                        "position": 0,
+                    }
+                ],
+                version=1,
+            )
+        )
+        await s.commit()
+
+    job_id = await worker.create_job(
+        prd_id="p1",
+        project_id="demo",
+        request_payload={"chapter_indices": [0], "max_cases_per_chapter": 3},
+        total_chapters=1,
+    )
+
+    async def _explode(**_kw):
+        raise AssertionError("metadata chapters should not call the LLM")
+
+    monkeypatch.setattr(worker, "generate_cases_for_chapter", _explode)
+
+    await worker.run_job(job_id)
+
+    async with memory_db() as s:
+        job = await s.get(PRDGenerationJob, job_id)
+        assert job is not None
+        assert job.status == "done"
+        assert job.completed_chapters == 1
+        assert job.saved_cases == 0
+        assert job.results[0]["skipped"] is True
+        assert job.results[0]["skip_action"] == "non_actionable"
+
+
+@pytest.mark.asyncio
+async def test_run_job_fails_fast_when_llm_provider_unavailable(memory_db, monkeypatch):
+    from app.llm.base import LLMAuthError
+    from app.models import Project as ProjModel
+    from app.services import prd_generation_worker as worker
+
+    async with memory_db() as s:
+        s.add(ProjModel(project_id="demo", name="demo", base_url="http://x"))
+        s.add(
+            PRD(
+                prd_id="p1",
+                project_id="demo",
+                name="P",
+                raw_markdown="",
+                content_hash="h",
+                chapters=[
+                    {
+                        "level": 2,
+                        "title": "Login",
+                        "normalized_title": "login",
+                        "body": "User can enter email and password to log in.",
+                        "hash": "h0",
+                        "position": 0,
+                    }
+                ],
+                version=1,
+            )
+        )
+        await s.commit()
+
+    job_id = await worker.create_job(
+        prd_id="p1",
+        project_id="demo",
+        request_payload={
+            "chapter_indices": [0],
+            "prefer_provider": "codex-cli",
+            "preflight_timeout_seconds": 55,
+        },
+        total_chapters=1,
+    )
+
+    async def _preflight(_prefer, timeout_seconds=20):
+        assert timeout_seconds == 55
+        raise LLMAuthError("Not logged in", provider="claude-cli")
+
+    async def _explode(**_kw):
+        raise AssertionError("generation should not start after failed preflight")
+
+    monkeypatch.setattr(worker, "_preflight_llm_provider", _preflight)
+    monkeypatch.setattr(worker, "generate_cases_for_chapter", _explode)
+
+    await worker.run_job(job_id)
+
+    async with memory_db() as s:
+        job = await s.get(PRDGenerationJob, job_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.completed_chapters == 0
+        assert "LLM provider unavailable" in (job.error or "")
 
 
 @pytest.mark.asyncio
@@ -345,6 +563,66 @@ async def test_run_job_marks_failed_on_missing_prd(memory_db):
         assert job.status == "failed"
         assert job.error is not None
         assert "missing" in (job.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_rolls_back_pending_generated_cases(memory_db):
+    from app.services import prd_generation_worker as worker
+
+    async with memory_db() as s:
+        s.add(Project(project_id="demo", name="demo"))
+        s.add(
+            PRDGenerationJob(
+                job_id="gen_cancel",
+                prd_id="p1",
+                project_id="demo",
+                status="running",
+                total_chapters=2,
+                completed_chapters=1,
+            )
+        )
+        s.add(
+            TestCase(
+                case_id="TC-JOB-1",
+                project_id="demo",
+                name="x",
+                intent="x",
+                source="ai-generated",
+                review_status="pending",
+                generation_job_id="gen_cancel",
+            )
+        )
+        s.add(
+            TestCase(
+                case_id="TC-JOB-2",
+                project_id="demo",
+                name="x",
+                intent="x",
+                source="ai-generated",
+                review_status="approved",
+                generation_job_id="gen_cancel",
+            )
+        )
+        s.add(
+            TestCase(
+                case_id="TC-OTHER",
+                project_id="demo",
+                name="x",
+                intent="x",
+                source="ai-generated",
+                review_status="pending",
+                generation_job_id="gen_other",
+            )
+        )
+        await s.commit()
+
+        deleted = await worker.rollback_generated_cases(s, "gen_cancel")
+        assert deleted == 1
+
+        remaining = (
+            (await s.execute(select(TestCase.case_id).order_by(TestCase.case_id))).scalars().all()
+        )
+        assert remaining == ["TC-JOB-2", "TC-OTHER"]
 
 
 # ── TZDateTime tz-awareness round-trip ─────────────────────────────────────

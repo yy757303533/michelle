@@ -20,6 +20,7 @@ def test_render_substitutes_placeholders():
         "v1",
         project_name="Demo",
         max_cases=5,
+        target_cases=3,
         base_url="http://example.com",
         login_context="(no creds)",
         chapter_id="ch1",
@@ -27,7 +28,8 @@ def test_render_substitutes_placeholders():
         module_hint="login",
     )
     assert "Demo" in rendered
-    assert "5 concrete UI test cases" in rendered
+    assert "up to 3 concrete UI test cases" in rendered
+    assert "not a quota" in rendered
     assert "ch1" in rendered
     assert "some PRD content" in rendered
 
