@@ -32,10 +32,14 @@ from app.obs import EVENTS, get_logger
 from app.runtime_config import get_case_execution_provider
 
 _log = get_logger(__name__)
+_DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+_MAX_TOOL_RESULT_TEXT_CHARS = 12_000
 
 
 class GenericRunnerError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, partial: ParsedRun | None = None):
+        super().__init__(message)
+        self.partial = partial
 
 
 async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
@@ -64,6 +68,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
     total_input = 0
     total_output = 0
     t0 = time.monotonic()
+    runtime_event_index = 0
 
     try:
         async with build_playwright_stdio_client(
@@ -75,11 +80,28 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             tools = [tool for tool in await mcp.list_tools() if tool.name != "browser_install"]
             transcript = _initial_transcript(req.prompt, tools)
             max_turns = max(1, settings.generic_agent_max_turns)
-            prefer_provider = await get_case_execution_provider()
             last_action_key: tuple[str, str] | None = None
             repeated_action_count = 0
 
             for turn in range(max_turns):
+                remaining = _remaining_seconds(t0, req.timeout_seconds)
+                if remaining <= 0:
+                    raise _generic_error(
+                        f"generic loop exceeded total timeout of {req.timeout_seconds}s",
+                        steps=steps,
+                        final_text=final_text,
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                        input_tokens=total_input,
+                        output_tokens=total_output,
+                    )
+                runtime_event_index = await _emit_runtime_event(
+                    req,
+                    runtime_event_index,
+                    "model_turn",
+                    {"turn": turn},
+                    "requesting next browser action",
+                )
+                prefer_provider = await get_case_execution_provider()
                 model_prompt = _render_turn_prompt(req.prompt, tools, transcript)
                 result = await get_gateway().chat(
                     model_prompt,
@@ -88,7 +110,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     skip=["claude-cli"],
                     json_mode=True,
                     temperature=0,
-                    timeout_seconds=min(req.timeout_seconds, 120),
+                    timeout_seconds=max(0.1, min(remaining, 120)),
                 )
                 total_input += result.input_tokens
                 total_output += result.output_tokens
@@ -111,6 +133,13 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                             "one Playwright tool and include assertion_results with concrete "
                             "evidence from observed page/tool output."
                         )
+                        runtime_event_index = await _emit_runtime_event(
+                            req,
+                            runtime_event_index,
+                            "rejected_final",
+                            {"turn": turn},
+                            "model returned final before enough Playwright evidence",
+                        )
                         continue
                     final_text = _final_to_result_text(final_payload)
                     events.append({"type": "final", "text": final_text})
@@ -124,6 +153,14 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     transcript.append(
                         f"Model requested invalid tool `{tool_name}`. "
                         "Choose one of the listed tools or return final."
+                    )
+                    runtime_event_index = await _emit_runtime_event(
+                        req,
+                        runtime_event_index,
+                        "invalid_action",
+                        {"turn": turn, "tool": tool_name},
+                        f"invalid tool requested: {tool_name}",
+                        is_error=True,
                     )
                     continue
                 action_key = (
@@ -141,6 +178,14 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                         "has already been attempted twice. Choose a different tool/action, "
                         "inspect the page, or return failed final with evidence."
                     )
+                    runtime_event_index = await _emit_runtime_event(
+                        req,
+                        runtime_event_index,
+                        "repeated_action",
+                        {"turn": turn, "tool": tool_name, "arguments": arguments},
+                        f"repeated action rejected: {tool_name}",
+                        is_error=True,
+                    )
                     continue
 
                 idx = len(steps)
@@ -155,6 +200,13 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     is_playwright=True,
                 )
                 steps.append(step)
+                runtime_event_index = await _emit_runtime_event(
+                    req,
+                    runtime_event_index,
+                    "tool_start",
+                    {"turn": turn, "tool": tool_name, "arguments": safe_args},
+                    f"starting {tool_name}",
+                )
 
                 started = time.monotonic()
                 try:
@@ -167,6 +219,11 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 elapsed_ms = int((time.monotonic() - started) * 1000)
 
                 result_text = _redact_text(result_text, req.secrets)
+                result_text = _sanitize_tool_result_text(
+                    result_text,
+                    tool_name=tool_name,
+                    safe_args=safe_args,
+                )
                 step.result_text = result_text
                 step.result_is_error = is_error
                 extracted = _parse_tool_result_text(result_text)
@@ -196,12 +253,33 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
                 )
             else:
-                raise GenericRunnerError(f"generic agent exceeded {max_turns} turns")
+                raise _generic_error(
+                    f"generic agent exceeded {max_turns} turns",
+                    steps=steps,
+                    final_text=final_text,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    input_tokens=total_input,
+                    output_tokens=total_output,
+                )
 
     except LLMError as exc:
-        raise GenericRunnerError(f"generic loop LLM error: {exc}") from exc
+        raise _generic_error(
+            f"generic loop LLM error: {exc}",
+            steps=steps,
+            final_text=final_text,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            input_tokens=total_input,
+            output_tokens=total_output,
+        ) from exc
     except MCPClientError as exc:
-        raise GenericRunnerError(f"generic loop MCP error: {exc}") from exc
+        raise _generic_error(
+            f"generic loop MCP error: {exc}",
+            steps=steps,
+            final_text=final_text,
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+            input_tokens=total_input,
+            output_tokens=total_output,
+        ) from exc
     finally:
         blob = "\n".join(json.dumps(e, ensure_ascii=False) for e in events).encode("utf-8")
         stdout_path.write_bytes(redact_bytes(blob, req.secrets))
@@ -241,6 +319,59 @@ def _initial_transcript(_prompt: str, _tools: list[MCPTool]) -> list[str]:
         "same arguments more than twice. Do not return final until at least one "
         "tool observation supports the assertion result."
     ]
+
+
+def _remaining_seconds(started: float, timeout_seconds: int) -> float:
+    return float(timeout_seconds) - (time.monotonic() - started)
+
+
+def _generic_error(
+    message: str,
+    *,
+    steps: list[StepEvent],
+    final_text: str,
+    elapsed_ms: int,
+    input_tokens: int,
+    output_tokens: int,
+) -> GenericRunnerError:
+    return GenericRunnerError(
+        message,
+        partial=ParsedRun(
+            steps=steps,
+            summary=_build_summary(
+                final_text=final_text,
+                elapsed_ms=elapsed_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            ),
+        ),
+    )
+
+
+async def _emit_runtime_event(
+    req: RunRequest,
+    index: int,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    result_text: str,
+    *,
+    is_error: bool = False,
+) -> int:
+    if req.on_runtime_event is None:
+        return index
+    await req.on_runtime_event(
+        StepEvent(
+            step_index=index,
+            tool_name=tool_name,
+            tool_full_name=f"michelle.{tool_name}",
+            tool_args=tool_args,
+            tool_use_id=f"runtime-{index}",
+            is_playwright=False,
+            result_text=result_text,
+            result_is_error=is_error,
+        )
+    )
+    return index + 1
 
 
 def _render_turn_prompt(test_prompt: str, tools: list[MCPTool], transcript: list[str]) -> str:
@@ -395,6 +526,40 @@ def _flatten_mcp_content(content: Any) -> str:
                 out.append(str(item))
         return "\n".join(x for x in out if x)
     return "" if content is None else str(content)
+
+
+def _sanitize_tool_result_text(
+    text: str,
+    *,
+    tool_name: str,
+    safe_args: dict[str, Any],
+) -> str:
+    """Keep large browser artifacts out of transcripts and JSONL logs.
+
+    MCP tools may return screenshots as data URIs or very large page/network
+    dumps. The run directory is the artifact store; the model transcript only
+    needs concise evidence and file names.
+    """
+    if not text:
+        return text
+
+    filename = safe_args.get("filename")
+    screenshot_hint = (
+        f"[screenshot saved to {filename}]"
+        if tool_name == "browser_take_screenshot" and isinstance(filename, str) and filename
+        else "[image data omitted]"
+    )
+    text = _DATA_URI_RE.sub(screenshot_hint, text)
+
+    if tool_name == "browser_take_screenshot" and len(text) > 2000:
+        return f"{screenshot_hint}\n{_truncate_text(text, 2000)}"
+    return _truncate_text(text, _MAX_TOOL_RESULT_TEXT_CHARS)
+
+
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...[truncated {len(text) - max_chars} chars]"
 
 
 def _redact_text(text: str, secrets: list[str] | None) -> str:

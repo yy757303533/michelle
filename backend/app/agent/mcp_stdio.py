@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import time
+from asyncio import LimitOverrunError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,10 @@ from app.config import settings
 
 class MCPClientError(RuntimeError):
     pass
+
+
+MCP_STDIO_BUFFER_LIMIT = 16 * 1024 * 1024
+MCP_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass
@@ -55,6 +60,7 @@ class StdioMCPClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=_mcp_subprocess_env(self.cwd),
+            limit=MCP_STDIO_BUFFER_LIMIT,
         )
         try:
             await self._request(
@@ -276,14 +282,30 @@ def _encode_message(payload: dict[str, Any]) -> bytes:
 
 
 async def _read_stdio_json(reader: asyncio.StreamReader, timeout_seconds: int) -> dict[str, Any]:
-    line = await asyncio.wait_for(reader.readline(), timeout_seconds)
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout_seconds)
+    except (LimitOverrunError, ValueError) as exc:
+        if isinstance(exc, LimitOverrunError) or "Separator is not found" in str(exc):
+            raise MCPClientError(
+                f"MCP response too large: exceeded {MCP_MAX_RESPONSE_BYTES} bytes before newline"
+            ) from exc
+        raise
     if not line:
         raise EOFError
+    if len(line) > MCP_MAX_RESPONSE_BYTES:
+        raise MCPClientError(
+            f"MCP response too large: {len(line)} bytes exceeds {MCP_MAX_RESPONSE_BYTES}"
+        )
     if line.lower().startswith(b"content-length:"):
         header = await _read_remaining_header(reader, line)
         content_length = _content_length(header)
         if content_length <= 0:
             raise MCPClientError("MCP frame missing Content-Length")
+        if content_length > MCP_MAX_RESPONSE_BYTES:
+            raise MCPClientError(
+                f"MCP response too large: Content-Length {content_length} exceeds "
+                f"{MCP_MAX_RESPONSE_BYTES}"
+            )
         body = await asyncio.wait_for(reader.readexactly(content_length), timeout_seconds)
         data = json.loads(body.decode("utf-8"))
         return data if isinstance(data, dict) else {}
@@ -296,6 +318,10 @@ async def _read_framed_json(reader: asyncio.StreamReader, timeout_seconds: int) 
     content_length = _content_length(header)
     if content_length <= 0:
         raise MCPClientError("MCP frame missing Content-Length")
+    if content_length > MCP_MAX_RESPONSE_BYTES:
+        raise MCPClientError(
+            f"MCP response too large: Content-Length {content_length} exceeds {MCP_MAX_RESPONSE_BYTES}"
+        )
     body = await asyncio.wait_for(reader.readexactly(content_length), timeout_seconds)
     data = json.loads(body.decode("utf-8"))
     return data if isinstance(data, dict) else {}

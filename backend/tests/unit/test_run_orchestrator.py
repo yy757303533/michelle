@@ -388,6 +388,116 @@ async def test_execute_case_aborts_on_runner_exception(seeded, session):
 
 
 @pytest.mark.asyncio
+async def test_execute_case_persists_partial_steps_from_generic_exception(
+    seeded, session, monkeypatch
+):
+    from app.agent.executor import ExecutorStatus
+    from app.agent.generic_runner import GenericRunnerError
+
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+    partial = _parsed(
+        success=False,
+        steps=[
+            ParsedStep(
+                step_index=0,
+                tool_name="browser_navigate",
+                tool_full_name="mcp__playwright__browser_navigate",
+                tool_args={"url": "http://example.com"},
+                tool_use_id="generic-0",
+                is_playwright=True,
+                result_text="ok",
+            )
+        ],
+        error="MCP response too large",
+    )
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="generic_openai",
+            resolved_loop="generic_openai",
+            detail="test",
+            generic_available=True,
+            generic_providers=["codex-cli"],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
+    monkeypatch.setattr(
+        run_orchestrator,
+        "run_generic_with_playwright",
+        AsyncMock(side_effect=GenericRunnerError("MCP response too large", partial=partial)),
+    )
+
+    out = await execute_case(case_id=case.case_id, run_id=run.run_id)
+
+    assert out.status == "aborted"
+    assert "MCP response too large" in (out.error_message or "")
+    rows = (
+        (await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].tool_name == "browser_navigate"
+
+
+@pytest.mark.asyncio
+async def test_execute_case_persists_generic_runtime_events(seeded, session, monkeypatch):
+    from app.agent.executor import ExecutorStatus
+    from app.agent.generic_runner import GenericRunnerError
+
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="generic_openai",
+            resolved_loop="generic_openai",
+            detail="test",
+            generic_available=True,
+            generic_providers=["codex-cli"],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    async def fake_generic(req):
+        assert req.on_runtime_event is not None
+        await req.on_runtime_event(
+            ParsedStep(
+                step_index=0,
+                tool_name="model_turn",
+                tool_full_name="michelle.model_turn",
+                tool_args={"turn": 0},
+                tool_use_id="runtime-0",
+                is_playwright=False,
+                result_text="requesting next action",
+            )
+        )
+        raise GenericRunnerError("generic loop exceeded total timeout")
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
+    monkeypatch.setattr(run_orchestrator, "run_generic_with_playwright", fake_generic)
+
+    out = await execute_case(case_id=case.case_id, run_id=run.run_id, timeout_seconds=1)
+
+    assert out.status == "aborted"
+    rows = (
+        (await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].event == "agent.runtime.event"
+    assert rows[0].tool_name == "model_turn"
+
+
+@pytest.mark.asyncio
 async def test_execute_case_creates_artifacts(seeded, session, tmp_path, monkeypatch):
     """run_orchestrator should write trace.jsonl + report.html into the run dir."""
     _, case = seeded

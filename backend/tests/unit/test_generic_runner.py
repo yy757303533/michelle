@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
+from app.agent.claude_runner import RunRequest
 from app.agent.generic_runner import (
+    GenericRunnerError,
     _final_has_enough_evidence,
     _normalize_final_payload,
     _parse_action,
     _render_turn_prompt,
+    _sanitize_tool_result_text,
+    run_generic_with_playwright,
 )
 from app.agent.mcp_stdio import MCPTool
 from app.agent.trace_parser import StepEvent
@@ -80,3 +86,109 @@ def test_final_evidence_requires_steps_and_assertion_evidence() -> None:
         },
         [step],
     )
+
+
+def test_sanitize_tool_result_removes_screenshot_data_uri() -> None:
+    raw = "before data:image/png;base64," + ("a" * 2000) + " after"
+
+    text = _sanitize_tool_result_text(
+        raw,
+        tool_name="browser_take_screenshot",
+        safe_args={"filename": "step-1.png"},
+    )
+
+    assert "data:image/png;base64" not in text
+    assert "a" * 200 not in text
+    assert "step-1.png" in text
+
+
+@pytest.mark.asyncio
+async def test_run_generic_enforces_total_timeout_before_turn(tmp_path, monkeypatch) -> None:
+    class FakeMCP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: FakeMCP(),
+    )
+
+    with pytest.raises(GenericRunnerError, match="exceeded total timeout"):
+        await run_generic_with_playwright(
+            RunRequest(
+                prompt="open page",
+                work_dir=tmp_path,
+                timeout_seconds=0,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_generic_emits_runtime_events(tmp_path, monkeypatch) -> None:
+    from app.llm.base import LLMResult
+
+    class FakeMCP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+    class FakeGateway:
+        async def chat(self, *_args, **_kwargs):
+            return LLMResult(
+                text='{"tool":"missing_tool","arguments":{}}',
+                provider="fake",
+                model="fake-model",
+            )
+
+    events: list[StepEvent] = []
+
+    async def on_event(step: StepEvent) -> None:
+        events.append(step)
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: FakeMCP(),
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: FakeGateway())
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner.settings.generic_agent_max_turns", 1)
+
+    with pytest.raises(GenericRunnerError, match="exceeded 1 turns"):
+        await run_generic_with_playwright(
+            RunRequest(
+                prompt="open page",
+                work_dir=tmp_path,
+                timeout_seconds=60,
+                on_runtime_event=on_event,
+            )
+        )
+
+    assert [event.tool_name for event in events] == ["model_turn", "invalid_action"]
+
+
+class AsyncProvider:
+    async def __call__(self):
+        return "fake"

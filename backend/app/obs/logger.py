@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -15,6 +16,25 @@ from structlog.types import Processor
 from app.config import settings
 from app.obs.events import Event
 
+_SENSITIVE_KEY_PARTS = (
+    "password",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+    "credential",
+)
+
+_DOMAIN_LOG_FILES = {
+    "prd_upload": "prd_upload.log",
+    "case_generation": "case_generation.log",
+    "case_execution": "case_execution.log",
+    "diagnosis": "diagnosis.log",
+    "settings": "settings.log",
+}
+
 
 def _normalize_event_catalog(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
     """Allow `log.info(EVENTS.X, **fields)` — render the Event dataclass as its
@@ -27,6 +47,65 @@ def _normalize_event_catalog(_, __, event_dict: dict[str, Any]) -> dict[str, Any
         if missing:
             event_dict["event_missing_fields"] = missing
     return event_dict
+
+
+def _redact_sensitive_fields(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
+    return _redact_value(event_dict)
+
+
+def _redact_value(value: Any, *, key: str = "") -> Any:
+    if key and any(part in key.lower() for part in _SENSITIVE_KEY_PARTS):
+        return "***"
+    if isinstance(value, dict):
+        return {k: _redact_value(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    return value
+
+
+def _event_domain(event_dict: dict[str, Any]) -> str | None:
+    event = str(event_dict.get("event") or "")
+    prompt_version = str(event_dict.get("prompt_version") or "")
+
+    if event.startswith("prd.generation.") or event.startswith("case.generation."):
+        return "case_generation"
+    if event == "case.generated":
+        return "case_generation"
+    if prompt_version.startswith("case_gen"):
+        return "case_generation"
+
+    if event.startswith("prd."):
+        return "prd_upload"
+
+    if event.startswith("diagnosis.") or event.startswith("diagnoser."):
+        return "diagnosis"
+    if prompt_version.startswith("diagnose"):
+        return "diagnosis"
+
+    if event.startswith("settings."):
+        return "settings"
+
+    if event.startswith(("run.", "orchestrator.", "agent.", "mcp.")):
+        return "case_execution"
+    if event.startswith("hook.run_failed") or prompt_version.startswith("execute"):
+        return "case_execution"
+
+    return None
+
+
+class _DomainLogFilter(logging.Filter):
+    def __init__(self, domain: str):
+        super().__init__()
+        self.domain = domain
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            payload = json.loads(record.getMessage())
+        except Exception:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        return _event_domain(payload) == self.domain
 
 
 def _add_trace_id(_, __, event_dict: dict[str, Any]) -> dict[str, Any]:
@@ -58,12 +137,11 @@ def setup_logging() -> None:
     if settings.log_file:
         log_path = Path(settings.log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(
-            RotatingFileHandler(
-                log_path,
-                maxBytes=max(1024, settings.log_max_bytes),
-                backupCount=max(0, settings.log_backup_count),
-                encoding="utf-8",
+        handlers.append(_rotating_handler(log_path))
+        handlers.extend(
+            _domain_handlers(
+                log_dir=log_path.parent,
+                domains=_DOMAIN_LOG_FILES,
             )
         )
 
@@ -82,6 +160,7 @@ def setup_logging() -> None:
         _add_service,
         _add_trace_id,
         _normalize_event_catalog,
+        _redact_sensitive_fields,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.JSONRenderer(),
@@ -107,3 +186,25 @@ def bind_request_context(**kwargs: Any) -> None:
 
 def clear_request_context() -> None:
     clear_contextvars()
+
+
+def _rotating_handler(path: Path) -> RotatingFileHandler:
+    return RotatingFileHandler(
+        path,
+        maxBytes=max(1024, settings.log_max_bytes),
+        backupCount=max(0, settings.log_backup_count),
+        encoding="utf-8",
+    )
+
+
+def _domain_handlers(
+    *,
+    log_dir: Path,
+    domains: dict[str, str],
+) -> list[logging.Handler]:
+    handlers: list[logging.Handler] = []
+    for domain, filename in domains.items():
+        handler = _rotating_handler(log_dir / filename)
+        handler.addFilter(_DomainLogFilter(domain))
+        handlers.append(handler)
+    return handlers

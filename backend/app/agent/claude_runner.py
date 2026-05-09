@@ -19,8 +19,10 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.agent.claude_env import build_claude_subprocess_env
 from app.agent.mcp_config import build_playwright_mcp_config, write_config
@@ -49,6 +51,9 @@ class RunRequest:
     """Literal strings (passwords, tokens) to redact from logs, persisted
     artifacts, and StepEvent rows. The orchestrator builds this list from the
     target credentials baked into the prompt."""
+    on_runtime_event: Callable[[Any], Awaitable[None]] | None = None
+    """Optional live event sink used by Michelle-owned runners to persist
+    lightweight progress before the final ParsedRun is available."""
 
 
 @dataclass

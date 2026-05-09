@@ -384,6 +384,9 @@ async def execute_case(
             )
             return run
 
+        async def on_runtime_event(step: ParsedStep) -> None:
+            await _persist_runtime_event(session, run.run_id, step)
+
         run_req = RunRequest(
             prompt=prompt,
             work_dir=rd,
@@ -391,6 +394,7 @@ async def execute_case(
             headless=headless,
             isolated=True,
             secrets=secrets,
+            on_runtime_event=on_runtime_event if executor.resolved_loop == "generic_openai" else None,
         )
 
         try:
@@ -401,6 +405,9 @@ async def execute_case(
                 log.info("orchestrator.executor.selected", runner="claude_cli")
                 outcome = await run_claude_with_playwright(run_req)
         except (ClaudeRunnerError, GenericRunnerError) as exc:
+            partial = getattr(exc, "partial", None)
+            if isinstance(partial, ParsedRun) and partial.steps:
+                await _persist_partial_results(session, run, partial, rd)
             run.status = "aborted"
             run.error_message = str(exc)[:500]
             run.ended_at = datetime.now(UTC)
@@ -474,6 +481,49 @@ async def _persist_results(
     run.input_tokens = parsed.summary.input_tokens
     run.output_tokens = parsed.summary.output_tokens
     # leave run.case_version as set by caller; we use its existing value
+
+
+async def _persist_partial_results(
+    session: AsyncSession,
+    run: Run,
+    parsed: ParsedRun,
+    rd: Any,
+) -> None:
+    step_offset = await _next_step_offset(session, run.run_id)
+    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset)
+    (rd / "trace.jsonl").write_text(
+        "\n".join(json.dumps(_step_event_summary(s), ensure_ascii=False) for s in parsed.steps),
+        encoding="utf-8",
+    )
+    run.artifacts_dir = str(rd)
+    run.trace_jsonl_path = str(rd / "trace.jsonl")
+    run.input_tokens = parsed.summary.input_tokens
+    run.output_tokens = parsed.summary.output_tokens
+
+
+async def _persist_runtime_event(
+    session: AsyncSession,
+    run_id: str,
+    parsed: ParsedStep,
+) -> None:
+    next_index = await _next_step_offset(session, run_id)
+    ev = StepEvent(
+        run_id=run_id,
+        step_index=next_index,
+        phase=_step_phase(parsed),
+        event="agent.runtime.event",
+        intent=_step_intent(parsed),
+        tool_name=parsed.tool_name,
+        tool_args=parsed.tool_args,
+        tool_result={
+            "result_text": (parsed.result_text or "")[:8000],
+            "is_error": bool(parsed.result_is_error),
+        },
+        status="failed" if parsed.result_is_error else "ok",
+        error_message=(parsed.result_text or "")[:500] if parsed.result_is_error else None,
+    )
+    session.add(ev)
+    await session.commit()
 
 
 async def _load_step_events(session: AsyncSession, run_id: str) -> list[StepEvent]:

@@ -8,6 +8,7 @@ import json
 import pytest
 
 from app.agent.mcp_stdio import (
+    MCPClientError,
     _encode_message,
     _mcp_subprocess_env,
     _read_framed_json,
@@ -33,6 +34,15 @@ async def test_read_stdio_json_accepts_ndjson():
     data = await _read_stdio_json(reader, timeout_seconds=1)
 
     assert data["result"] == {"tools": []}
+
+
+@pytest.mark.asyncio
+async def test_read_stdio_json_reports_oversized_ndjson_frame():
+    reader = asyncio.StreamReader(limit=64)
+    reader.feed_data(b'{"jsonrpc":"2.0","id":1,"result":{"content":"' + b"x" * 256)
+
+    with pytest.raises(MCPClientError, match="MCP response too large"):
+        await _read_stdio_json(reader, timeout_seconds=1)
 
 
 @pytest.mark.asyncio
