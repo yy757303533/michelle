@@ -103,6 +103,95 @@ def test_sanitize_tool_result_removes_screenshot_data_uri() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_generic_bootstraps_configured_login_before_model(tmp_path, monkeypatch) -> None:
+    from app.llm.base import LLMResult
+
+    snapshot = """
+- textbox "E-mail *" [ref=e28]
+- textbox "Password *" [ref=e38]
+- button "Log in" [ref=e50]
+"""
+
+    class FakeMCP:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(name="browser_navigate", description="navigate", input_schema={}),
+                MCPTool(name="browser_snapshot", description="snapshot", input_schema={}),
+                MCPTool(name="browser_fill_form", description="fill", input_schema={}),
+                MCPTool(name="browser_click", description="click", input_schema={}),
+            ]
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            if name == "browser_snapshot":
+                return {"content": [{"type": "text", "text": snapshot}]}
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+    fake_mcp = FakeMCP()
+
+    class FakeGateway:
+        async def chat(self, prompt, *_args, **_kwargs):
+            assert "AUTH BOOTSTRAP completed" in prompt
+            return LLMResult(
+                text=(
+                    '{"final":{"case_status":"passed","step_count":4,'
+                    '"assertion_results":[{"description":"login completed",'
+                    '"passed":true,"evidence":"auth bootstrap reached the app"}],'
+                    '"failure_summary":""}}'
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: fake_mcp,
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: FakeGateway())
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(
+            prompt="verify home page",
+            work_dir=tmp_path,
+            timeout_seconds=60,
+            auth_state="logged-in",
+            login_url="https://example.test/logins",
+            default_username="admin@example.test",
+            default_password="secret-pass",
+            secrets=["secret-pass"],
+        )
+    )
+
+    assert [name for name, _args in fake_mcp.calls] == [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_fill_form",
+        "browser_click",
+    ]
+    assert fake_mcp.calls[0][1] == {"url": "https://example.test/logins"}
+    assert fake_mcp.calls[2][1]["fields"][0]["value"] == "admin@example.test"
+    assert fake_mcp.calls[2][1]["fields"][1]["value"] == "secret-pass"
+    assert fake_mcp.calls[3][1] == {"element": "Log in button", "ref": "e50"}
+    assert [step.tool_name for step in outcome.parsed.steps[:4]] == [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_fill_form",
+        "browser_click",
+    ]
+    assert outcome.parsed.steps[2].tool_args["fields"][1]["value"] == "***"
+
+
+@pytest.mark.asyncio
 async def test_run_generic_enforces_total_timeout_before_turn(tmp_path, monkeypatch) -> None:
     class FakeMCP:
         async def __aenter__(self):

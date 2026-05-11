@@ -405,7 +405,13 @@ async def execute_case(
             headless=headless,
             isolated=True,
             secrets=secrets,
-            on_runtime_event=on_runtime_event if executor.resolved_loop == "generic_openai" else None,
+            auth_state=case.auth_state,
+            login_url=(getattr(project, "login_url", "") or None),
+            default_username=(project.default_username or None),
+            default_password=(project.default_password or None),
+            on_runtime_event=on_runtime_event
+            if executor.resolved_loop == "generic_openai"
+            else None,
         )
 
         try:

@@ -471,6 +471,48 @@ async def test_execute_case_persists_partial_steps_from_generic_exception(
 
 
 @pytest.mark.asyncio
+async def test_execute_case_passes_project_login_config_to_generic_runner(
+    seeded, session, monkeypatch
+):
+    from app.agent.executor import ExecutorStatus
+
+    proj, case = seeded
+    proj.login_url = "https://example.test/logins"
+    proj.default_username = "admin@example.test"
+    proj.default_password = "secret-pass"
+    case.auth_state = "logged-in"
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="generic_openai",
+            resolved_loop="generic_openai",
+            detail="test",
+            generic_available=True,
+            generic_providers=["codex-cli"],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    async def fake_generic(req):
+        assert req.auth_state == "logged-in"
+        assert req.login_url == "https://example.test/logins"
+        assert req.default_username == "admin@example.test"
+        assert req.default_password == "secret-pass"
+        assert "secret-pass" in (req.secrets or [])
+        return _mock_outcome(status_text="passed")
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
+    monkeypatch.setattr(run_orchestrator, "run_generic_with_playwright", fake_generic)
+
+    out = await execute_case(case_id=case.case_id, run_id=run.run_id)
+
+    assert out.status == "passed"
+
+
+@pytest.mark.asyncio
 async def test_execute_case_persists_generic_runtime_events(seeded, session, monkeypatch):
     from app.agent.executor import ExecutorStatus
     from app.agent.generic_runner import GenericRunnerError

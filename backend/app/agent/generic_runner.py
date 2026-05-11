@@ -80,6 +80,15 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
         ) as mcp:
             tools = [tool for tool in await mcp.list_tools() if tool.name != "browser_install"]
             transcript = _initial_transcript(req.prompt, tools)
+            runtime_event_index = await _bootstrap_configured_login(
+                req=req,
+                mcp=mcp,
+                tools=tools,
+                transcript=transcript,
+                events=events,
+                steps=steps,
+                runtime_event_index=runtime_event_index,
+            )
             max_turns = max(1, settings.generic_agent_max_turns)
             last_action_key: tuple[str, str] | None = None
             repeated_action_count = 0
@@ -199,69 +208,26 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     )
                     continue
 
-                idx = len(steps)
-                tool_use_id = f"generic-{idx}"
-                safe_args = _redact_value(arguments, req.secrets)
-                step = StepEvent(
-                    step_index=idx,
-                    tool_name=tool_name,
-                    tool_full_name=f"mcp__playwright__{tool_name}",
-                    tool_args=safe_args,
-                    tool_use_id=tool_use_id,
-                    is_playwright=True,
-                )
-                steps.append(step)
                 runtime_event_index = await _emit_runtime_event(
                     req,
                     runtime_event_index,
                     "tool_start",
-                    {"turn": turn, "tool": tool_name, "arguments": safe_args},
-                    f"starting {tool_name}",
-                )
-
-                started = time.monotonic()
-                try:
-                    tool_result = await mcp.call_tool(tool_name, arguments)
-                    result_text = _flatten_mcp_content(tool_result.get("content"))
-                    is_error = bool(tool_result.get("isError") or tool_result.get("is_error"))
-                except MCPClientError as exc:
-                    result_text = str(exc)
-                    is_error = True
-                elapsed_ms = int((time.monotonic() - started) * 1000)
-
-                result_text = _redact_text(result_text, req.secrets)
-                result_text = _sanitize_tool_result_text(
-                    result_text,
-                    tool_name=tool_name,
-                    safe_args=safe_args,
-                )
-                step.result_text = result_text
-                step.result_is_error = is_error
-                extracted = _parse_tool_result_text(result_text)
-                step.page_url = extracted.get("page_url")
-                step.page_title = extracted.get("page_title")
-                step.console_errors = extracted.get("console_errors")
-                step.console_warnings = extracted.get("console_warnings")
-                step.screenshot_path = extracted.get("screenshot_path")
-                if not step.screenshot_path and tool_name == "browser_take_screenshot":
-                    filename = safe_args.get("filename")
-                    if isinstance(filename, str) and filename.strip():
-                        step.screenshot_path = filename.strip()
-
-                events.append(
                     {
-                        "type": "tool",
                         "turn": turn,
                         "tool": tool_name,
-                        "arguments": safe_args,
-                        "is_error": is_error,
-                        "elapsed_ms": elapsed_ms,
-                        "result_text": result_text[:4000],
-                    }
+                        "arguments": _redact_value(arguments, req.secrets),
+                    },
+                    f"starting {tool_name}",
                 )
-                transcript.append(
-                    f"TOOL {tool_name}({json.dumps(safe_args, ensure_ascii=False)}) "
-                    f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
+                await _call_mcp_tool_recording(
+                    req=req,
+                    mcp=mcp,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    events=events,
+                    steps=steps,
+                    transcript=transcript,
+                    turn=turn,
                 )
             else:
                 raise _generic_error(
@@ -321,6 +287,241 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
         exit_code=0,
         elapsed_ms=elapsed,
     )
+
+
+async def _bootstrap_configured_login(
+    *,
+    req: RunRequest,
+    mcp: Any,
+    tools: list[MCPTool],
+    transcript: list[str],
+    events: list[dict[str, Any]],
+    steps: list[StepEvent],
+    runtime_event_index: int,
+) -> int:
+    """Use project credentials deterministically before the LLM loop starts."""
+    if not _should_bootstrap_login(req):
+        return runtime_event_index
+
+    available = {tool.name for tool in tools}
+    required = {"browser_navigate", "browser_snapshot", "browser_fill_form", "browser_click"}
+    missing = sorted(required - available)
+    if missing:
+        raise _generic_error(
+            "configured login cannot run because Playwright tools are missing: "
+            + ", ".join(missing),
+            steps=steps,
+            final_text="",
+            elapsed_ms=0,
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    runtime_event_index = await _emit_runtime_event(
+        req,
+        runtime_event_index,
+        "auth_bootstrap",
+        {"login_url": req.login_url},
+        "starting configured login",
+    )
+    await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_navigate",
+        arguments={"url": req.login_url},
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="auth",
+    )
+    snapshot_step = await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_snapshot",
+        arguments={},
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="auth",
+    )
+    refs = _extract_login_refs(snapshot_step.result_text or "")
+    if not refs:
+        raise _generic_error(
+            "configured login page did not expose email/password fields and a login button",
+            steps=steps,
+            final_text="",
+            elapsed_ms=0,
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    email_ref, password_ref, button_label, button_ref = refs
+    await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_fill_form",
+        arguments={
+            "fields": [
+                {
+                    "name": "E-mail",
+                    "type": "textbox",
+                    "ref": email_ref,
+                    "value": req.default_username,
+                },
+                {
+                    "name": "Password",
+                    "type": "textbox",
+                    "ref": password_ref,
+                    "value": req.default_password,
+                },
+            ]
+        },
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="auth",
+    )
+    click_step = await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_click",
+        arguments={"element": f"{button_label} button", "ref": button_ref},
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="auth",
+    )
+    if click_step.result_is_error:
+        raise _generic_error(
+            "configured login submit failed",
+            steps=steps,
+            final_text="",
+            elapsed_ms=0,
+            input_tokens=0,
+            output_tokens=0,
+        )
+
+    transcript.append(
+        "AUTH BOOTSTRAP completed using the configured project login URL and "
+        "credentials. Treat old explicit login/navigation-to-login steps as "
+        "already satisfied unless later page evidence shows the session is not authenticated."
+    )
+    runtime_event_index = await _emit_runtime_event(
+        req,
+        runtime_event_index,
+        "auth_bootstrap",
+        {"login_url": req.login_url},
+        "configured login completed",
+    )
+    return runtime_event_index
+
+
+def _should_bootstrap_login(req: RunRequest) -> bool:
+    return (
+        (req.auth_state or "").strip().lower() == "logged-in"
+        and bool((req.login_url or "").strip())
+        and bool((req.default_username or "").strip())
+        and bool(req.default_password)
+    )
+
+
+_REF_RE = re.compile(
+    r'\b(?P<role>textbox|button)\s+"(?P<label>[^"]+)"[^\n]*\[ref=(?P<ref>[^\]]+)\]'
+)
+_EMAIL_LABEL_RE = re.compile(r"e-?mail|email|user\s*name|username|account", re.IGNORECASE)
+_PASSWORD_LABEL_RE = re.compile(r"password|passcode|密码", re.IGNORECASE)
+_LOGIN_LABEL_RE = re.compile(r"log\s*in|login|sign\s*in|登录|se connecter|connexion", re.IGNORECASE)
+
+
+def _extract_login_refs(text: str) -> tuple[str, str, str, str] | None:
+    email_ref = ""
+    password_ref = ""
+    login_ref = ""
+    login_label = "Log in"
+    for match in _REF_RE.finditer(text):
+        role = match.group("role")
+        label = match.group("label")
+        ref = match.group("ref")
+        if role == "textbox" and not email_ref and _EMAIL_LABEL_RE.search(label):
+            email_ref = ref
+        elif role == "textbox" and not password_ref and _PASSWORD_LABEL_RE.search(label):
+            password_ref = ref
+        elif role == "button" and not login_ref and _LOGIN_LABEL_RE.search(label):
+            login_ref = ref
+            login_label = label.strip() or login_label
+    if email_ref and password_ref and login_ref:
+        return email_ref, password_ref, login_label, login_ref
+    return None
+
+
+async def _call_mcp_tool_recording(
+    *,
+    req: RunRequest,
+    mcp: Any,
+    tool_name: str,
+    arguments: dict[str, Any],
+    events: list[dict[str, Any]],
+    steps: list[StepEvent],
+    transcript: list[str],
+    turn: int | str,
+) -> StepEvent:
+    idx = len(steps)
+    safe_args = _redact_value(arguments, req.secrets)
+    step = StepEvent(
+        step_index=idx,
+        tool_name=tool_name,
+        tool_full_name=f"mcp__playwright__{tool_name}",
+        tool_args=safe_args,
+        tool_use_id=f"generic-{idx}",
+        is_playwright=True,
+    )
+    steps.append(step)
+
+    started = time.monotonic()
+    try:
+        tool_result = await mcp.call_tool(tool_name, arguments)
+        result_text = _flatten_mcp_content(tool_result.get("content"))
+        is_error = bool(tool_result.get("isError") or tool_result.get("is_error"))
+    except MCPClientError as exc:
+        result_text = str(exc)
+        is_error = True
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    result_text = _redact_text(result_text, req.secrets)
+    result_text = _sanitize_tool_result_text(
+        result_text,
+        tool_name=tool_name,
+        safe_args=safe_args,
+    )
+    step.result_text = result_text
+    step.result_is_error = is_error
+    extracted = _parse_tool_result_text(result_text)
+    step.page_url = extracted.get("page_url")
+    step.page_title = extracted.get("page_title")
+    step.console_errors = extracted.get("console_errors")
+    step.console_warnings = extracted.get("console_warnings")
+    step.screenshot_path = extracted.get("screenshot_path")
+    if not step.screenshot_path and tool_name == "browser_take_screenshot":
+        filename = safe_args.get("filename")
+        if isinstance(filename, str) and filename.strip():
+            step.screenshot_path = filename.strip()
+
+    events.append(
+        {
+            "type": "tool",
+            "turn": turn,
+            "tool": tool_name,
+            "arguments": safe_args,
+            "is_error": is_error,
+            "elapsed_ms": elapsed_ms,
+            "result_text": result_text[:4000],
+        }
+    )
+    transcript.append(
+        f"TOOL {tool_name}({json.dumps(safe_args, ensure_ascii=False)}) "
+        f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
+    )
+    return step
 
 
 def _initial_transcript(_prompt: str, _tools: list[MCPTool]) -> list[str]:

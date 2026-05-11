@@ -51,6 +51,12 @@ class RunRequest:
     """Literal strings (passwords, tokens) to redact from logs, persisted
     artifacts, and StepEvent rows. The orchestrator builds this list from the
     target credentials baked into the prompt."""
+    auth_state: str | None = None
+    """Case auth intent. Generic runners use this to bootstrap configured login
+    before spending model turns on business steps."""
+    login_url: str | None = None
+    default_username: str | None = None
+    default_password: str | None = None
     on_runtime_event: Callable[[Any], Awaitable[None]] | None = None
     """Optional live event sink used by Michelle-owned runners to persist
     lightweight progress before the final ParsedRun is available."""
