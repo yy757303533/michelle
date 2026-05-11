@@ -277,6 +277,7 @@ async def run_job(job_id: str) -> None:
                             prefer_provider=prefer_provider,
                             default_username=proj.default_username or None,
                             default_password=proj.default_password or None,
+                            login_url=proj.login_url or None,
                             generation_job_id=job_id,
                         )
                         batch_rows = [
@@ -303,6 +304,7 @@ async def run_job(job_id: str) -> None:
                             prefer_provider=prefer_provider,
                             default_username=proj.default_username or None,
                             default_password=proj.default_password or None,
+                            login_url=proj.login_url or None,
                             generation_job_id=job_id,
                         )
                         generated_by_id = {

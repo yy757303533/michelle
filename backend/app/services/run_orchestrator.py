@@ -84,13 +84,24 @@ def _format_login_context(project: Project) -> str:
             "requires authentication, the case must include explicit login "
             "steps)"
         )
+    login_url = (getattr(project, "login_url", "") or "").strip()
+    if login_url:
+        return (
+            f"This project has default test credentials and a configured login page.\n"
+            f"  - Login URL: {login_url}\n"
+            f"  - Username/Email: {project.default_username or '(not set)'}\n"
+            f"  - Password: {project.default_password or '(not set)'}\n"
+            f"Use this login URL directly when authentication is needed; do not guess "
+            f"or probe alternate login paths unless this URL fails with concrete evidence."
+        )
     return (
-        f"This project has default test credentials. If any step's target page "
-        f"redirects to a login form, authenticate first using:\n"
+        f"This project has default test credentials, but no login URL is configured. "
+        f"If any step's target page redirects to a login form, authenticate first using:\n"
         f"  - Username/Email: {project.default_username or '(not set)'}\n"
         f"  - Password: {project.default_password or '(not set)'}\n"
-        f"Find the login page by clicking a 'Log in' / 'Sign in' link from the "
-        f"home page or navigating to common paths like /login, /signin, /logins."
+        f"Use a login form only when it is visible or explicitly linked from the page; "
+        f"if no login form is reachable, return a failed final with that evidence "
+        f"instead of probing many guessed paths."
     )
 
 

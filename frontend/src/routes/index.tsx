@@ -650,6 +650,7 @@ interface ProjectConfig {
   project_id: string;
   name: string;
   base_url: string;
+  login_url: string;
   default_username: string;
   default_password: string;
   default_password_is_set?: boolean;
@@ -677,6 +678,7 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
   if (!proj) return null;
 
   const hasCreds = Boolean(proj.default_username && proj.default_password_is_set);
+  const hasLoginUrl = Boolean(proj.login_url);
 
   if (editing) {
     return (
@@ -730,6 +732,25 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
           }
         />
         <Row
+          label="login_url"
+          value={
+            proj.login_url ? (
+              <a
+                href={proj.login_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-700 hover:underline font-mono text-xs break-all"
+              >
+                {proj.login_url}
+              </a>
+            ) : (
+              <span className="text-amber-700 text-xs">
+                (not set — protected cases may need to discover login)
+              </span>
+            )
+          }
+        />
+        <Row
           label="default_username"
           value={
             proj.default_username ? (
@@ -761,9 +782,14 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
         />
       </div>
       <div className="mt-2 text-xs">
-        {hasCreds ? (
+        {hasCreds && hasLoginUrl ? (
           <span className="text-emerald-700">
-            ✓ Cases will auto-login at runtime + new cases include explicit login steps.
+            ✓ Protected cases use this login URL and credentials at runtime.
+          </span>
+        ) : hasCreds ? (
+          <span className="text-amber-700">
+            ⚠ Credentials are configured, but login_url is missing — cases can use
+            credentials only after a login form is reachable.
           </span>
         ) : (
           <span className="text-amber-700">
@@ -788,6 +814,7 @@ function ProjectInlineEditForm({
 }) {
   const [name, setName] = useState(initial.name);
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
+  const [loginUrl, setLoginUrl] = useState(initial.login_url);
   const [username, setUsername] = useState(initial.default_username);
   const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -801,6 +828,7 @@ function ProjectInlineEditForm({
           project_id: initial.project_id,
           name: name.trim(),
           base_url: baseUrl.trim(),
+          login_url: loginUrl.trim(),
           default_username: username.trim(),
           ...(password ? { default_password: password } : {}),
         }),
@@ -828,6 +856,15 @@ function ProjectInlineEditForm({
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           placeholder="http://localhost:5000/"
+        />
+      </label>
+      <label className="block">
+        <span className="text-xs text-slate-500">login_url</span>
+        <input
+          className="border border-slate-200 rounded px-2 py-1 w-full font-mono"
+          value={loginUrl}
+          onChange={(e) => setLoginUrl(e.target.value)}
+          placeholder="http://localhost:5000/login"
         />
       </label>
       <label className="block">

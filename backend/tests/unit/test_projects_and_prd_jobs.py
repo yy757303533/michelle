@@ -90,6 +90,7 @@ async def test_post_with_known_id_updates_existing(app_client, session):
             "project_id": "demo",
             "name": "New",
             "base_url": "http://new/",
+            "login_url": "http://new/login",
             "default_username": "admin",
             "default_password": "p",
         },
@@ -98,6 +99,7 @@ async def test_post_with_known_id_updates_existing(app_client, session):
     data = r.json()["data"]
     assert data["name"] == "New"
     assert data["base_url"] == "http://new/"
+    assert data["login_url"] == "http://new/login"
     assert data["default_username"] == "admin"
     assert data["default_password"] == ""
     assert data["default_password_is_set"] is True

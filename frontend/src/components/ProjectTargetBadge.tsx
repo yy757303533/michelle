@@ -5,6 +5,7 @@ interface ProjectRow {
   project_id: string;
   name: string;
   base_url: string;
+  login_url: string;
   default_username: string;
 }
 
@@ -46,6 +47,12 @@ export function ProjectTargetBadge({ projectId }: { projectId: string }) {
         <>
           <span className="text-slate-300">·</span>
           <span className="font-mono">as {proj.default_username}</span>
+        </>
+      )}
+      {proj.login_url && (
+        <>
+          <span className="text-slate-300">·</span>
+          <span className="font-mono">login set</span>
         </>
       )}
     </span>

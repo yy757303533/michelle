@@ -7,6 +7,7 @@ interface ProjectRow {
   project_id: string;
   name: string;
   base_url: string;
+  login_url?: string;
   description?: string;
   default_username?: string;
   default_password?: string;
@@ -140,6 +141,7 @@ function ProjectForm({
 }) {
   const [name, setName] = useState(initial?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
+  const [loginUrl, setLoginUrl] = useState(initial?.login_url ?? "");
   const [username, setUsername] = useState(initial?.default_username ?? "");
   const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -149,6 +151,7 @@ function ProjectForm({
       const body: Record<string, string> = {
         name: name.trim(),
         base_url: baseUrl.trim(),
+        login_url: loginUrl.trim(),
         default_username: username.trim(),
       };
       if (password) body.default_password = password;
@@ -188,6 +191,14 @@ function ProjectForm({
           onChange={(e) => setBaseUrl(e.target.value)}
         />
       </Required>
+      <Optional label="login_url">
+        <input
+          className="border border-slate-200 rounded px-2 py-0.5 w-52 font-mono"
+          placeholder="http://localhost:5000/login"
+          value={loginUrl}
+          onChange={(e) => setLoginUrl(e.target.value)}
+        />
+      </Optional>
       <Optional label="user">
         <input
           className="border border-slate-200 rounded px-2 py-0.5 w-24"

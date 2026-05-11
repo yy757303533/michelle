@@ -136,6 +136,48 @@ async def test_run_generic_enforces_total_timeout_before_turn(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_run_generic_does_not_start_model_call_with_tiny_remaining_budget(
+    tmp_path, monkeypatch
+) -> None:
+    class FakeMCP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+    class GatewayShouldNotRun:
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("model call should not start with tiny remaining budget")
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: FakeMCP(),
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: GatewayShouldNotRun())
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner._remaining_seconds", lambda *_args: 2.0)
+
+    with pytest.raises(GenericRunnerError, match="insufficient time remaining"):
+        await run_generic_with_playwright(
+            RunRequest(
+                prompt="open page",
+                work_dir=tmp_path,
+                timeout_seconds=60,
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_generic_emits_runtime_events(tmp_path, monkeypatch) -> None:
     from app.llm.base import LLMResult
 

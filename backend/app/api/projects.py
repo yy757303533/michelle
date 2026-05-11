@@ -33,6 +33,7 @@ class ProjectIn(BaseModel):
     project_id: str | None = None
     name: str
     base_url: str = ""
+    login_url: str = ""
     description: str = ""
     default_username: str = ""
     default_password: str | None = None

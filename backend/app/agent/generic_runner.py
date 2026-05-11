@@ -34,6 +34,7 @@ from app.runtime_config import get_case_execution_provider
 _log = get_logger(__name__)
 _DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 _MAX_TOOL_RESULT_TEXT_CHARS = 12_000
+_MIN_MODEL_TURN_SECONDS = 15.0
 
 
 class GenericRunnerError(RuntimeError):
@@ -88,6 +89,16 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 if remaining <= 0:
                     raise _generic_error(
                         f"generic loop exceeded total timeout of {req.timeout_seconds}s",
+                        steps=steps,
+                        final_text=final_text,
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                        input_tokens=total_input,
+                        output_tokens=total_output,
+                    )
+                if remaining < _MIN_MODEL_TURN_SECONDS:
+                    raise _generic_error(
+                        "generic loop insufficient time remaining before next model turn "
+                        f"({remaining:.3f}s left of {req.timeout_seconds}s total timeout)",
                         steps=steps,
                         final_text=final_text,
                         elapsed_ms=int((time.monotonic() - t0) * 1000),

@@ -25,6 +25,8 @@ class Project(SQLModel, table=True):
     name: str
     base_url: str = ""
     """Default execution target URL (used by render_login_smoke_prompt etc.)."""
+    login_url: str = ""
+    """Optional deterministic login page URL for authenticated test runs."""
     description: str = ""
 
     default_username: str = ""

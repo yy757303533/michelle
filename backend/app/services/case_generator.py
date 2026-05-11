@@ -134,15 +134,21 @@ class GeneratedBatch(BaseModel):
 # ── Public API ──
 
 
-def _login_context_for_gen(default_username: str | None, default_password: str | None) -> str:
+def _login_context_for_gen(
+    default_username: str | None,
+    default_password: str | None,
+    login_url: str | None = None,
+) -> str:
     """Tell the case-gen LLM whether the project has credentials. With them,
     the prompt explicitly asks for inline login steps in protected-feature
     cases; without them, the prompt asks the LLM to skip login automation
     and rely on `preconditions` instead. Either way the LLM stops guessing."""
     if default_username and default_password:
+        login_url = (login_url or "").strip()
+        login_line = f" Use login URL `{login_url}`." if login_url else ""
         return (
             f"This project has default test credentials configured "
-            f"(username: {default_username}). When a case targets a feature "
+            f"(username: {default_username}).{login_line} When a case targets a feature "
             f"that requires authentication, prepend login steps using these "
             f"credentials so the case is self-contained and runnable."
         )
@@ -166,6 +172,7 @@ async def generate_cases_for_chapter(
     prefer_provider: str | None = None,
     default_username: str | None = None,
     default_password: str | None = None,
+    login_url: str | None = None,
     generation_job_id: str | None = None,
 ) -> tuple[list[TestCase], GeneratedBatch]:
     """Generate cases for one chapter; persist them; return (saved_cases, raw_batch).
@@ -194,7 +201,7 @@ async def generate_cases_for_chapter(
         "v1",
         project_name=project_name,
         base_url=base_url or "(unknown)",
-        login_context=_login_context_for_gen(default_username, default_password),
+        login_context=_login_context_for_gen(default_username, default_password, login_url),
         chapter_id=f"{chapter.level}:{chapter.normalized_title}",
         chapter_text=chapter.body[:6000],  # cap to keep prompt cheap
         max_cases=max_cases,
@@ -243,6 +250,7 @@ async def generate_cases_for_chapters(
     prefer_provider: str | None = None,
     default_username: str | None = None,
     default_password: str | None = None,
+    login_url: str | None = None,
     generation_job_id: str | None = None,
 ) -> list[tuple[Chapter, list[TestCase], GeneratedBatch]]:
     """Generate cases for adjacent chapters in one LLM call.
@@ -265,6 +273,7 @@ async def generate_cases_for_chapters(
             prefer_provider=prefer_provider,
             default_username=default_username,
             default_password=default_password,
+            login_url=login_url,
             generation_job_id=generation_job_id,
         )
         return [(actionables[0], saved, batch)]
@@ -290,7 +299,7 @@ async def generate_cases_for_chapters(
         "v1",
         project_name=project_name,
         base_url=base_url or "(unknown)",
-        login_context=_login_context_for_gen(default_username, default_password),
+        login_context=_login_context_for_gen(default_username, default_password, login_url),
         chapter_id="batch:" + ",".join(_chapter_id(c) for c in actionables),
         chapter_text=chapter_text,
         max_cases=total_target,

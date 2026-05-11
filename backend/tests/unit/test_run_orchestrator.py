@@ -129,6 +129,31 @@ async def test_render_execute_prompt_substitutes_fields(seeded):
     assert "URL changes to /home" in prompt
 
 
+def test_render_execute_prompt_includes_project_login_url():
+    proj = Project(
+        project_id="demo",
+        name="Demo",
+        base_url="http://example.com",
+        login_url="http://example.com/auth/login",
+        default_username="admin@example.com",
+        default_password="secret",
+    )
+    case = TestCase(
+        case_id="TC-AUTH-URL",
+        project_id="demo",
+        name="protected flow",
+        intent="exercise a protected page",
+        auth_state="logged-in",
+        steps=[{"intent": "open protected page"}],
+        assertions=[{"description": "protected content is visible"}],
+    )
+
+    prompt = render_execute_prompt(case, proj)
+
+    assert "Login URL: http://example.com/auth/login" in prompt
+    assert "Use this login URL directly" in prompt
+
+
 # ── Status mapping ─────────────────────────────────────────────────────────
 
 
