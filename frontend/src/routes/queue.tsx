@@ -69,6 +69,20 @@ function RunQueuePage() {
         <p className="text-sm text-slate-500 mt-1">
           Pending and running executions. Active tasks: {queue.data?.active_task_count ?? 0}.
         </p>
+        <div className="mt-2 flex items-center gap-2">
+          <Link
+            to="/runs"
+            className="text-xs rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-700 hover:border-slate-400"
+          >
+            all runs →
+          </Link>
+          <Link
+            to="/cases"
+            className="text-xs rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-700 hover:border-slate-400"
+          >
+            cases →
+          </Link>
+        </div>
         {rows.some((r) => r.stuck_hint) && (
           <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
             Some runs look stuck. Check the run detail or cancel and rerun after self-check passes.
@@ -109,7 +123,11 @@ function RunQueuePage() {
                       {r.run_id.slice(0, 8)}…
                     </Link>
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.case_id}</td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    <Link to="/cases" className="hover:underline">
+                      {r.case_id}
+                    </Link>
+                  </td>
                   <td className="px-3 py-2">
                     <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100">
                       {r.status}

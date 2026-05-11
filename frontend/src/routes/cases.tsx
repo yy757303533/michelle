@@ -358,6 +358,12 @@ function CasesPage() {
         </p>
         <div className="mt-2 flex items-center gap-2">
           <LLMRunnerStatusLight data={llmRunner.data} loading={llmRunner.isLoading} />
+          <Link
+            to="/queue"
+            className="text-xs rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-700 hover:border-slate-400"
+          >
+            run queue →
+          </Link>
           {runnerBlocked && (
             <span className="text-xs text-amber-700">
               Run is disabled until the selected execution loop is ready.
