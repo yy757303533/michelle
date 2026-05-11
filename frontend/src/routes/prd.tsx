@@ -63,6 +63,15 @@ function writeStoredAutoGeneration(prdId: string, state: StoredAutoGenerationSta
   else window.localStorage.removeItem(key);
 }
 
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
 export const Route = createFileRoute("/prd")({
   component: PrdPage,
 });
@@ -96,6 +105,32 @@ interface ChapterResult {
   error?: string;
   skipped?: boolean;
   skip_reason?: string;
+  batch_id?: string;
+  batch_latency_seconds?: number;
+}
+
+interface GenerationProgress {
+  active_batches?: Array<{
+    batch_id: string;
+    chapter_indices: number[];
+    chapter_titles: string[];
+    target_cases: number;
+  }>;
+  completed_batches?: number;
+  total_batches?: number;
+  parallelism?: number;
+  avg_batch_latency_seconds?: number | null;
+  eta_seconds?: number | null;
+  skip_requested?: boolean;
+  last_batch?: {
+    batch_id: string;
+    chapter_indices: number[];
+    chapter_titles: string[];
+    target_cases: number;
+    status?: string;
+    latency_seconds?: number;
+    error?: string | null;
+  };
 }
 
 /** POST /generate now returns 202 + a job_id; results stream into the
@@ -121,6 +156,11 @@ interface GenerationJob {
     completed_chapters: number;
     saved_cases: number;
     results: ChapterResult[];
+    request_payload: {
+      progress?: GenerationProgress;
+      parallelism?: number;
+      [key: string]: unknown;
+    };
     error: string | null;
     started_at: string | null;
     finished_at: string | null;
@@ -159,6 +199,7 @@ interface RuntimeSettingsResponse {
   data: {
     case_generation_provider: RuntimeKnob<string>;
     case_generation_preflight_timeout_seconds: RuntimeKnob<number>;
+    case_generation_parallelism: RuntimeKnob<number>;
   };
 }
 
@@ -185,6 +226,7 @@ function PrdPage() {
   const [chaptersPerRunInput, setChaptersPerRunInput] = useState(readChaptersPerRun);
   const [generationTimeoutInput, setGenerationTimeoutInput] =
     useState(readGenerationTimeout);
+  const [parallelismInput, setParallelismInput] = useState("1");
 
   const setActivePrdId = (id: string) => {
     setActivePrdIdState(id);
@@ -212,6 +254,8 @@ function PrdPage() {
   useEffect(() => {
     const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
     if (typeof value === "number") setPreflightTimeoutInput(String(value));
+    const parallelism = runtimeSettings.data?.data.case_generation_parallelism.value;
+    if (typeof parallelism === "number") setParallelismInput(String(parallelism));
   }, [runtimeSettings.data]);
 
   async function updateRuntimeTimeout(seconds: number): Promise<RuntimeSettingsResponse> {
@@ -224,6 +268,19 @@ function PrdPage() {
     const data = (await r.json()) as RuntimeSettingsResponse;
     qc.setQueryData(["runtime-settings"], data);
     setPreflightTimeoutInput(String(data.data.case_generation_preflight_timeout_seconds.value));
+    return data;
+  }
+
+  async function updateRuntimeParallelism(value: number): Promise<RuntimeSettingsResponse> {
+    const r = await apiFetch("/api/settings/runtime", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ case_generation_parallelism: value }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const data = (await r.json()) as RuntimeSettingsResponse;
+    qc.setQueryData(["runtime-settings"], data);
+    setParallelismInput(String(data.data.case_generation_parallelism.value));
     return data;
   }
 
@@ -251,6 +308,14 @@ function PrdPage() {
     onError: () => {
       const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
       if (typeof value === "number") setPreflightTimeoutInput(String(value));
+    },
+  });
+
+  const saveParallelism = useMutation({
+    mutationFn: updateRuntimeParallelism,
+    onError: () => {
+      const value = runtimeSettings.data?.data.case_generation_parallelism.value;
+      if (typeof value === "number") setParallelismInput(String(value));
     },
   });
 
@@ -310,6 +375,28 @@ function PrdPage() {
         String(DEFAULT_GENERATION_TIMEOUT_SECONDS),
       );
     }
+  }
+
+  function parseParallelismInput(): number {
+    const raw = Number.parseInt(parallelismInput, 10);
+    const spec = runtimeSettings.data?.data.case_generation_parallelism;
+    const min = spec?.min ?? 1;
+    const max = spec?.max ?? 3;
+    if (!Number.isFinite(raw) || raw < min || raw > max) {
+      throw new Error(`parallelism must be between ${min} and ${max}`);
+    }
+    return raw;
+  }
+
+  function persistParallelismFromInput(value: string) {
+    setParallelismInput(value);
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return;
+    const spec = runtimeSettings.data?.data.case_generation_parallelism;
+    const min = spec?.min ?? 1;
+    const max = spec?.max ?? 3;
+    if (parsed < min || parsed > max || parsed === spec?.value) return;
+    saveParallelism.mutate(parsed);
   }
 
   // Cases for the current project, used to overlay "✓ N cases generated"
@@ -409,14 +496,16 @@ function PrdPage() {
       if (!uploaded) throw new Error("upload first");
       await saveTimeoutIfChanged();
       const generationTimeoutSeconds = parseGenerationTimeoutInput();
+      const parallelism = parseParallelismInput();
       if (chapterIndices.length === 0) throw new Error("no chapters queued");
       const r = await apiFetch(`/api/prd/${uploaded.prd_id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chapter_indices: chapterIndices,
-          max_cases_per_chapter: 8,
+          max_cases_per_chapter: 5,
           generation_timeout_seconds: generationTimeoutSeconds,
+          parallelism,
           prefer_provider:
             runtimeSettings.data?.data.case_generation_provider.value === "auto"
               ? null
@@ -437,6 +526,19 @@ function PrdPage() {
   const cancelJob = useMutation({
     mutationFn: async (jobId: string): Promise<GenerationJob> => {
       const r = await apiFetch(`/api/prd/jobs/${jobId}/cancel`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp) => {
+      setActiveJobId(resp.data.job_id);
+      qc.invalidateQueries({ queryKey: ["prd-job", resp.data.job_id] });
+      qc.invalidateQueries({ queryKey: ["prd-jobs", resp.data.prd_id] });
+    },
+  });
+
+  const skipCurrentBatch = useMutation({
+    mutationFn: async (jobId: string): Promise<GenerationJob> => {
+      const r = await apiFetch(`/api/prd/jobs/${jobId}/skip-current`, { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -1008,6 +1110,19 @@ function PrdPage() {
                 />
                 s
               </label>
+              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
+                Parallel
+                <select
+                  value={parallelismInput}
+                  disabled={runtimeSettings.isLoading || saveParallelism.isPending || isGenerating}
+                  onChange={(e) => persistParallelismFromInput(e.target.value)}
+                  className="border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
+                >
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
               <span className="text-xs text-slate-500">
                 provider:{" "}
                 <code>
@@ -1034,7 +1149,9 @@ function PrdPage() {
             <JobProgressPanel
               job={effectiveJob}
               onCancel={() => cancelAutoGeneration(effectiveJob.job_id)}
+              onSkipCurrent={() => skipCurrentBatch.mutate(effectiveJob.job_id)}
               cancelling={cancelJob.isPending}
+              skipping={skipCurrentBatch.isPending}
               autoProgress={autoProgress}
             />
           )}
@@ -1135,12 +1252,16 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function JobProgressPanel({
   job,
   onCancel,
+  onSkipCurrent,
   cancelling,
+  skipping,
   autoProgress,
 }: {
   job: GenerationJob["data"];
   onCancel: () => void;
+  onSkipCurrent: () => void;
   cancelling: boolean;
+  skipping: boolean;
   autoProgress: { total: number; processed: number; active: boolean } | null;
 }) {
   const isTerminal =
@@ -1151,6 +1272,15 @@ function JobProgressPanel({
   const pct = autoProgress?.active && autoProgress.total > 0
     ? Math.round((autoProgress.processed / autoProgress.total) * 100)
     : batchPct;
+  const progress = job.request_payload?.progress;
+  const activeBatches = progress?.active_batches ?? [];
+  const activeBatchLabel = activeBatches
+    .map((batch) => `#${batch.chapter_indices.join(",#")}`)
+    .join(" · ");
+  const etaLabel =
+    typeof progress?.eta_seconds === "number" && progress.eta_seconds > 0
+      ? formatDuration(progress.eta_seconds)
+      : null;
   const colour =
     job.status === "failed"
       ? "bg-red-50 border-red-200"
@@ -1196,6 +1326,16 @@ function JobProgressPanel({
         {!isTerminal && (
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-500 font-mono tabular-nums">{pct}%</span>
+            {activeBatches.length > 0 && (
+              <button
+                type="button"
+                onClick={onSkipCurrent}
+                disabled={skipping || progress?.skip_requested}
+                className="text-xs border border-amber-300 bg-white px-2 py-0.5 rounded text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+              >
+                {progress?.skip_requested ? "skip requested" : skipping ? "skipping…" : "skip batch"}
+              </button>
+            )}
             <button
               type="button"
               onClick={onCancel}
@@ -1208,12 +1348,42 @@ function JobProgressPanel({
         )}
       </div>
       {!isTerminal && (
-        <div className="w-full h-1.5 bg-slate-200/60 rounded-full overflow-hidden mb-2">
-          <div
-            className="h-full bg-blue-500 transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        <>
+          <div className="w-full h-1.5 bg-slate-200/60 rounded-full overflow-hidden mb-2">
+            <div
+              className="h-full bg-blue-500 transition-all duration-300"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+            {activeBatches.length > 0 && (
+              <span>
+                current {activeBatchLabel} · target{" "}
+                {activeBatches.reduce((sum, batch) => sum + batch.target_cases, 0)} cases
+              </span>
+            )}
+            {typeof progress?.completed_batches === "number" &&
+              typeof progress?.total_batches === "number" && (
+                <span>
+                  batches {progress.completed_batches}/{progress.total_batches}
+                  {progress.parallelism ? ` · parallel ${progress.parallelism}` : ""}
+                </span>
+              )}
+            {typeof progress?.avg_batch_latency_seconds === "number" && (
+              <span>last avg {formatDuration(progress.avg_batch_latency_seconds)}</span>
+            )}
+            {etaLabel && <span>ETA {etaLabel}</span>}
+            {progress?.last_batch && (
+              <span>
+                last {progress.last_batch.status} #{progress.last_batch.chapter_indices.join(",#")}
+                {typeof progress.last_batch.latency_seconds === "number"
+                  ? ` · ${formatDuration(progress.last_batch.latency_seconds)}`
+                  : ""}
+                {progress.last_batch.error ? ` · ${progress.last_batch.error}` : ""}
+              </span>
+            )}
+          </div>
+        </>
       )}
       {job.results.length > 0 && (
         <ul className="space-y-1 mt-2 max-h-60 overflow-y-auto">

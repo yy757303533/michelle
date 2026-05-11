@@ -498,7 +498,7 @@ async def test_run_job_walks_chapters_and_marks_done(memory_db, monkeypatch):
     class _StubBatch:
         coverage_notes = "stubbed"
 
-    async def _stub(*, session, chapter, project_id, **_kw):
+    async def _persist_stub(*, session, chapter, project_id, **_kw):
         from app.models import TestCase
 
         saved = []
@@ -519,22 +519,13 @@ async def test_run_job_walks_chapters_and_marks_done(memory_db, monkeypatch):
             session.add(tc)
             saved.append(tc)
         await session.commit()
-        return saved, _StubBatch()
+        return saved
 
-    async def _stub_batch(*, session, chapters, project_id, **kw):
-        out = []
-        for chapter in chapters:
-            saved, batch = await _stub(
-                session=session,
-                chapter=chapter,
-                project_id=project_id,
-                **kw,
-            )
-            out.append((chapter, saved, batch))
-        return out
+    async def _stub_batch(*, chapters, **_kw):
+        return [(chapter, _StubBatch(), "stub-model") for chapter in chapters]
 
-    monkeypatch.setattr(worker, "generate_cases_for_chapter", _stub)
-    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "generate_batches_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "persist_generated_batch", _persist_stub)
     monkeypatch.setattr(
         worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
     )
@@ -600,47 +591,52 @@ async def test_run_job_batches_adjacent_actionable_chapters(memory_db, monkeypat
 
     async def _stub_batch(
         *,
-        session,
         chapters,
+        generation_timeout_seconds=None,
+        **_kw,
+    ):
+        calls.append([c.normalized_title for c in chapters])
+        timeouts.append(generation_timeout_seconds)
+        return [(chapter, _StubBatch(f"notes {chapter.normalized_title}"), "stub-model") for chapter in chapters]
+
+    async def _persist_stub(
+        *,
+        session,
+        chapter,
         project_id,
         generation_job_id=None,
-        generation_timeout_seconds=None,
         **_kw,
     ):
         from app.models import TestCase
 
-        calls.append([c.normalized_title for c in chapters])
-        timeouts.append(generation_timeout_seconds)
-        out = []
-        for chapter in chapters:
-            tc = TestCase(
-                case_id=f"TC-{chapter.normalized_title}",
-                project_id=project_id,
-                name=f"case {chapter.normalized_title}",
-                intent="x",
-                generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
-                generation_job_id=generation_job_id,
-                tags=[],
-                preconditions=[],
-                steps=[{"intent": "open page"}],
-                assertions=[],
-                manual_edited_fields=[],
-                review_status="pending",
-            )
-            session.add(tc)
-            out.append((chapter, [tc], _StubBatch(f"notes {chapter.normalized_title}")))
+        tc = TestCase(
+            case_id=f"TC-{chapter.normalized_title}",
+            project_id=project_id,
+            name=f"case {chapter.normalized_title}",
+            intent="x",
+            generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
+            generation_job_id=generation_job_id,
+            tags=[],
+            preconditions=[],
+            steps=[{"intent": "open page"}],
+            assertions=[],
+            manual_edited_fields=[],
+            review_status="pending",
+        )
+        session.add(tc)
         await session.commit()
-        return out
+        return [tc]
 
-    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "generate_batches_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "persist_generated_batch", _persist_stub)
     monkeypatch.setattr(
         worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
     )
 
     await worker.run_job(job_id)
 
-    assert calls == [["c0", "c1", "c2", "c3"]]
-    assert timeouts == [240]
+    assert calls == [["c0", "c1"], ["c2", "c3"]]
+    assert timeouts == [240, 240]
     async with memory_db() as s:
         job = await s.get(PRDGenerationJob, job_id)
         assert job is not None
@@ -711,32 +707,33 @@ async def test_run_job_resumes_running_job_after_process_restart(memory_db, monk
     class _StubBatch:
         coverage_notes = "resumed"
 
-    async def _stub_batch(*, session, chapters, project_id, generation_job_id=None, **_kw):
+    async def _stub_batch(*, chapters, **_kw):
+        calls.append([c.position for c in chapters])
+        return [(chapter, _StubBatch(), "stub-model") for chapter in chapters]
+
+    async def _persist_stub(*, session, chapter, project_id, generation_job_id=None, **_kw):
         from app.models import TestCase
 
-        calls.append([c.position for c in chapters])
-        out = []
-        for chapter in chapters:
-            tc = TestCase(
-                case_id=f"TC-{chapter.normalized_title}",
-                project_id=project_id,
-                name=f"case {chapter.normalized_title}",
-                intent="x",
-                generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
-                generation_job_id=generation_job_id,
-                tags=[],
-                preconditions=[],
-                steps=[{"intent": "open page"}],
-                assertions=[],
-                manual_edited_fields=[],
-                review_status="pending",
-            )
-            session.add(tc)
-            out.append((chapter, [tc], _StubBatch()))
+        tc = TestCase(
+            case_id=f"TC-{chapter.normalized_title}",
+            project_id=project_id,
+            name=f"case {chapter.normalized_title}",
+            intent="x",
+            generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
+            generation_job_id=generation_job_id,
+            tags=[],
+            preconditions=[],
+            steps=[{"intent": "open page"}],
+            assertions=[],
+            manual_edited_fields=[],
+            review_status="pending",
+        )
+        session.add(tc)
         await session.commit()
-        return out
+        return [tc]
 
-    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "generate_batches_for_chapters", _stub_batch)
+    monkeypatch.setattr(worker, "persist_generated_batch", _persist_stub)
     monkeypatch.setattr(
         worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
     )
@@ -792,7 +789,7 @@ async def test_run_job_skips_metadata_chapter_without_llm(memory_db, monkeypatch
     async def _explode(**_kw):
         raise AssertionError("metadata chapters should not call the LLM")
 
-    monkeypatch.setattr(worker, "generate_cases_for_chapter", _explode)
+    monkeypatch.setattr(worker, "generate_batches_for_chapters", _explode)
 
     await worker.run_job(job_id)
 
@@ -855,7 +852,7 @@ async def test_run_job_fails_fast_when_llm_provider_unavailable(memory_db, monke
         raise AssertionError("generation should not start after failed preflight")
 
     monkeypatch.setattr(worker, "_preflight_llm_provider", _preflight)
-    monkeypatch.setattr(worker, "generate_cases_for_chapter", _explode)
+    monkeypatch.setattr(worker, "generate_batches_for_chapters", _explode)
 
     await worker.run_job(job_id)
 

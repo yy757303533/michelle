@@ -124,6 +124,15 @@ KNOBS: dict[str, dict[str, Any]] = {
             "before failing fast."
         ),
     },
+    "case_generation_parallelism": {
+        "type": _coerce_int,
+        "min": 1,
+        "max": 3,
+        "describe": (
+            "How many PRD-to-case LLM batches one generation job may run at once. "
+            "Keep this low for CLI providers to avoid local contention and rate limits."
+        ),
+    },
     "case_execution_provider": {
         "type": _coerce_execution_provider,
         "choices": [
@@ -232,6 +241,7 @@ _BOOTSTRAP_DEFAULTS: dict[str, Any] = {
     ),
     "case_generation_provider": lambda: "auto",
     "case_generation_preflight_timeout_seconds": lambda: 20,
+    "case_generation_parallelism": lambda: 1,
     "case_execution_provider": lambda: "auto",
     "diagnosis_provider": lambda: "auto",
     "email_enabled": lambda: False,
@@ -319,6 +329,14 @@ async def get_case_generation_preflight_timeout(session: AsyncSession | None = N
         return int(await _read_raw(session, "case_generation_preflight_timeout_seconds"))
     async with _db.async_session_maker() as s:
         return int(await _read_raw(s, "case_generation_preflight_timeout_seconds"))
+
+
+async def get_case_generation_parallelism(session: AsyncSession | None = None) -> int:
+    """Maximum concurrent LLM batches for one PRD-to-case generation job."""
+    if session is not None:
+        return int(await _read_raw(session, "case_generation_parallelism"))
+    async with _db.async_session_maker() as s:
+        return int(await _read_raw(s, "case_generation_parallelism"))
 
 
 async def get_case_execution_provider(session: AsyncSession | None = None) -> str | None:

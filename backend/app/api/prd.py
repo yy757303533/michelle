@@ -16,6 +16,7 @@ from app.db import get_session
 from app.models import PRD, PRDGenerationJob, Project
 from app.obs import EVENTS, get_logger
 from app.runtime_config import (
+    get_case_generation_parallelism,
     get_case_generation_preflight_timeout,
     get_case_generation_provider,
 )
@@ -44,10 +45,11 @@ class GenerateRequest(BaseModel):
     chapter_indices: list[int] | None = None
     """If null → generate for all NEW + MODIFIED chapters (vs prev version)."""
 
-    max_cases_per_chapter: int = Field(default=8, ge=1, le=50)
+    max_cases_per_chapter: int = Field(default=5, ge=1, le=50)
     generation_timeout_seconds: int = Field(default=180, ge=30, le=1800)
     """Per LLM batch timeout for case generation, not the preflight probe timeout."""
     prefer_provider: str | None = None
+    parallelism: int | None = Field(default=None, ge=1, le=3)
 
 
 @router.get("/")
@@ -291,6 +293,7 @@ async def generate_cases(
 
     prefer_provider = body.prefer_provider or await get_case_generation_provider(session)
     preflight_timeout = await get_case_generation_preflight_timeout(session)
+    parallelism = body.parallelism or await get_case_generation_parallelism(session)
     job_id, created = await create_or_reuse_job(
         prd_id=prd_id,
         project_id=prd.project_id,
@@ -300,6 +303,7 @@ async def generate_cases(
             "generation_timeout_seconds": body.generation_timeout_seconds,
             "prefer_provider": prefer_provider,
             "preflight_timeout_seconds": preflight_timeout,
+            "parallelism": parallelism,
         },
         total_chapters=len(indices),
     )
@@ -335,6 +339,39 @@ async def get_generation_job(
     await require_project_role(
         getattr(request.state, "user", None), job.project_id, "viewer", session
     )
+    return {"data": job.model_dump()}
+
+
+@router.post("/jobs/{job_id}/skip-current")
+async def skip_current_generation_batch(
+    job_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    job = await session.get(PRDGenerationJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    await require_project_role(
+        getattr(request.state, "user", None), job.project_id, "reviewer", session
+    )
+    if job.status in ("done", "failed", "cancelled"):
+        return {"data": job.model_dump()}
+    payload = dict(job.request_payload or {})
+    progress = dict(payload.get("progress") or {})
+    active_batches = [
+        b for b in progress.get("active_batches") or [] if isinstance(b, dict)
+    ]
+    skip_ids = set(payload.get("skip_batch_ids") or [])
+    for batch in active_batches:
+        if batch.get("batch_id"):
+            skip_ids.add(str(batch["batch_id"]))
+    payload["skip_batch_ids"] = sorted(skip_ids)
+    progress["skip_requested"] = True
+    payload["progress"] = progress
+    job.request_payload = payload
+    await session.commit()
+    await session.refresh(job)
+    log.info("prd.generation.batch_skip_requested", prd_id=job.prd_id, job_id=job.job_id)
     return {"data": job.model_dump()}
 
 

@@ -86,6 +86,13 @@ _NON_ACTIONABLE_TITLES = {
     "table of contents",
     "contents",
     "overview",
+    "project status",
+    "project milestones",
+    "milestones",
+    "status",
+    "assumptions",
+    "risks",
+    "glossary",
 }
 
 _ALWAYS_NON_ACTIONABLE_TITLES = {
@@ -96,6 +103,10 @@ _ALWAYS_NON_ACTIONABLE_TITLES = {
     "change history",
     "table of contents",
     "contents",
+    "project status",
+    "project milestones",
+    "milestones",
+    "glossary",
 }
 
 # ── Pydantic schema for what we expect back from the LLM ──
@@ -217,16 +228,15 @@ async def generate_cases_for_chapter(
         target_cases=target_cases,
     )
 
-    _text, model, raw = await _call_with_one_retry(
-        gw,
-        prompt,
-        pv_id,
-        log,
-        prefer_provider,
+    model, raw = await _generate_batch_from_prompt(
+        gw=gw,
+        prompt=prompt,
+        prompt_version=pv_id,
+        log=log,
+        prefer_provider=prefer_provider,
         target_cases=target_cases,
         generation_timeout_seconds=generation_timeout_seconds,
     )
-    raw.cases = dedupe_generated_cases(raw.cases)[:target_cases]
     saved = await _persist_cases(
         session=session,
         project_id=project_id,
@@ -282,6 +292,87 @@ async def generate_cases_for_chapters(
         )
         return [(actionables[0], saved, batch)]
 
+    generated = await generate_batches_for_chapters(
+        project_name=project_name,
+        base_url=base_url,
+        chapters=chapters,
+        max_cases=max_cases,
+        gateway=gateway,
+        prefer_provider=prefer_provider,
+        default_username=default_username,
+        default_password=default_password,
+        login_url=login_url,
+        generation_timeout_seconds=generation_timeout_seconds,
+    )
+    out: list[tuple[Chapter, list[TestCase], GeneratedBatch]] = []
+    pv_id = prompt_id("case_gen", "v1")
+    for chapter, batch, model in generated:
+        saved = await _persist_cases(
+            session=session,
+            project_id=project_id,
+            chapter=chapter,
+            cases=batch.cases,
+            prompt_version=pv_id,
+            model=model,
+            generation_job_id=generation_job_id,
+            log=_log.bind(project_id=project_id, chapter=chapter.normalized_title),
+        )
+        out.append((chapter, saved, batch))
+    return out
+
+
+async def generate_batches_for_chapters(
+    *,
+    project_name: str,
+    base_url: str,
+    chapters: list[Chapter],
+    max_cases: int = 8,
+    gateway: LLMGateway | None = None,
+    prefer_provider: str | None = None,
+    default_username: str | None = None,
+    default_password: str | None = None,
+    login_url: str | None = None,
+    generation_timeout_seconds: int = 180,
+) -> list[tuple[Chapter, GeneratedBatch, str]]:
+    """Generate case batches for chapters without writing TestCase rows."""
+    actionables = [c for c in chapters if is_actionable_chapter(c)]
+    if not actionables:
+        return []
+    if len(actionables) == 1:
+        chapter = actionables[0]
+        gw = gateway or get_gateway()
+        pv_id = prompt_id("case_gen", "v1")
+        target_cases = estimate_target_cases(chapter, max_cases=max_cases)
+        prompt = render(
+            "case_gen",
+            "v1",
+            project_name=project_name,
+            base_url=base_url or "(unknown)",
+            login_context=_login_context_for_gen(default_username, default_password, login_url),
+            chapter_id=f"{chapter.level}:{chapter.normalized_title}",
+            chapter_text=chapter.body[:6000],
+            max_cases=max_cases,
+            target_cases=target_cases,
+            module_hint=chapter.title[:60],
+        )
+        log = _log.bind(project_id="", chapter=chapter.normalized_title)
+        log.info(
+            "case.generation.start",
+            prompt_version=pv_id,
+            max_cases=max_cases,
+            target_cases=target_cases,
+        )
+        model, raw = await _generate_batch_from_prompt(
+            gw=gw,
+            prompt=prompt,
+            prompt_version=pv_id,
+            log=log,
+            prefer_provider=prefer_provider,
+            target_cases=target_cases,
+            generation_timeout_seconds=generation_timeout_seconds,
+        )
+        return [(chapter, raw, model)]
+
     gw = gateway or get_gateway()
     pv_id = prompt_id("case_gen", "v1")
     target_by_id = {
@@ -297,7 +388,7 @@ async def generate_cases_for_chapters(
         )
         for c in actionables
     )
-    log = _log.bind(project_id=project_id, chapter="batch")
+    log = _log.bind(project_id="", chapter="batch")
     prompt = render(
         "case_gen",
         "v1",
@@ -316,12 +407,12 @@ async def generate_cases_for_chapters(
         chapters=len(actionables),
         target_cases=total_target,
     )
-    _text, model, raw = await _call_with_one_retry(
-        gw,
-        prompt,
-        pv_id,
-        log,
-        prefer_provider,
+    model, raw = await _generate_batch_from_prompt(
+        gw=gw,
+        prompt=prompt,
+        prompt_version=pv_id,
+        log=log,
+        prefer_provider=prefer_provider,
         target_cases=total_target,
         generation_timeout_seconds=generation_timeout_seconds,
     )
@@ -334,27 +425,39 @@ async def generate_cases_for_chapters(
         if len(grouped[cid]) < target_by_id[cid]:
             grouped[cid].append(case)
 
-    out: list[tuple[Chapter, list[TestCase], GeneratedBatch]] = []
+    out: list[tuple[Chapter, GeneratedBatch, str]] = []
     for cid, chapter_cases in grouped.items():
         chapter = by_id[cid]
-        saved = await _persist_cases(
-            session=session,
-            project_id=project_id,
-            chapter=chapter,
-            cases=chapter_cases,
-            prompt_version=pv_id,
-            model=model,
-            generation_job_id=generation_job_id,
-            log=_log.bind(project_id=project_id, chapter=chapter.normalized_title),
-        )
         out.append(
             (
                 chapter,
-                saved,
                 GeneratedBatch(coverage_notes=raw.coverage_notes, cases=chapter_cases),
+                model,
             )
         )
     return out
+
+
+async def persist_generated_batch(
+    *,
+    session: AsyncSession,
+    project_id: str,
+    chapter: Chapter,
+    batch: GeneratedBatch,
+    model: str,
+    generation_job_id: str | None,
+) -> list[TestCase]:
+    """Persist one generated chapter batch. Worker calls this serially."""
+    return await _persist_cases(
+        session=session,
+        project_id=project_id,
+        chapter=chapter,
+        cases=batch.cases,
+        prompt_version=prompt_id("case_gen", "v1"),
+        model=model,
+        generation_job_id=generation_job_id,
+        log=_log.bind(project_id=project_id, chapter=chapter.normalized_title),
+    )
 
 
 async def _persist_cases(
@@ -433,6 +536,22 @@ def is_actionable_chapter(chapter: Chapter) -> bool:
         return False
     if _INTERNAL_ONLY_RE.search(text) and not _BROWSER_SURFACE_RE.search(text):
         return False
+    if not _BROWSER_SURFACE_RE.search(text):
+        broad_requirement_words = re.search(
+            r"\b(should|must|required|can|able)\b|必须|应该|可以", text, re.IGNORECASE
+        )
+        strong_action_words = re.search(
+            r"\b(click|tap|select|enter|input|type|submit|save|cancel|upload|download|"
+            r"search|filter|sort|create|edit|update|delete|view|open|navigate|login|"
+            r"logout|register|reset|verify|approve|reject|display|show|hide|redirect)\b"
+            r"|点击|选择|输入|提交|保存|取消|上传|下载|搜索|筛选|排序|创建|编辑|更新|删除|查看|打开|登录|注册|重置|校验|验证|展示|显示|跳转",
+            text,
+            re.IGNORECASE,
+        )
+        if title in _NON_ACTIONABLE_TITLES or (
+            broad_requirement_words and not strong_action_words and len(body) < 700
+        ):
+            return False
     if _ACTIONABLE_RE.search(text):
         return True
 
@@ -644,6 +763,29 @@ async def _call_with_one_retry(
     )
     batch = _parse_batch(res2.text, log)
     return res2.text, res2.model, batch
+
+
+async def _generate_batch_from_prompt(
+    *,
+    gw: LLMGateway,
+    prompt: str,
+    prompt_version: str,
+    log,
+    prefer_provider: str | None,
+    target_cases: int,
+    generation_timeout_seconds: int,
+) -> tuple[str, GeneratedBatch]:
+    _text, model, raw = await _call_with_one_retry(
+        gw,
+        prompt,
+        prompt_version,
+        log,
+        prefer_provider,
+        target_cases=target_cases,
+        generation_timeout_seconds=generation_timeout_seconds,
+    )
+    raw.cases = dedupe_generated_cases(raw.cases)[:target_cases]
+    return model, raw
 
 
 async def _chat_with_backoff(
