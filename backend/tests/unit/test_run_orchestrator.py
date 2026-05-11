@@ -290,6 +290,48 @@ def _mock_outcome(*, status_text: str = "passed", with_failure: bool = False) ->
     )
 
 
+def _mock_outcome_with_duplicate_case_step() -> RunOutcome:
+    """Fake two real tool events that both claim the same numbered case step."""
+    parsed = ParsedRun(
+        steps=[
+            ParsedStep(
+                step_index=0,
+                tool_name="browser_navigate",
+                tool_full_name="mcp__playwright__browser_navigate",
+                tool_args={"url": "http://example.com"},
+                tool_use_id="t1",
+                is_playwright=True,
+                case_step_index=1,
+            ),
+            ParsedStep(
+                step_index=1,
+                tool_name="browser_snapshot",
+                tool_full_name="mcp__playwright__browser_snapshot",
+                tool_args={},
+                tool_use_id="t2",
+                is_playwright=True,
+                case_step_index=1,
+            ),
+        ],
+        summary=RunSummary(
+            success=True,
+            final_text='RESULT={"case_status":"passed"}',
+            parsed_result={"case_status": "passed"},
+            duration_ms=1000,
+            num_turns=2,
+            cost_usd=None,
+        ),
+    )
+    return RunOutcome(
+        parsed=parsed,
+        stdout_path=__import__("pathlib").Path("/tmp/dummy.jsonl"),
+        stderr_path=__import__("pathlib").Path("/tmp/dummy.err"),
+        mcp_config_path=__import__("pathlib").Path("/tmp/dummy.mcp.json"),
+        exit_code=0,
+        elapsed_ms=1000,
+    )
+
+
 @pytest.mark.asyncio
 async def test_execute_case_passed_path(seeded, session):
     proj, case = seeded
@@ -331,6 +373,36 @@ async def test_execute_case_passed_path(seeded, session):
     }
     assert rows[1].tool_name == "browser_type"
     assert rows[1].phase == "action"
+
+
+@pytest.mark.asyncio
+async def test_execute_case_shows_duplicate_case_step_only_once(seeded, session):
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    with patch(
+        "app.services.run_orchestrator.run_claude_with_playwright",
+        AsyncMock(return_value=_mock_outcome_with_duplicate_case_step()),
+    ):
+        out = await execute_case(case_id=case.case_id, run_id=run.run_id)
+
+    assert out.status == "passed"
+    rows = (
+        (
+            await session.execute(
+                select(StepEvent)
+                .where(StepEvent.run_id == run.run_id)
+                .order_by(StepEvent.step_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows[0].intent == "open login page"
+    assert rows[0].tool_result["case_step"]["index"] == 1
+    assert rows[1].intent == "browser_snapshot"
+    assert "case_step" not in rows[1].tool_result
 
 
 @pytest.mark.asyncio
@@ -634,6 +706,75 @@ async def test_execute_case_attaches_case_step_to_generic_runtime_event(
         "intent": "open login page",
         "expected": "form is visible",
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_case_shows_duplicate_runtime_case_step_only_once(
+    seeded, session, monkeypatch
+):
+    from app.agent.executor import ExecutorStatus
+    from app.agent.generic_runner import GenericRunnerError
+
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="generic_openai",
+            resolved_loop="generic_openai",
+            detail="test",
+            generic_available=True,
+            generic_providers=["codex-cli"],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    async def fake_generic(req):
+        assert req.on_runtime_event is not None
+        for tool_name in ("browser_navigate", "browser_snapshot"):
+            await req.on_runtime_event(
+                ParsedStep(
+                    step_index=0,
+                    tool_name="tool_start",
+                    tool_full_name="michelle.tool_start",
+                    tool_args={
+                        "turn": 0,
+                        "tool": tool_name,
+                        "arguments": {"url": "http://example.com"}
+                        if tool_name == "browser_navigate"
+                        else {},
+                        "case_step_index": 1,
+                    },
+                    tool_use_id=f"runtime-{tool_name}",
+                    is_playwright=False,
+                    result_text=f"starting {tool_name}",
+                )
+            )
+        raise GenericRunnerError("generic loop exceeded total timeout")
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
+    monkeypatch.setattr(run_orchestrator, "run_generic_with_playwright", fake_generic)
+
+    out = await execute_case(case_id=case.case_id, run_id=run.run_id, timeout_seconds=1)
+
+    assert out.status == "aborted"
+    rows = (
+        (
+            await session.execute(
+                select(StepEvent)
+                .where(StepEvent.run_id == run.run_id)
+                .order_by(StepEvent.step_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows[0].intent == "open login page"
+    assert rows[0].tool_result["case_step"]["index"] == 1
+    assert rows[1].intent == "tool_start"
+    assert "case_step" not in rows[1].tool_result
 
 
 @pytest.mark.asyncio

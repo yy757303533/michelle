@@ -231,10 +231,19 @@ def _persist_step_events(
     *,
     step_offset: int = 0,
     case: TestCase | None = None,
+    seen_case_step_indexes: set[int] | None = None,
 ) -> list[StepEvent]:
     rows: list[StepEvent] = []
+    seen_case_step_indexes = seen_case_step_indexes if seen_case_step_indexes is not None else set()
     for s in parsed_steps:
-        case_step = _case_step_context(case, getattr(s, "case_step_index", None))
+        case_step_index = _coerce_positive_int(getattr(s, "case_step_index", None))
+        case_step = (
+            _case_step_context(case, case_step_index)
+            if case_step_index not in seen_case_step_indexes
+            else None
+        )
+        if case_step_index is not None and case_step:
+            seen_case_step_indexes.add(case_step_index)
         tool_result = {
             "result_text": (s.result_text or "")[:8000],
             "is_error": s.result_is_error,
@@ -508,7 +517,15 @@ async def _persist_results(
     existing rows so the (run_id, step_index) tuple stays unique and the
     report viewer can render attempt boundaries via the gap."""
     step_offset = await _next_step_offset(session, run.run_id)
-    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset, case=case)
+    seen = await _existing_case_step_indexes(session, run.run_id)
+    _persist_step_events(
+        session,
+        run.run_id,
+        parsed.steps,
+        step_offset=step_offset,
+        case=case,
+        seen_case_step_indexes=seen,
+    )
     for ev in _assertion_step_events(run_id=run.run_id, parsed=parsed, step_offset=step_offset):
         session.add(ev)
 
@@ -535,7 +552,15 @@ async def _persist_partial_results(
     case: TestCase | None = None,
 ) -> None:
     step_offset = await _next_step_offset(session, run.run_id)
-    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset, case=case)
+    seen = await _existing_case_step_indexes(session, run.run_id)
+    _persist_step_events(
+        session,
+        run.run_id,
+        parsed.steps,
+        step_offset=step_offset,
+        case=case,
+        seen_case_step_indexes=seen,
+    )
     (rd / "trace.jsonl").write_text(
         "\n".join(json.dumps(_step_event_summary(s), ensure_ascii=False) for s in parsed.steps),
         encoding="utf-8",
@@ -554,7 +579,13 @@ async def _persist_runtime_event(
     case: TestCase | None = None,
 ) -> None:
     next_index = await _next_step_offset(session, run_id)
-    case_step = _case_step_context(case, _runtime_case_step_index(parsed))
+    case_step_index = _runtime_case_step_index(parsed)
+    seen = await _existing_case_step_indexes(session, run_id)
+    case_step = (
+        _case_step_context(case, case_step_index)
+        if case_step_index not in seen
+        else None
+    )
     tool_result = {
         "result_text": (parsed.result_text or "")[:8000],
         "is_error": bool(parsed.result_is_error),
@@ -591,6 +622,27 @@ def _coerce_positive_int(raw: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+async def _existing_case_step_indexes(session: AsyncSession, run_id: str) -> set[int]:
+    rows = (
+        (
+            await session.execute(
+                select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    indexes: set[int] = set()
+    for row in rows:
+        result = row.tool_result if isinstance(row.tool_result, dict) else {}
+        case_step = result.get("case_step") if isinstance(result, dict) else None
+        if isinstance(case_step, dict):
+            index = _coerce_positive_int(case_step.get("index"))
+            if index is not None:
+                indexes.add(index)
+    return indexes
 
 
 async def _load_step_events(session: AsyncSession, run_id: str) -> list[StepEvent]:

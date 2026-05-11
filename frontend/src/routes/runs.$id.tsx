@@ -44,6 +44,11 @@ interface StepEvent {
   screenshot_after?: string | null;
 }
 
+interface TimelineStep {
+  step: StepEvent;
+  showCaseStep: boolean;
+}
+
 interface RunRow {
   run_id: string;
   trace_id: string;
@@ -248,6 +253,7 @@ function RunDetailPage() {
     );
   const run = data!.data.run;
   const steps = data!.data.steps;
+  const timelineSteps = buildTimelineSteps(steps);
   const failureContext = data!.data.failure_context;
   const live = !TERMINAL.has(run.status);
   const phaseCounts = phaseSummary(steps);
@@ -310,7 +316,7 @@ function RunDetailPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-4 gap-3 text-sm">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
         <Card label="duration" value={fmtMs(run.duration_ms)} />
         <Card
           label="steps"
@@ -319,6 +325,7 @@ function RunDetailPage() {
         />
         <Card label="tokens" value={`${run.input_tokens} in / ${run.output_tokens} out`} />
         <Card label="started" value={fmtTime(run.started_at)} />
+        <Card label="ended" value={fmtTime(run.ended_at)} />
       </div>
 
       {run.error_message && (
@@ -389,10 +396,11 @@ function RunDetailPage() {
           </div>
         ) : (
           <ol>
-            {steps.map((s) => (
+            {timelineSteps.map(({ step: s, showCaseStep }) => (
               <StepRow
                 key={s.step_index}
                 s={s}
+                showCaseStep={showCaseStep}
                 screenshotUrl={
                   // Prefer the explicit screenshot path the backend recorded
                   // on the StepEvent; fall back to filename-pattern guess for
@@ -692,14 +700,17 @@ function CaseSpecPanel({
 
 function StepRow({
   s,
+  showCaseStep,
   screenshotUrl,
   onShowImage,
 }: {
   s: StepEvent;
+  showCaseStep: boolean;
   screenshotUrl: string | null;
   onShowImage: (url: string) => void;
 }) {
   const ok = s.status !== "failed";
+  const displayIntent = showCaseStep ? s.intent : fallbackStepIntent(s);
   return (
     <li
       className={
@@ -720,9 +731,9 @@ function StepRow({
           <div className="font-mono text-xs text-slate-500">{s.tool_name}</div>
           <div className="flex items-center gap-2">
             <PhaseBadge phase={s.phase || "action"} />
-            <div className="font-medium">{s.intent || "(no label)"}</div>
+            <div className="font-medium">{displayIntent || "(no label)"}</div>
           </div>
-          {s.tool_result?.case_step?.expected && (
+          {showCaseStep && s.tool_result?.case_step?.expected && (
             <div className="mt-1 text-xs text-slate-500 italic">
               → {s.tool_result.case_step.expected}
             </div>
@@ -762,6 +773,36 @@ function StepRow({
       </div>
     </li>
   );
+}
+
+function buildTimelineSteps(steps: StepEvent[]): TimelineStep[] {
+  const seenCaseStepIndexes = new Set<number>();
+  return steps.map((step) => {
+    const index = step.tool_result?.case_step?.index;
+    const showCaseStep =
+      typeof index === "number" && index > 0 && !seenCaseStepIndexes.has(index);
+    if (showCaseStep && index) {
+      seenCaseStepIndexes.add(index);
+    }
+    return { step, showCaseStep };
+  });
+}
+
+function fallbackStepIntent(s: StepEvent): string | null {
+  const args = s.tool_args ?? {};
+  const runtimeTool = typeof args.tool === "string" ? args.tool : null;
+  const runtimeArgs =
+    args.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)
+      ? (args.arguments as Record<string, unknown>)
+      : args;
+  const tool = runtimeTool || s.tool_name;
+  if (typeof runtimeArgs.url === "string") return `${tool}: ${runtimeArgs.url}`;
+  if (typeof runtimeArgs.element === "string") return `${tool}: ${runtimeArgs.element}`;
+  if (typeof runtimeArgs.text === "string") return `${tool}: ${runtimeArgs.text.slice(0, 40)}`;
+  if (typeof runtimeArgs.time === "number" || typeof runtimeArgs.time === "string") {
+    return `${tool}: ${runtimeArgs.time}s`;
+  }
+  return tool || s.intent;
 }
 
 function PhaseBadge({ phase }: { phase: string }) {
