@@ -236,7 +236,13 @@ function RunDetailPage() {
           <div className="text-xs uppercase tracking-wide text-slate-400">run</div>
           <h1 className="text-2xl font-semibold font-mono">{run.run_id.slice(0, 12)}…</h1>
           <div className="text-sm text-slate-500 mt-1">
-            case <Link to="/cases" className="text-blue-700 underline">{run.case_id}</Link>{" "}
+            case{" "}
+            <a
+              href={`/cases?project_id=${encodeURIComponent(run.project_id)}&case_id=${encodeURIComponent(run.case_id)}`}
+              className="text-blue-700 underline"
+            >
+              {run.case_id}
+            </a>{" "}
             · env <code>{run.env}</code> · trace <code>{run.trace_id.slice(0, 8)}</code>
           </div>
         </div>

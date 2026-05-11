@@ -400,9 +400,12 @@ function RunsListPage() {
                     </Link>
                   </td>
                   <td className="p-2 font-mono text-xs">
-                    <Link to="/cases" className="hover:underline">
+                    <a
+                      href={`/cases?project_id=${encodeURIComponent(r.project_id)}&case_id=${encodeURIComponent(r.case_id)}`}
+                      className="hover:underline"
+                    >
                       {r.case_id}
-                    </Link>
+                    </a>
                     {(historyCounts.get(r.case_id) ?? 0) > 1 && (
                       <Link
                         to="/runs/$id"

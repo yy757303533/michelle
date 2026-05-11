@@ -58,6 +58,7 @@ def test_render_html_contains_summary_cards():
     assert "demo 测试报告" in h
     assert "TC-1" in h
     assert "TC-2" in h
+    assert 'href="/cases?project_id=demo&amp;case_id=TC-1"' in h
     assert "boom" in h
 
 

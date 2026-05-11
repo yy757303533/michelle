@@ -124,9 +124,12 @@ function RunQueuePage() {
                     </Link>
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">
-                    <Link to="/cases" className="hover:underline">
+                    <a
+                      href={`/cases?project_id=${encodeURIComponent(r.project_id)}&case_id=${encodeURIComponent(r.case_id)}`}
+                      className="hover:underline"
+                    >
                       {r.case_id}
-                    </Link>
+                    </a>
                   </td>
                   <td className="px-3 py-2">
                     <span className="font-mono text-xs px-2 py-0.5 rounded bg-slate-100">

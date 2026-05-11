@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from app.models.run import Run, StepEvent
 
@@ -72,7 +73,7 @@ def render_report_html(report: ReportInput) -> str:
     total = len(report.rows)
     pass_pct = round(passed / total * 100) if total else 0
 
-    rows_html = "".join(_row_html(r, screenshot_map) for r in report.rows)
+    rows_html = "".join(_row_html(r, screenshot_map, project=report.project) for r in report.rows)
     return _template(
         project=report.project,
         run_id=report.run_id,
@@ -242,7 +243,7 @@ def _build_screenshot_map(rows: list[ResultRow]) -> dict[str, str]:
     return out
 
 
-def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
+def _row_html(r: ResultRow, screenshots: dict[str, str], *, project: str) -> str:
     # Coerce status into the known set so the HTML attribute below is never
     # attacker-controllable, then escape it for the attribute regardless.
     status = r.status if r.status in {PASS, FAIL, SKIP} else SKIP
@@ -265,9 +266,12 @@ def _row_html(r: ResultRow, screenshots: dict[str, str]) -> str:
             f'<img src="{uri}" alt="screenshot"></div>'
         )
 
+    project_q = _html.escape(quote(project or "", safe=""), quote=True)
+    case_q = _html.escape(quote(r.case_id or "", safe=""), quote=True)
+    case_href = f"/cases?project_id={project_q}&amp;case_id={case_q}"
     return (
         f'<tr{row_cls} data-status="{status_attr}">'
-        f'<td class="cid">{cid}</td>'
+        f'<td class="cid"><a href="{case_href}" target="_blank" rel="noreferrer">{cid}</a></td>'
         f'<td class="mod">{mod}</td>'
         f"<td>{title}</td>"
         f"<td>{badge}</td>"
@@ -323,6 +327,7 @@ td{{padding:9px 12px;font-size:13px;border-bottom:1px solid #f0f0f0;vertical-ali
 tr:last-child td{{border-bottom:none}}
 .fail-row td{{background:#fff8f8}}.skip-row td{{background:#fffbf5}}
 .cid{{font-family:monospace;font-size:12px;color:#6e6e73;white-space:nowrap}}
+.cid a{{color:#0066cc;text-decoration:none}}.cid a:hover{{text-decoration:underline}}
 .mod{{font-size:12px;color:#6e6e73;white-space:nowrap}}
 .err{{color:#dc3545;font-size:12px;max-width:300px;word-break:break-word;white-space:pre-wrap}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;letter-spacing:.3px;white-space:nowrap}}

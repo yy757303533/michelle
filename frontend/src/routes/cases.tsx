@@ -66,6 +66,12 @@ const STATUS_FILTERS: Array<{ key: string; label: string }> = [
 ];
 
 const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+const CASE_ID_QUERY_KEY = "case_id";
+
+function readCaseIdFromUrl(): string {
+  if (typeof window === "undefined") return "";
+  return new URLSearchParams(window.location.search).get(CASE_ID_QUERY_KEY) ?? "";
+}
 
 function CasesPage() {
   const qc = useQueryClient();
@@ -79,13 +85,14 @@ function CasesPage() {
   const llmDetail = llmRunner.data?.detail ?? "";
   const runnerBlocked = isLLMRunnerBlocked(llmStatus);
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const initialCaseId = readCaseIdFromUrl();
+  const [expanded, setExpanded] = useState<string | null>(initialCaseId || null);
   const [editing, setEditing] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   // Free-text fuzzy filter on top of the status pills. The backend applies
   // this before pagination so large projects don't need a 5000-row fetch.
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(initialCaseId);
 
   // Server-side pagination. `all` keeps the old operator escape hatch but is
   // still capped by the API's max limit.
@@ -315,6 +322,14 @@ function CasesPage() {
   useEffect(() => {
     setPage(1);
   }, [filter, searchQuery, pageSize]);
+  useEffect(() => {
+    const linkedCaseId = readCaseIdFromUrl();
+    if (!linkedCaseId) return;
+    setFilter("");
+    setSearchQuery(linkedCaseId);
+    setExpanded(linkedCaseId);
+    setPage(1);
+  }, []);
   const pagedVisible = visible;
   const pageStart = total === 0 ? 0 : offset + 1;
   const pageEnd = offset + visible.length;
