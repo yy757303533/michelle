@@ -14,7 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlmodel import SQLModel, select
 
 import app.db as db_mod
-from app.models import PRD, PRDGenerationJob, Project, TestCase
+from app.models import (
+    PRD,
+    Diagnosis,
+    PRDGenerationJob,
+    Project,
+    ProjectMember,
+    Run,
+    StepEvent,
+    TestCase,
+)
 
 
 async def _noop_async(*_args, **_kwargs):
@@ -103,6 +112,67 @@ async def test_post_with_known_id_updates_existing(app_client, session):
     assert data["default_username"] == "admin"
     assert data["default_password"] == ""
     assert data["default_password_is_set"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_project_removes_owned_data(app_client, session):
+    session.add(Project(project_id="tmp", name="Temporary"))
+    session.add(ProjectMember(project_id="tmp", user_id="u1", role="admin"))
+    session.add(
+        PRD(
+            prd_id="prd-tmp",
+            project_id="tmp",
+            name="Spec",
+            raw_markdown="# Spec",
+            content_hash="hash",
+        )
+    )
+    session.add(
+        PRDGenerationJob(
+            job_id="job-tmp",
+            prd_id="prd-tmp",
+            project_id="tmp",
+            total_chapters=1,
+        )
+    )
+    session.add(
+        TestCase(
+            case_id="TC-TMP",
+            project_id="tmp",
+            name="case",
+            intent="intent",
+            module="module",
+            steps=[{"intent": "open"}],
+            assertions=[{"description": "works"}],
+        )
+    )
+    session.add(
+        Run(
+            run_id="run-tmp",
+            trace_id="trace-tmp",
+            project_id="tmp",
+            case_id="TC-TMP",
+            status="failed",
+        )
+    )
+    session.add(StepEvent(run_id="run-tmp", step_index=0, event="agent.step.executed"))
+    session.add(
+        Diagnosis(
+            diag_id="diag-tmp",
+            run_id="run-tmp",
+            case_id="TC-TMP",
+            diagnoser_prompt_version="v1",
+            diagnoser_model="test",
+            category="unknown",
+        )
+    )
+    await session.commit()
+
+    r = await app_client.delete("/api/projects/tmp")
+
+    assert r.status_code == 204
+    for model in (Project, ProjectMember, PRD, PRDGenerationJob, TestCase, Run, StepEvent, Diagnosis):
+        assert (await session.execute(select(model))).scalars().all() == []
 
 
 @pytest.mark.asyncio

@@ -43,6 +43,11 @@ def _args() -> argparse.Namespace:
         action="store_true",
         help="Run cases one at a time. Useful for first-run MCP/npm warm-up.",
     )
+    parser.add_argument(
+        "--keep-project",
+        action="store_true",
+        help="Keep the temporary day13-e2e project for debugging.",
+    )
     return parser.parse_args()
 
 
@@ -53,29 +58,39 @@ async def main() -> int:
         return 2
 
     headers = {"X-Michelle-Admin-Token": args.admin_token} if args.admin_token else {}
+    project_id = ""
     async with httpx.AsyncClient(timeout=30, headers=headers) as client:
         await _check_stack(client, args.backend, args.frontend, args.target_url)
         await _preflight_mcp(client, args.backend)
-        project_id = await _create_project(client, args)
-        case_ids = await _create_and_approve_cases(client, args.backend, project_id)
-        run_ids = (
-            await _start_runs_serial(client, args.backend, case_ids)
-            if args.serial
-            else await _start_runs(client, args.backend, case_ids)
-        )
-        runs = await _wait_for_runs(client, args.backend, run_ids, deadline_seconds=args.timeout)
+        try:
+            project_id = await _create_project(client, args)
+            case_ids = await _create_and_approve_cases(client, args.backend, project_id)
+            run_ids = (
+                await _start_runs_serial(client, args.backend, case_ids)
+                if args.serial
+                else await _start_runs(client, args.backend, case_ids)
+            )
+            runs = await _wait_for_runs(
+                client,
+                args.backend,
+                run_ids,
+                deadline_seconds=args.timeout,
+            )
 
-        failed = [r for r in runs if r["status"] in {"failed", "flaky", "aborted"}]
-        if not failed:
-            print("No failed/flaky/aborted run found; intentional failure case did not fail")
-            return 1
+            failed = [r for r in runs if r["status"] in {"failed", "flaky", "aborted"}]
+            if not failed:
+                print("No failed/flaky/aborted run found; intentional failure case did not fail")
+                return 1
 
-        diag = await _diagnose(client, args.backend, failed[0]["run_id"])
-        print("\n=== e2e smoke result ===")
-        for run in runs:
-            print(f"{run['run_id']}  {run['case_id']}  {run['status']}")
-        print(f"diagnosis run_id={failed[0]['run_id']} response_keys={sorted(diag.keys())}")
-        return 0
+            diag = await _diagnose(client, args.backend, failed[0]["run_id"])
+            print("\n=== e2e smoke result ===")
+            for run in runs:
+                print(f"{run['run_id']}  {run['case_id']}  {run['status']}")
+            print(f"diagnosis run_id={failed[0]['run_id']} response_keys={sorted(diag.keys())}")
+            return 0
+        finally:
+            if project_id and not args.keep_project:
+                await _delete_project(client, args.backend, project_id)
 
 
 async def _check_stack(
@@ -242,6 +257,14 @@ async def _diagnose(client: httpx.AsyncClient, backend: str, run_id: str) -> dic
     r = await client.post(f"{backend}/api/diagnosis/by-run/{run_id}/generate", json={})
     r.raise_for_status()
     return r.json()
+
+
+async def _delete_project(client: httpx.AsyncClient, backend: str, project_id: str) -> None:
+    r = await client.delete(f"{backend}/api/projects/{project_id}")
+    if r.status_code == 204:
+        print(f"temporary project deleted: {project_id}")
+        return
+    print(f"temporary project cleanup failed: {project_id} status={r.status_code} body={r.text}")
 
 
 if __name__ == "__main__":

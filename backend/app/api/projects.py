@@ -14,7 +14,7 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import Project, ProjectMember, Run, StepEvent, TestCase, User
+from app.models import PRD, PRDGenerationJob, Project, ProjectMember, Run, StepEvent, TestCase, User
 from app.services.report_html import (
     FAIL,
     PASS,
@@ -24,6 +24,7 @@ from app.services.report_html import (
     render_report_html,
     run_to_report_input,
 )
+from app.services.run_orchestrator import rollback_run_scope
 
 router = APIRouter()
 
@@ -90,6 +91,50 @@ async def get_project(
     if row is None:
         raise HTTPException(status_code=404, detail="project not found")
     return {"data": _project_out(row)}
+
+
+@router.delete("/{project_id}", status_code=204)
+async def delete_project(
+    project_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    row = await session.get(Project, project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    await require_project_role(getattr(request.state, "user", None), project_id, "admin", session)
+
+    run_ids = (
+        (await session.execute(select(Run.run_id).where(Run.project_id == project_id)))
+        .scalars()
+        .all()
+    )
+    run_history_deleted = 0
+    for run_id in run_ids:
+        run_history_deleted += await rollback_run_scope(session, run_id=run_id, delete_run=True)
+
+    for model in (PRDGenerationJob, TestCase, PRD, ProjectMember):
+        rows = (
+            (await session.execute(select(model).where(model.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+        for child in rows:
+            await session.delete(child)
+
+    await session.delete(row)
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="project.deleted",
+        method=request.method,
+        path=request.url.path,
+        status_code=204,
+        target_type="project",
+        target_id=project_id,
+        detail=f"name={row.name}; run_history_deleted={run_history_deleted}",
+        session=session,
+    )
+    await session.commit()
 
 
 @router.post("/")
