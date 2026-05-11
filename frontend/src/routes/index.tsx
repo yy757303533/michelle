@@ -11,6 +11,10 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 interface HealthResponse {
   status: string;
   version: string;
@@ -264,7 +268,9 @@ function SelfCheckPanel() {
     },
     refetchInterval: includeMcpProbe || includeLlmProbe ? false : 15000,
   });
-  const rows = check.data?.data.checks ?? [];
+  const rows = asArray<{ name: string; ok: boolean; detail: string; elapsed_ms?: number | null }>(
+    check.data?.data?.checks,
+  );
   return (
     <Panel title="Environment self-check">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -433,7 +439,8 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
     },
     refetchInterval: 3000,
   });
-  const latestByCase = (runs.data?.data ?? []).filter(
+  const runRows = asArray<RunsResponse["data"][number]>(runs.data?.data);
+  const latestByCase = runRows.filter(
     (r, index, arr) => arr.findIndex((candidate) => candidate.case_id === r.case_id) === index,
   );
 
@@ -474,16 +481,17 @@ function PRDsWidget({ projectId }: { projectId: string }) {
     },
     refetchInterval: 30000,
   });
+  const prdRows = asArray<PRDsResponse["data"][number]>(prds.data?.data);
 
   return (
     <Panel title="Recent PRDs" linkTo="/prd" linkLabel="upload →">
       {prds.isLoading ? (
         <span className="text-slate-400 text-sm">…</span>
-      ) : (prds.data?.data.length ?? 0) === 0 ? (
+      ) : prdRows.length === 0 ? (
         <Empty cta="upload first PRD" to="/prd" />
       ) : (
         <ul className="space-y-1.5 text-sm">
-          {prds.data?.data.slice(0, 4).map((p) => (
+          {prdRows.slice(0, 4).map((p) => (
             <li key={p.prd_id} className="flex items-center gap-2">
               <span className="text-xs text-slate-500 truncate flex-1">{p.name}</span>
               <span className="text-xs text-slate-400 font-mono">v{p.version}</span>
@@ -677,7 +685,8 @@ function CurrentProjectPanel({ projectId }: { projectId: string }) {
       return r.json();
     },
   });
-  const proj = projects.data?.data.find((p) => p.project_id === projectId);
+  const projectRows = asArray<ProjectConfig>(projects.data?.data);
+  const proj = projectRows.find((p) => p.project_id === projectId);
   if (!proj) return null;
 
   const hasCreds = Boolean(proj.default_username && proj.default_password_is_set);
