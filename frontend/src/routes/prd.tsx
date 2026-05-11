@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 import { apiFetch } from "../lib/adminAuth";
+import { parseMarkdownPreview, type MarkdownBlock } from "../lib/markdownPreview";
 import {
   deriveHandledChapterIndices as deriveHandledChapterIndicesFromState,
   parseStoredAutoGeneration,
@@ -174,6 +175,7 @@ interface GenerationJobsResponse {
 }
 
 type AutoGenerationState = StoredAutoGenerationState;
+type PrdViewTab = "chapters" | "preview" | "raw";
 
 interface GenerateVariables {
   chapterIndices: number[];
@@ -229,6 +231,7 @@ function PrdPage() {
   const [generationTimeoutInput, setGenerationTimeoutInput] =
     useState(readGenerationTimeout);
   const [parallelismInput, setParallelismInput] = useState("1");
+  const [prdViewTab, setPrdViewTab] = useState<PrdViewTab>("chapters");
 
   const setActivePrdId = (id: string) => {
     setActivePrdIdState(id);
@@ -440,6 +443,7 @@ function PrdPage() {
     if (hydrate.data) {
       setUploaded(hydrate.data.data);
       setSelected(new Set(hydrate.data.data.chapters.map((c) => c.position)));
+      setPrdViewTab("chapters");
       setActiveJobId(null);
       setAutoGeneration(readStoredAutoGeneration(hydrate.data.data.prd_id));
       handledTerminalJobIds.current.clear();
@@ -470,6 +474,7 @@ function PrdPage() {
     },
     onSuccess: (resp) => {
       setUploaded(resp.data);
+      setPrdViewTab("chapters");
       setActiveJobId(null);
       setAutoGeneration(null);
       writeStoredAutoGeneration(resp.data.prd_id, null);
@@ -816,6 +821,12 @@ function PrdPage() {
     e.target.value = "";
   };
 
+  const loadUploadedIntoEditor = () => {
+    if (!uploaded?.raw_markdown) return;
+    setMarkdown(uploaded.raw_markdown);
+    setName(uploaded.title);
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -897,7 +908,7 @@ function PrdPage() {
       {/* After upload: chapter list + diff + generate */}
       {uploaded && (
         <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
-          <div className="flex justify-between items-baseline">
+          <div className="flex flex-wrap justify-between items-baseline gap-2">
             <div>
               <span className="text-xs uppercase tracking-wide text-slate-400">
                 uploaded
@@ -907,6 +918,16 @@ function PrdPage() {
               <span className="ml-2 text-xs text-slate-400">
                 · prd_id <code>{uploaded.prd_id.slice(0, 8)}</code>…
               </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {uploaded.raw_markdown && (
+                <button
+                  className="text-xs px-2 py-1 rounded border border-slate-200 bg-white text-slate-600 hover:border-slate-400"
+                  onClick={loadUploadedIntoEditor}
+                >
+                  Load into editor
+                </button>
+              )}
             </div>
             {uploaded.diff_summary && (
               <div className="text-xs">
@@ -953,86 +974,105 @@ function PrdPage() {
             </div>
           )}
 
-          {uploaded.raw_markdown && (
-            <details className="rounded border border-slate-200 bg-slate-50">
-              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600">
-                View PRD content
-              </summary>
-              <pre className="max-h-96 overflow-auto border-t border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700 whitespace-pre-wrap">
-                {uploaded.raw_markdown}
-              </pre>
-            </details>
-          )}
-
           <div className="text-sm">
-            <div className="flex items-center gap-3 mb-2">
-              <span className="text-slate-500">
-                {uploaded.chapters.length} chapters · {selected.size} selected
-              </span>
-              <button
-                className="text-xs text-slate-500 underline hover:text-slate-700"
-                onClick={() => setSelected(new Set(uploaded.chapters.map((c) => c.position)))}
-              >
-                select all
-              </button>
-              <button
-                className="text-xs text-slate-500 underline hover:text-slate-700"
-                onClick={() => setSelected(new Set())}
-              >
-                clear
-              </button>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className="inline-flex rounded border border-slate-200 bg-slate-50 p-0.5">
+                {(["chapters", "preview", "raw"] as PrdViewTab[]).map((tab) => (
+                  <button
+                    key={tab}
+                    className={
+                      "px-2.5 py-1 text-xs rounded capitalize " +
+                      (prdViewTab === tab
+                        ? "bg-white text-slate-900 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800")
+                    }
+                    onClick={() => setPrdViewTab(tab)}
+                  >
+                    {tab}
+                  </button>
+                ))}
+              </div>
+              {prdViewTab === "chapters" && (
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">
+                    {uploaded.chapters.length} chapters · {selected.size} selected
+                  </span>
+                  <button
+                    className="text-xs text-slate-500 underline hover:text-slate-700"
+                    onClick={() => setSelected(new Set(uploaded.chapters.map((c) => c.position)))}
+                  >
+                    select all
+                  </button>
+                  <button
+                    className="text-xs text-slate-500 underline hover:text-slate-700"
+                    onClick={() => setSelected(new Set())}
+                  >
+                    clear
+                  </button>
+                </div>
+              )}
             </div>
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate-400">
-                <tr>
-                  <th className="pb-1 w-8"></th>
-                  <th className="pb-1 w-12">#</th>
-                  <th className="pb-1">title</th>
-                  <th className="pb-1 w-16">level</th>
-                  <th className="pb-1 w-20">chars</th>
-                  <th className="pb-1 w-24">hash</th>
-                  <th className="pb-1 w-32">cases</th>
-                </tr>
-              </thead>
-              <tbody>
-                {uploaded.chapters.map((c) => {
-                  const counts = chapterCount(c);
-                  return (
-                    <tr key={c.position} className="border-t border-slate-100">
-                      <td className="py-1">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(c.position)}
-                          onChange={() => toggleChapter(c.position)}
-                        />
-                      </td>
-                      <td className="text-slate-400 font-mono text-xs">{c.position}</td>
-                      <td>
-                        <code>{c.title}</code>{" "}
-                        <span className="text-xs text-slate-400">
-                          ({c.normalized_title})
-                        </span>
-                      </td>
-                      <td className="text-slate-500">H{c.level}</td>
-                      <td className="text-slate-500 font-mono text-xs">{c.body_chars}</td>
-                      <td className="text-slate-400 font-mono text-xs">{c.hash}</td>
-                      <td className="text-xs">
-                        {counts.total === 0 ? (
-                          <span className="text-slate-300">—</span>
-                        ) : (
-                          <span
-                            className="text-emerald-700"
-                            title={`${counts.pending} pending, ${counts.approved} approved`}
-                          >
-                            ✓ {counts.total}
+            {prdViewTab === "chapters" && (
+              <table className="w-full text-sm">
+                <thead className="text-left text-slate-400">
+                  <tr>
+                    <th className="pb-1 w-8"></th>
+                    <th className="pb-1 w-12">#</th>
+                    <th className="pb-1">title</th>
+                    <th className="pb-1 w-16">level</th>
+                    <th className="pb-1 w-20">chars</th>
+                    <th className="pb-1 w-24">hash</th>
+                    <th className="pb-1 w-32">cases</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uploaded.chapters.map((c) => {
+                    const counts = chapterCount(c);
+                    return (
+                      <tr key={c.position} className="border-t border-slate-100">
+                        <td className="py-1">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(c.position)}
+                            onChange={() => toggleChapter(c.position)}
+                          />
+                        </td>
+                        <td className="text-slate-400 font-mono text-xs">{c.position}</td>
+                        <td>
+                          <code>{c.title}</code>{" "}
+                          <span className="text-xs text-slate-400">
+                            ({c.normalized_title})
                           </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        </td>
+                        <td className="text-slate-500">H{c.level}</td>
+                        <td className="text-slate-500 font-mono text-xs">{c.body_chars}</td>
+                        <td className="text-slate-400 font-mono text-xs">{c.hash}</td>
+                        <td className="text-xs">
+                          {counts.total === 0 ? (
+                            <span className="text-slate-300">—</span>
+                          ) : (
+                            <span
+                              className="text-emerald-700"
+                              title={`${counts.pending} pending, ${counts.approved} approved`}
+                            >
+                              ✓ {counts.total}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            {prdViewTab === "preview" && (
+              <MarkdownPreview markdown={uploaded.raw_markdown || ""} />
+            )}
+            {prdViewTab === "raw" && (
+              <pre className="max-h-[560px] overflow-auto rounded border border-slate-200 bg-slate-950 p-4 text-xs leading-5 text-slate-100 whitespace-pre-wrap">
+                {uploaded.raw_markdown || "(raw markdown is not available for this PRD)"}
+              </pre>
+            )}
           </div>
 
           <div>
@@ -1260,6 +1300,94 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </label>
   );
+}
+
+function MarkdownPreview({ markdown }: { markdown: string }) {
+  const blocks = parseMarkdownPreview(markdown);
+  if (!blocks.length) {
+    return (
+      <div className="rounded border border-slate-200 bg-slate-50 p-4 text-sm text-slate-400">
+        No PRD content available.
+      </div>
+    );
+  }
+  return (
+    <div className="max-h-[560px] overflow-auto rounded border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-700">
+      {blocks.map((block, index) => (
+        <MarkdownBlockView block={block} key={index} />
+      ))}
+    </div>
+  );
+}
+
+function MarkdownBlockView({ block }: { block: MarkdownBlock }) {
+  if (block.type === "heading") {
+    const size =
+      block.level === 1
+        ? "text-2xl mt-0"
+        : block.level === 2
+          ? "text-xl"
+          : block.level === 3
+            ? "text-lg"
+            : "text-base";
+    return (
+      <div className={`${size} font-semibold text-slate-900 mt-5 mb-2`}>
+        {renderInlineMarkdown(block.text)}
+      </div>
+    );
+  }
+  if (block.type === "list") {
+    const ListTag = block.ordered ? "ol" : "ul";
+    return (
+      <ListTag
+        className={
+          "my-2 pl-5 space-y-1 " + (block.ordered ? "list-decimal" : "list-disc")
+        }
+      >
+        {block.items.map((item, index) => (
+          <li key={index}>{renderInlineMarkdown(item)}</li>
+        ))}
+      </ListTag>
+    );
+  }
+  if (block.type === "code") {
+    return (
+      <pre className="my-3 overflow-auto rounded bg-slate-950 p-3 text-xs leading-5 text-slate-100">
+        {block.text}
+      </pre>
+    );
+  }
+  return <p className="my-2">{renderInlineMarkdown(block.text)}</p>;
+}
+
+function renderInlineMarkdown(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    const token = match[0];
+    if (token.startsWith("`")) {
+      nodes.push(
+        <code
+          className="rounded bg-slate-100 px-1 py-0.5 font-mono text-xs text-slate-800"
+          key={nodes.length}
+        >
+          {token.slice(1, -1)}
+        </code>,
+      );
+    } else {
+      nodes.push(
+        <strong className="font-semibold text-slate-900" key={nodes.length}>
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    }
+    last = match.index + token.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
 }
 
 function JobProgressPanel({

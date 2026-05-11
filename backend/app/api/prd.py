@@ -166,6 +166,7 @@ async def upload_prd(
             "prd_id": new_prd.prd_id,
             "version": new_prd.version,
             "title": parsed.title,
+            "raw_markdown": new_prd.raw_markdown,
             "chapters": [
                 {
                     "position": c.position,
@@ -174,6 +175,7 @@ async def upload_prd(
                     "normalized_title": c.normalized_title,
                     "hash": c.hash[:12],
                     "body_chars": len(c.body),
+                    "body": c.body,
                 }
                 for c in parsed.chapters
             ],
