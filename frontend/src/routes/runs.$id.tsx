@@ -74,6 +74,19 @@ interface RunDetail {
   };
 }
 
+interface CaseDetail {
+  data: {
+    case_id: string;
+    steps: Array<{ intent: string; expected?: string }>;
+    assertions: Array<{
+      description: string;
+      source?: string;
+      confidence?: number;
+      rationale?: string;
+    }>;
+  };
+}
+
 interface ArtifactsResponse {
   data: Array<{ name: string; size: number; is_image: boolean; kind?: string }>;
 }
@@ -115,6 +128,17 @@ function RunDetailPage() {
     },
     refetchInterval: () => (isTerminal ? false : 3000),
     enabled: Boolean(data),
+  });
+
+  const caseId = data?.data.run.case_id ?? "";
+  const caseSpec = useQuery({
+    queryKey: ["run-case-spec", caseId],
+    enabled: Boolean(caseId),
+    queryFn: async (): Promise<CaseDetail> => {
+      const r = await apiFetch(`/api/cases/${encodeURIComponent(caseId)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
   });
 
   // The run can flip to terminal a fraction of a second before the report
@@ -335,6 +359,14 @@ function RunDetailPage() {
           )}
         </div>
       </div>
+
+      <CaseSpecPanel
+        caseId={run.case_id}
+        loading={caseSpec.isLoading}
+        error={caseSpec.error as Error | null}
+        steps={caseSpec.data?.data.steps ?? []}
+        assertions={caseSpec.data?.data.assertions ?? []}
+      />
 
       {/* Step timeline */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -568,6 +600,87 @@ function RunHistorySection({
           );
         })}
       </ol>
+    </div>
+  );
+}
+
+function CaseSpecPanel({
+  caseId,
+  loading,
+  error,
+  steps,
+  assertions,
+}: {
+  caseId: string;
+  loading: boolean;
+  error: Error | null;
+  steps: Array<{ intent: string; expected?: string }>;
+  assertions: Array<{
+    description: string;
+    source?: string;
+    confidence?: number;
+    rationale?: string;
+  }>;
+}) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+        case spec · <code className="font-mono normal-case">{caseId}</code>
+      </div>
+      {loading ? (
+        <div className="text-sm text-slate-400">loading case steps…</div>
+      ) : error ? (
+        <div className="text-sm text-amber-700">
+          case details unavailable: {error.message}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+              steps
+            </div>
+            {steps.length ? (
+              <ol className="list-decimal pl-5 space-y-2">
+                {steps.map((s, i) => (
+                  <li key={i}>
+                    <div>{s.intent}</div>
+                    {s.expected && (
+                      <div className="text-slate-500 italic">→ {s.expected}</div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <div className="text-slate-400">—</div>
+            )}
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+              assertions
+            </div>
+            {assertions.length ? (
+              <ul className="list-disc pl-5 space-y-2">
+                {assertions.map((a, i) => (
+                  <li key={i}>
+                    <div>{a.description}</div>
+                    {(a.source || a.confidence != null || a.rationale) && (
+                      <div className="text-[11px] text-slate-500">
+                        {a.source || "source?"}
+                        {a.confidence != null && (
+                          <> · confidence {Math.round(a.confidence * 100)}%</>
+                        )}
+                        {a.rationale && <> · {a.rationale}</>}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="text-slate-400">—</div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
