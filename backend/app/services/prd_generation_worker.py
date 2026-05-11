@@ -181,6 +181,9 @@ async def run_job(job_id: str) -> None:
         max_cases: int = int(body.get("max_cases_per_chapter", 8))
         prefer_provider: str | None = body.get("prefer_provider")
         preflight_timeout: int = int(body.get("preflight_timeout_seconds", 20))
+        generation_timeout: int = max(
+            30, min(1800, int(body.get("generation_timeout_seconds", 180)))
+        )
 
         if indices is None:
             indices = list(range(len(prd.chapters)))
@@ -279,6 +282,7 @@ async def run_job(job_id: str) -> None:
                             default_password=proj.default_password or None,
                             login_url=proj.login_url or None,
                             generation_job_id=job_id,
+                            generation_timeout_seconds=generation_timeout,
                         )
                         batch_rows = [
                             {
@@ -306,6 +310,7 @@ async def run_job(job_id: str) -> None:
                             default_password=proj.default_password or None,
                             login_url=proj.login_url or None,
                             generation_job_id=job_id,
+                            generation_timeout_seconds=generation_timeout,
                         )
                         generated_by_id = {
                             f"{chapter.level}:{chapter.normalized_title}": (saved, batch)

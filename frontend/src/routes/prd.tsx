@@ -14,8 +14,10 @@ import {
 
 const PRD_URL_KEY = "prd_id";
 const CHAPTERS_PER_RUN_KEY = "prd_chapters_per_run";
+const GENERATION_TIMEOUT_KEY = "prd_generation_timeout_seconds";
 const AUTO_GENERATION_KEY_PREFIX = "prd_auto_generation";
 const RECOMMENDED_CHAPTERS_PER_RUN = 5;
+const DEFAULT_GENERATION_TIMEOUT_SECONDS = 180;
 
 /** Read `?prd_id=` from the URL without going through the router so we
  * don't have to declare a search schema on the file route. */
@@ -35,6 +37,14 @@ function writePrdIdToUrl(prdId: string) {
 function readChaptersPerRun(): string {
   if (typeof window === "undefined") return String(RECOMMENDED_CHAPTERS_PER_RUN);
   return window.localStorage.getItem(CHAPTERS_PER_RUN_KEY) ?? String(RECOMMENDED_CHAPTERS_PER_RUN);
+}
+
+function readGenerationTimeout(): string {
+  if (typeof window === "undefined") return String(DEFAULT_GENERATION_TIMEOUT_SECONDS);
+  return (
+    window.localStorage.getItem(GENERATION_TIMEOUT_KEY) ??
+    String(DEFAULT_GENERATION_TIMEOUT_SECONDS)
+  );
 }
 
 function autoGenerationStorageKey(prdId: string): string {
@@ -173,6 +183,8 @@ function PrdPage() {
   const [activePrdId, setActivePrdIdState] = useState<string>(readPrdIdFromUrl);
   const [preflightTimeoutInput, setPreflightTimeoutInput] = useState("20");
   const [chaptersPerRunInput, setChaptersPerRunInput] = useState(readChaptersPerRun);
+  const [generationTimeoutInput, setGenerationTimeoutInput] =
+    useState(readGenerationTimeout);
 
   const setActivePrdId = (id: string) => {
     setActivePrdIdState(id);
@@ -278,6 +290,28 @@ function PrdPage() {
     }
   }
 
+  function parseGenerationTimeoutInput(): number {
+    const raw = Number.parseInt(generationTimeoutInput, 10);
+    if (!Number.isFinite(raw) || raw < 30 || raw > 1800) {
+      throw new Error("batch timeout must be between 30s and 1800s");
+    }
+    return raw;
+  }
+
+  function persistGenerationTimeoutFromInput() {
+    try {
+      const value = parseGenerationTimeoutInput();
+      setGenerationTimeoutInput(String(value));
+      window.localStorage.setItem(GENERATION_TIMEOUT_KEY, String(value));
+    } catch {
+      setGenerationTimeoutInput(String(DEFAULT_GENERATION_TIMEOUT_SECONDS));
+      window.localStorage.setItem(
+        GENERATION_TIMEOUT_KEY,
+        String(DEFAULT_GENERATION_TIMEOUT_SECONDS),
+      );
+    }
+  }
+
   // Cases for the current project, used to overlay "✓ N cases generated"
   // per chapter so the user can see what was produced even after navigating
   // away mid-generation. Polls every 5s while a PRD is open so background
@@ -374,6 +408,7 @@ function PrdPage() {
     mutationFn: async ({ chapterIndices }: GenerateVariables): Promise<GenerateAcceptResponse> => {
       if (!uploaded) throw new Error("upload first");
       await saveTimeoutIfChanged();
+      const generationTimeoutSeconds = parseGenerationTimeoutInput();
       if (chapterIndices.length === 0) throw new Error("no chapters queued");
       const r = await apiFetch(`/api/prd/${uploaded.prd_id}/generate`, {
         method: "POST",
@@ -381,6 +416,7 @@ function PrdPage() {
         body: JSON.stringify({
           chapter_indices: chapterIndices,
           max_cases_per_chapter: 8,
+          generation_timeout_seconds: generationTimeoutSeconds,
           prefer_provider:
             runtimeSettings.data?.data.case_generation_provider.value === "auto"
               ? null
@@ -424,17 +460,26 @@ function PrdPage() {
   function startAutoGeneration() {
     if (!uploaded) return;
     let batchSize: number;
+    let generationTimeoutSeconds: number;
     try {
       batchSize = parseChaptersPerRunInput();
+      generationTimeoutSeconds = parseGenerationTimeoutInput();
     } catch {
       setChaptersPerRunInput(String(RECOMMENDED_CHAPTERS_PER_RUN));
       window.localStorage.setItem(
         CHAPTERS_PER_RUN_KEY,
         String(RECOMMENDED_CHAPTERS_PER_RUN),
       );
+      setGenerationTimeoutInput(String(DEFAULT_GENERATION_TIMEOUT_SECONDS));
+      window.localStorage.setItem(
+        GENERATION_TIMEOUT_KEY,
+        String(DEFAULT_GENERATION_TIMEOUT_SECONDS),
+      );
       batchSize = RECOMMENDED_CHAPTERS_PER_RUN;
+      generationTimeoutSeconds = DEFAULT_GENERATION_TIMEOUT_SECONDS;
     }
     window.localStorage.setItem(CHAPTERS_PER_RUN_KEY, String(batchSize));
+    window.localStorage.setItem(GENERATION_TIMEOUT_KEY, String(generationTimeoutSeconds));
     const selectedChapterIndices = [...selected].sort((a, b) => a - b);
     const processedChapterIndices = deriveHandledChapterIndices(selectedChapterIndices);
     const firstBatch = selectNextChapterBatch({
@@ -924,7 +969,7 @@ function PrdPage() {
                 </span>
               ) : null}
               <label className="inline-flex items-center gap-1 text-xs text-slate-500">
-                Timeout
+                Probe timeout
                 <input
                   type="number"
                   min={runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.min ?? 5}
@@ -940,6 +985,26 @@ function PrdPage() {
                     }
                   }}
                   className="w-16 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
+                />
+                s
+              </label>
+              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
+                Batch timeout
+                <input
+                  type="number"
+                  min={30}
+                  max={1800}
+                  step={30}
+                  value={generationTimeoutInput}
+                  disabled={generate.isPending || isGenerating}
+                  onChange={(e) => setGenerationTimeoutInput(e.target.value)}
+                  onBlur={persistGenerationTimeoutFromInput}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="w-20 border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
                 />
                 s
               </label>

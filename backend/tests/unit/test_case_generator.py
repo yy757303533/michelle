@@ -15,13 +15,12 @@ from app.models import (
     TestCase,  # noqa: F401  registers tables
 )
 from app.services.case_generator import (
-    dedupe_generated_cases,
-    estimate_target_cases,
-    generate_cases_for_chapters,
-    is_actionable_chapter,
     _parse_batch,
     _strip_fences,
+    dedupe_generated_cases,
+    estimate_target_cases,
     generate_cases_for_chapter,
+    is_actionable_chapter,
 )
 from app.services.prd_parser import parse_prd
 from tests.unit.test_llm_gateway import FakeClient
@@ -168,6 +167,50 @@ async def test_call_retries_rate_limit_before_succeeding(session, monkeypatch):
     assert len(saved) == 1
     assert flaky.call_count == 2
     assert sleeps
+
+
+@pytest.mark.asyncio
+async def test_generate_cases_for_chapter_uses_configured_batch_timeout(session):
+    session.add(Project(project_id="demo", name="Demo", base_url="http://x"))
+    await session.commit()
+    prd = parse_prd("# T\n\n## Login\n\nUser enters email and password to log in.\n")
+
+    class _AssertingClient(FakeClient):
+        async def chat(self, prompt, *, prompt_version, **kwargs):
+            assert kwargs["timeout_seconds"] == 240
+            return LLMResult(
+                text=json.dumps(
+                    {
+                        "coverage_notes": "ok",
+                        "cases": [
+                            {
+                                "name": "login",
+                                "intent": "valid login",
+                                "steps": [{"intent": "open login"}, {"intent": "submit"}],
+                                "assertions": [{"description": "dashboard opens"}],
+                            }
+                        ],
+                    }
+                ),
+                provider=self.name,
+                model="stub-model",
+            )
+
+    gw = LLMGateway(
+        clients=[GatewayClient(name="stub", client=_AssertingClient("stub"), priority=10, available=True)]
+    )
+
+    saved, _ = await generate_cases_for_chapter(
+        project_id="demo",
+        project_name="Demo",
+        base_url="http://x",
+        chapter=prd.chapters[0],
+        session=session,
+        gateway=gw,
+        generation_timeout_seconds=240,
+    )
+
+    assert len(saved) == 1
 
 
 # ── Parsing helpers ──

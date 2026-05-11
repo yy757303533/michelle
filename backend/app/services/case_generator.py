@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.llm import FallbackableLLMError, LLMGateway, get_gateway, prompt_id, render
+from app.llm import FallbackableLLMError, LLMGateway, LLMResult, get_gateway, prompt_id, render
 from app.models.case import TestCase
 from app.obs import EVENTS, get_logger
 from app.services.prd_parser import Chapter
@@ -174,6 +174,7 @@ async def generate_cases_for_chapter(
     default_password: str | None = None,
     login_url: str | None = None,
     generation_job_id: str | None = None,
+    generation_timeout_seconds: int = 180,
 ) -> tuple[list[TestCase], GeneratedBatch]:
     """Generate cases for one chapter; persist them; return (saved_cases, raw_batch).
 
@@ -223,6 +224,7 @@ async def generate_cases_for_chapter(
         log,
         prefer_provider,
         target_cases=target_cases,
+        generation_timeout_seconds=generation_timeout_seconds,
     )
     raw.cases = dedupe_generated_cases(raw.cases)[:target_cases]
     saved = await _persist_cases(
@@ -252,6 +254,7 @@ async def generate_cases_for_chapters(
     default_password: str | None = None,
     login_url: str | None = None,
     generation_job_id: str | None = None,
+    generation_timeout_seconds: int = 180,
 ) -> list[tuple[Chapter, list[TestCase], GeneratedBatch]]:
     """Generate cases for adjacent chapters in one LLM call.
 
@@ -275,6 +278,7 @@ async def generate_cases_for_chapters(
             default_password=default_password,
             login_url=login_url,
             generation_job_id=generation_job_id,
+            generation_timeout_seconds=generation_timeout_seconds,
         )
         return [(actionables[0], saved, batch)]
 
@@ -319,6 +323,7 @@ async def generate_cases_for_chapters(
         log,
         prefer_provider,
         target_cases=total_target,
+        generation_timeout_seconds=generation_timeout_seconds,
     )
 
     by_id = {_chapter_id(c): c for c in actionables}
@@ -610,6 +615,7 @@ async def _call_with_one_retry(
     prefer: str | None,
     *,
     target_cases: int,
+    generation_timeout_seconds: int,
 ) -> tuple[str, str, GeneratedBatch]:
     """Call LLM, parse the JSON, and retry once with a stricter system prompt
     if real `json.loads` fails (not just a "looks like JSON" pre-check —
@@ -620,7 +626,7 @@ async def _call_with_one_retry(
         fallback=prefer is None,
         json_mode=True,
         max_tokens=max(1800, min(5000, 900 + target_cases * 550)),
-        timeout_seconds=180,
+        timeout_seconds=max(30, min(1800, generation_timeout_seconds)),
     )
     res = await _chat_with_backoff(gw, prompt, log=log, **call_kwargs)
     try:
@@ -648,7 +654,7 @@ async def _chat_with_backoff(
     attempts: int = 4,
     base_delay: float = 2.0,
     **kwargs,
-) -> "LLMResult":
+) -> LLMResult:
     last: FallbackableLLMError | None = None
     for attempt in range(1, attempts + 1):
         try:

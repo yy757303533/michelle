@@ -296,7 +296,10 @@ async def test_generate_endpoint_returns_202_and_job_id(app_client, session, mon
 
     monkeypatch.setattr(prd_api, "kick_off", lambda job_id: None)
 
-    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
+    r = await app_client.post(
+        "/api/prd/prd-1/generate",
+        json={"chapter_indices": [0], "generation_timeout_seconds": 240},
+    )
     assert r.status_code == 202
     data = r.json()["data"]
     assert data["job_id"].startswith("gen_")
@@ -352,7 +355,10 @@ async def test_generate_endpoint_reuses_active_job(app_client, session, monkeypa
     kicked: list[str] = []
     monkeypatch.setattr(prd_api, "kick_off", lambda job_id: kicked.append(job_id))
 
-    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
+    r = await app_client.post(
+        "/api/prd/prd-1/generate",
+        json={"chapter_indices": [0], "generation_timeout_seconds": 240},
+    )
     assert r.status_code == 202
     data = r.json()["data"]
     assert data["job_id"] == "gen_active"
@@ -396,13 +402,17 @@ async def test_generate_endpoint_uses_runtime_case_generation_provider(
 
     monkeypatch.setattr(prd_api, "kick_off", lambda job_id: None)
 
-    r = await app_client.post("/api/prd/prd-1/generate", json={"chapter_indices": [0]})
+    r = await app_client.post(
+        "/api/prd/prd-1/generate",
+        json={"chapter_indices": [0], "generation_timeout_seconds": 240},
+    )
     assert r.status_code == 202
     data = r.json()["data"]
     job = await session.get(PRDGenerationJob, data["job_id"])
     assert job is not None
     assert job.request_payload["prefer_provider"] == "codex-cli"
     assert job.request_payload["preflight_timeout_seconds"] == 45
+    assert job.request_payload["generation_timeout_seconds"] == 240
 
 
 @pytest.mark.asyncio
@@ -571,20 +581,34 @@ async def test_run_job_batches_adjacent_actionable_chapters(memory_db, monkeypat
     job_id = await worker.create_job(
         prd_id="p1",
         project_id="demo",
-        request_payload={"chapter_indices": [0, 1, 2, 3], "max_cases_per_chapter": 8},
+        request_payload={
+            "chapter_indices": [0, 1, 2, 3],
+            "max_cases_per_chapter": 8,
+            "generation_timeout_seconds": 240,
+        },
         total_chapters=4,
     )
 
     calls: list[list[str]] = []
+    timeouts: list[int] = []
 
     class _StubBatch:
         def __init__(self, notes: str):
             self.coverage_notes = notes
 
-    async def _stub_batch(*, session, chapters, project_id, generation_job_id=None, **_kw):
+    async def _stub_batch(
+        *,
+        session,
+        chapters,
+        project_id,
+        generation_job_id=None,
+        generation_timeout_seconds=None,
+        **_kw,
+    ):
         from app.models import TestCase
 
         calls.append([c.normalized_title for c in chapters])
+        timeouts.append(generation_timeout_seconds)
         out = []
         for chapter in chapters:
             tc = TestCase(
@@ -614,6 +638,7 @@ async def test_run_job_batches_adjacent_actionable_chapters(memory_db, monkeypat
     await worker.run_job(job_id)
 
     assert calls == [["c0", "c1", "c2", "c3"]]
+    assert timeouts == [240]
     async with memory_db() as s:
         job = await s.get(PRDGenerationJob, job_id)
         assert job is not None

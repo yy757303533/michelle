@@ -45,6 +45,8 @@ class GenerateRequest(BaseModel):
     """If null → generate for all NEW + MODIFIED chapters (vs prev version)."""
 
     max_cases_per_chapter: int = Field(default=8, ge=1, le=50)
+    generation_timeout_seconds: int = Field(default=180, ge=30, le=1800)
+    """Per LLM batch timeout for case generation, not the preflight probe timeout."""
     prefer_provider: str | None = None
 
 
@@ -295,6 +297,7 @@ async def generate_cases(
         request_payload={
             "chapter_indices": indices,
             "max_cases_per_chapter": body.max_cases_per_chapter,
+            "generation_timeout_seconds": body.generation_timeout_seconds,
             "prefer_provider": prefer_provider,
             "preflight_timeout_seconds": preflight_timeout,
         },
