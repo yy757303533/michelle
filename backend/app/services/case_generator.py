@@ -58,9 +58,20 @@ _ACTIONABLE_RE = re.compile(
 _BROWSER_SURFACE_RE = re.compile(
     r"\b("
     r"page|screen|view|form|button|field|input|dropdown|modal|dialog|toast|"
-    r"browser|ui|web|dashboard|login|register|profile|cart|checkout|search"
+    r"browser|ui|web|dashboard|login|signin|sign-in|sign\s+in|register|profile|"
+    r"cart|checkout|search|backoffice|feedback"
     r")\b"
     r"|页面|界面|表单|按钮|输入框|下拉|弹窗|提示|浏览器|前端|首页|登录|注册|个人资料|购物车|结账|搜索",
+    re.IGNORECASE,
+)
+
+_TITLE_UI_RE = re.compile(
+    r"\b("
+    r"login|signin|sign-in|sign\s+in|register|registration|page|pages|static pages|"
+    r"access control|permission|profile|form|feedback|q&a|question|questions|"
+    r"request|backoffice|dashboard|view|create|edit|update|upload|download"
+    r")\b"
+    r"|页面|界面|登录|注册|权限|访问控制|反馈|问题|表单|创建|编辑|更新|上传|下载|查看",
     re.IGNORECASE,
 )
 
@@ -536,6 +547,9 @@ def is_actionable_chapter(chapter: Chapter) -> bool:
         return False
     if _INTERNAL_ONLY_RE.search(text) and not _BROWSER_SURFACE_RE.search(text):
         return False
+    title_has_ui = bool(_TITLE_UI_RE.search(title))
+    if title_has_ui:
+        return True
     if not _BROWSER_SURFACE_RE.search(text):
         broad_requirement_words = re.search(
             r"\b(should|must|required|can|able)\b|必须|应该|可以", text, re.IGNORECASE

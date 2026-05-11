@@ -318,6 +318,20 @@ def test_short_functional_chapter_is_actionable():
     assert is_actionable_chapter(prd.chapters[0]) is True
 
 
+def test_short_ui_title_chapters_are_actionable():
+    chapters = [
+        "Backoffice Sign In",
+        "Questions Page Access Control",
+        "Static Pages",
+        "Q&A and Feedback",
+        "Complete Project Information Request",
+    ]
+
+    for title in chapters:
+        prd = parse_prd(f"# T\n\n## {title}\n\n")
+        assert is_actionable_chapter(prd.chapters[0]) is True, title
+
+
 # ── End-to-end with mocked LLM + in-memory SQLite ──
 
 
