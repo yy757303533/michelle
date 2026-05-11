@@ -53,6 +53,7 @@ class StepEvent:
     console_errors: int | None = None
     console_warnings: int | None = None
     screenshot_path: str | None = None
+    case_step_index: int | None = None
 
     def short_summary(self) -> str:
         """Human-readable one-liner for UI / log."""

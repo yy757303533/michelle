@@ -31,6 +31,11 @@ interface StepEvent {
     console_errors?: number | null;
     console_warnings?: number | null;
     result_text?: string | null;
+    case_step?: {
+      index: number;
+      intent: string;
+      expected?: string;
+    } | null;
   } | null;
   status: string;
   latency_ms: number | null;
@@ -717,6 +722,11 @@ function StepRow({
             <PhaseBadge phase={s.phase || "action"} />
             <div className="font-medium">{s.intent || "(no label)"}</div>
           </div>
+          {s.tool_result?.case_step?.expected && (
+            <div className="mt-1 text-xs text-slate-500 italic">
+              → {s.tool_result.case_step.expected}
+            </div>
+          )}
           {s.tool_args && Object.keys(s.tool_args).length > 0 && (
             <pre className="mt-1 text-xs text-slate-400 font-mono whitespace-pre-wrap break-all">
               {JSON.stringify(s.tool_args, null, 0)}
@@ -757,7 +767,6 @@ function StepRow({
 function PhaseBadge({ phase }: { phase: string }) {
   const m: Record<string, string> = {
     prepare: "bg-slate-100 text-slate-600",
-    case_step: "bg-violet-100 text-violet-700",
     action: "bg-blue-100 text-blue-700",
     assertion: "bg-amber-100 text-amber-700",
     cleanup: "bg-zinc-100 text-zinc-600",

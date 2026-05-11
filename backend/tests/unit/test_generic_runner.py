@@ -398,6 +398,72 @@ async def test_run_generic_allows_repeated_snapshots(tmp_path, monkeypatch) -> N
     assert outcome.parsed.summary.success is True
 
 
+@pytest.mark.asyncio
+async def test_run_generic_carries_case_step_index_on_tool_action(tmp_path, monkeypatch) -> None:
+    from app.llm.base import LLMResult
+
+    class FakeMCP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_click",
+                    description="click",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+        async def call_tool(self, _name, _arguments):
+            return {"content": [{"type": "text", "text": "clicked"}]}
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResult(
+                    text=(
+                        '{"tool":"browser_click","arguments":{"element":"Sign up","ref":"e1"},'
+                        '"case_step_index":2}'
+                    ),
+                    provider="fake",
+                    model="fake-model",
+                )
+            return LLMResult(
+                text=(
+                    '{"final":{"case_status":"passed","step_count":1,'
+                    '"assertion_results":[{"description":"clicked sign up",'
+                    '"passed":true,"evidence":"Sign up was clicked"}],"failure_summary":""}}'
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    fake_gateway = FakeGateway()
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: FakeMCP(),
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: fake_gateway)
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner.settings.generic_agent_max_turns", 2)
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(prompt="click sign up", work_dir=tmp_path, timeout_seconds=60)
+    )
+
+    assert outcome.parsed.steps[0].tool_name == "browser_click"
+    assert outcome.parsed.steps[0].tool_args == {"element": "Sign up", "ref": "e1"}
+    assert outcome.parsed.steps[0].case_step_index == 2
+
+
 class AsyncProvider:
     async def __call__(self):
         return "fake"

@@ -230,25 +230,30 @@ def _persist_step_events(
     parsed_steps: list[ParsedStep],
     *,
     step_offset: int = 0,
+    case: TestCase | None = None,
 ) -> list[StepEvent]:
     rows: list[StepEvent] = []
     for s in parsed_steps:
+        case_step = _case_step_context(case, getattr(s, "case_step_index", None))
+        tool_result = {
+            "result_text": (s.result_text or "")[:8000],
+            "is_error": s.result_is_error,
+            "page_url": s.page_url,
+            "page_title": s.page_title,
+            "console_errors": s.console_errors,
+            "console_warnings": s.console_warnings,
+        }
+        if case_step:
+            tool_result["case_step"] = case_step
         ev = StepEvent(
             run_id=run_id,
             step_index=step_offset + s.step_index,
             phase=_step_phase(s),
             event=EVENTS.AGENT_STEP_EXECUTED.name,
-            intent=_step_intent(s),
+            intent=case_step["intent"] if case_step else _step_intent(s),
             tool_name=s.tool_name,
             tool_args=s.tool_args,
-            tool_result={
-                "result_text": (s.result_text or "")[:8000],
-                "is_error": s.result_is_error,
-                "page_url": s.page_url,
-                "page_title": s.page_title,
-                "console_errors": s.console_errors,
-                "console_warnings": s.console_warnings,
-            },
+            tool_result=tool_result,
             screenshot_after=s.screenshot_path,
             status="failed" if s.result_is_error else "ok",
             error_message=(s.result_text or "")[:500] if s.result_is_error else None,
@@ -256,6 +261,25 @@ def _persist_step_events(
         session.add(ev)
         rows.append(ev)
     return rows
+
+
+def _case_step_context(case: TestCase | None, index: int | None) -> dict[str, Any] | None:
+    if case is None or index is None or index < 1:
+        return None
+    steps = case.steps or []
+    if index > len(steps):
+        return None
+    raw = steps[index - 1]
+    if not isinstance(raw, dict):
+        return None
+    intent = str(raw.get("intent") or "").strip()
+    expected = str(raw.get("expected") or "").strip()
+    if not intent and not expected:
+        return None
+    out: dict[str, Any] = {"index": index, "intent": intent or "case step"}
+    if expected:
+        out["expected"] = expected
+    return out
 
 
 def _assertion_step_events(
@@ -298,32 +322,6 @@ def _assertion_step_events(
         )
         rows.append(ev)
         next_index += 1
-    return rows
-
-
-def _persist_case_step_events(session: AsyncSession, run_id: str, case: TestCase) -> list[StepEvent]:
-    rows: list[StepEvent] = []
-    for step in case.steps or []:
-        if not isinstance(step, dict):
-            continue
-        intent = str(step.get("intent") or "").strip()
-        expected = str(step.get("expected") or "").strip()
-        if not intent and not expected:
-            continue
-        ev = StepEvent(
-            run_id=run_id,
-            step_index=len(rows),
-            phase="case_step",
-            event="case.step.planned",
-            intent=intent or "case step",
-            tool_name="case_step",
-            tool_args={"expected": expected} if expected else {},
-            tool_result=None,
-            status="ok",
-            error_message=None,
-        )
-        session.add(ev)
-        rows.append(ev)
     return rows
 
 
@@ -376,7 +374,6 @@ async def execute_case(
 
         run.status = "running"
         run.started_at = datetime.now(UTC)
-        _persist_case_step_events(session, run.run_id, case)
         await session.commit()
         log.info("orchestrator.run.started")
 
@@ -423,7 +420,7 @@ async def execute_case(
             return run
 
         async def on_runtime_event(step: ParsedStep) -> None:
-            await _persist_runtime_event(session, run.run_id, step)
+            await _persist_runtime_event(session, run.run_id, step, case=case)
 
         run_req = RunRequest(
             prompt=prompt,
@@ -451,7 +448,7 @@ async def execute_case(
         except (ClaudeRunnerError, GenericRunnerError) as exc:
             partial = getattr(exc, "partial", None)
             if isinstance(partial, ParsedRun) and partial.steps:
-                await _persist_partial_results(session, run, partial, rd)
+                await _persist_partial_results(session, run, partial, rd, case=case)
             run.status = "aborted"
             run.error_message = str(exc)[:500]
             run.ended_at = datetime.now(UTC)
@@ -472,7 +469,7 @@ async def execute_case(
             encoding="utf-8",
         )
 
-        await _persist_results(session, run, outcome.parsed)
+        await _persist_results(session, run, outcome.parsed, case=case)
 
         # Render the HTML report immediately
         steps_in_db = await _load_step_events(session, run_id)
@@ -504,12 +501,14 @@ async def _persist_results(
     session: AsyncSession,
     run: Run,
     parsed: ParsedRun,
+    *,
+    case: TestCase | None = None,
 ) -> None:
     """Write StepEvents + update Run fields. Retries push step_index past
     existing rows so the (run_id, step_index) tuple stays unique and the
     report viewer can render attempt boundaries via the gap."""
     step_offset = await _next_step_offset(session, run.run_id)
-    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset)
+    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset, case=case)
     for ev in _assertion_step_events(run_id=run.run_id, parsed=parsed, step_offset=step_offset):
         session.add(ev)
 
@@ -532,9 +531,11 @@ async def _persist_partial_results(
     run: Run,
     parsed: ParsedRun,
     rd: Any,
+    *,
+    case: TestCase | None = None,
 ) -> None:
     step_offset = await _next_step_offset(session, run.run_id)
-    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset)
+    _persist_step_events(session, run.run_id, parsed.steps, step_offset=step_offset, case=case)
     (rd / "trace.jsonl").write_text(
         "\n".join(json.dumps(_step_event_summary(s), ensure_ascii=False) for s in parsed.steps),
         encoding="utf-8",
@@ -549,25 +550,47 @@ async def _persist_runtime_event(
     session: AsyncSession,
     run_id: str,
     parsed: ParsedStep,
+    *,
+    case: TestCase | None = None,
 ) -> None:
     next_index = await _next_step_offset(session, run_id)
+    case_step = _case_step_context(case, _runtime_case_step_index(parsed))
+    tool_result = {
+        "result_text": (parsed.result_text or "")[:8000],
+        "is_error": bool(parsed.result_is_error),
+    }
+    if case_step:
+        tool_result["case_step"] = case_step
     ev = StepEvent(
         run_id=run_id,
         step_index=next_index,
         phase=_step_phase(parsed),
         event="agent.runtime.event",
-        intent=_step_intent(parsed),
+        intent=case_step["intent"] if case_step else _step_intent(parsed),
         tool_name=parsed.tool_name,
         tool_args=parsed.tool_args,
-        tool_result={
-            "result_text": (parsed.result_text or "")[:8000],
-            "is_error": bool(parsed.result_is_error),
-        },
+        tool_result=tool_result,
         status="failed" if parsed.result_is_error else "ok",
         error_message=(parsed.result_text or "")[:500] if parsed.result_is_error else None,
     )
     session.add(ev)
     await session.commit()
+
+
+def _runtime_case_step_index(parsed: ParsedStep) -> int | None:
+    index = getattr(parsed, "case_step_index", None)
+    if index is not None:
+        return index
+    args = parsed.tool_args if isinstance(parsed.tool_args, dict) else {}
+    return _coerce_positive_int(args.get("case_step_index"))
+
+
+def _coerce_positive_int(raw: Any) -> int | None:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 async def _load_step_events(session: AsyncSession, run_id: str) -> list[StepEvent]:

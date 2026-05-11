@@ -186,6 +186,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                         is_error=True,
                     )
                     continue
+                case_step_index = _coerce_case_step_index(action.get("case_step_index"))
                 action_key = (
                     tool_name,
                     json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str),
@@ -215,11 +216,14 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     req,
                     runtime_event_index,
                     "tool_start",
-                    {
-                        "turn": turn,
-                        "tool": tool_name,
-                        "arguments": _redact_value(arguments, req.secrets),
-                    },
+                    _with_case_step_index(
+                        {
+                            "turn": turn,
+                            "tool": tool_name,
+                            "arguments": _redact_value(arguments, req.secrets),
+                        },
+                        case_step_index,
+                    ),
                     f"starting {tool_name}",
                 )
                 await _call_mcp_tool_recording(
@@ -231,6 +235,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     steps=steps,
                     transcript=transcript,
                     turn=turn,
+                    case_step_index=case_step_index,
                 )
             else:
                 raise _generic_error(
@@ -467,6 +472,7 @@ async def _call_mcp_tool_recording(
     steps: list[StepEvent],
     transcript: list[str],
     turn: int | str,
+    case_step_index: int | None = None,
 ) -> StepEvent:
     idx = len(steps)
     safe_args = _redact_value(arguments, req.secrets)
@@ -477,6 +483,7 @@ async def _call_mcp_tool_recording(
         tool_args=safe_args,
         tool_use_id=f"generic-{idx}",
         is_playwright=True,
+        case_step_index=case_step_index,
     )
     steps.append(step)
 
@@ -604,7 +611,7 @@ turn, or return a final RESULT when done.
 Return ONLY one JSON object, no markdown:
 
 Tool action:
-{{"tool":"browser_snapshot","arguments":{{}},"reason":"why this action is next"}}
+{{"tool":"browser_snapshot","arguments":{{}},"case_step_index":1,"reason":"why this action is next"}}
 
 Final:
 {{"final":{{"case_status":"passed|failed","step_count":N,"assertion_results":[{{"description":"...","passed":true|false,"evidence":"..."}}],"failure_summary":"<empty if passed; one sentence if failed>"}}}}
@@ -616,6 +623,7 @@ Rules:
 - If a required element is missing or an action fails twice, inspect once, then try a different route or return failed with evidence.
 - Do not repeat the same tool with identical arguments more than twice.
 - Prefer browser_snapshot to understand the current page, browser_navigate to open URLs, and locator/ref based actions when the snapshot provides refs.
+- Include `case_step_index` as a 1-based number when the tool action is executing or verifying a numbered test step. Omit it for unrelated probing.
 - Keep `reason` short. It is for trace readability, not hidden planning.
 
 Available tools:
@@ -649,6 +657,20 @@ def _parse_action(text: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise GenericRunnerError("model JSON action must be an object")
     return data
+
+
+def _coerce_case_step_index(raw: Any) -> int | None:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _with_case_step_index(payload: dict[str, Any], index: int | None) -> dict[str, Any]:
+    if index is None:
+        return payload
+    return {**payload, "case_step_index": index}
 
 
 def _final_to_result_text(final: Any) -> str:

@@ -250,6 +250,7 @@ def _mock_outcome(*, status_text: str = "passed", with_failure: bool = False) ->
             tool_args={"url": "http://example.com"},
             tool_use_id="t1",
             is_playwright=True,
+            case_step_index=1,
             page_url="http://example.com",
             page_title="Example",
             console_errors=0,
@@ -318,20 +319,18 @@ async def test_execute_case_passed_path(seeded, session):
         .scalars()
         .all()
     )
-    assert len(rows) == 5
-    assert [r.tool_name for r in rows[:3]] == ["case_step", "case_step", "case_step"]
-    assert [r.intent for r in rows[:3]] == [
-        "open login page",
-        "type username admin",
-        "click submit",
-    ]
-    assert rows[0].phase == "case_step"
-    assert rows[0].tool_args == {"expected": "form is visible"}
-    assert rows[3].tool_name == "browser_navigate"
-    assert rows[3].phase == "prepare"
-    assert rows[3].status == "ok"
-    assert rows[4].tool_name == "browser_type"
-    assert rows[4].phase == "action"
+    assert len(rows) == 2
+    assert rows[0].tool_name == "browser_navigate"
+    assert rows[0].phase == "prepare"
+    assert rows[0].status == "ok"
+    assert rows[0].intent == "open login page"
+    assert rows[0].tool_result["case_step"] == {
+        "index": 1,
+        "intent": "open login page",
+        "expected": "form is visible",
+    }
+    assert rows[1].tool_name == "browser_type"
+    assert rows[1].phase == "action"
 
 
 @pytest.mark.asyncio
@@ -474,9 +473,8 @@ async def test_execute_case_persists_partial_steps_from_generic_exception(
         .scalars()
         .all()
     )
-    execution_rows = [r for r in rows if r.tool_name != "case_step"]
-    assert len(execution_rows) == 1
-    assert execution_rows[0].tool_name == "browser_navigate"
+    assert len(rows) == 1
+    assert rows[0].tool_name == "browser_navigate"
 
 
 @pytest.mark.asyncio
@@ -568,9 +566,74 @@ async def test_execute_case_persists_generic_runtime_events(seeded, session, mon
         .scalars()
         .all()
     )
-    runtime_rows = [r for r in rows if r.event == "agent.runtime.event"]
-    assert len(runtime_rows) == 1
-    assert runtime_rows[0].tool_name == "model_turn"
+    assert len(rows) == 1
+    assert rows[0].event == "agent.runtime.event"
+    assert rows[0].tool_name == "model_turn"
+
+
+@pytest.mark.asyncio
+async def test_execute_case_attaches_case_step_to_generic_runtime_event(
+    seeded, session, monkeypatch
+):
+    from app.agent.executor import ExecutorStatus
+    from app.agent.generic_runner import GenericRunnerError
+
+    _, case = seeded
+    run = await create_run_row(case_id=case.case_id, env="default", session=session)
+    await session.commit()
+
+    async def fake_executor_status(_session):
+        return ExecutorStatus(
+            status="ready",
+            configured_loop="generic_openai",
+            resolved_loop="generic_openai",
+            detail="test",
+            generic_available=True,
+            generic_providers=["codex-cli"],
+            claude_cli_available=False,
+            npx_available=True,
+        )
+
+    async def fake_generic(req):
+        assert req.on_runtime_event is not None
+        await req.on_runtime_event(
+            ParsedStep(
+                step_index=0,
+                tool_name="tool_start",
+                tool_full_name="michelle.tool_start",
+                tool_args={
+                    "turn": 0,
+                    "tool": "browser_navigate",
+                    "arguments": {"url": "http://example.com"},
+                    "case_step_index": 1,
+                },
+                tool_use_id="runtime-0",
+                is_playwright=False,
+                result_text="starting browser_navigate",
+            )
+        )
+        raise GenericRunnerError("generic loop exceeded total timeout")
+
+    monkeypatch.setattr(run_orchestrator, "resolve_executor_status", fake_executor_status)
+    monkeypatch.setattr(run_orchestrator, "run_generic_with_playwright", fake_generic)
+
+    out = await execute_case(case_id=case.case_id, run_id=run.run_id, timeout_seconds=1)
+
+    assert out.status == "aborted"
+    rows = (
+        (await session.execute(select(StepEvent).where(StepEvent.run_id == run.run_id)))
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].event == "agent.runtime.event"
+    assert rows[0].tool_name == "tool_start"
+    assert rows[0].intent == "open login page"
+    assert rows[0].tool_result["case_step"] == {
+        "index": 1,
+        "intent": "open login page",
+        "expected": "form is visible",
+    }
 
 
 @pytest.mark.asyncio
