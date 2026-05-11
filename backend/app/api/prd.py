@@ -307,6 +307,7 @@ async def generate_cases(
         kick_off(job_id)
         log.info("prd.generation.job_kicked_off", prd_id=prd_id, job_id=job_id)
     else:
+        kick_off(job_id)
         log.info("prd.generation.job_reused", prd_id=prd_id, job_id=job_id)
     job = await session.get(PRDGenerationJob, job_id)
     return {

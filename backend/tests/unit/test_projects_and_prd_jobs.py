@@ -314,7 +314,9 @@ async def test_generate_endpoint_returns_202_and_job_id(app_client, session, mon
 
 
 @pytest.mark.asyncio
-async def test_generate_endpoint_reuses_active_job(app_client, session, monkeypatch):
+async def test_generate_endpoint_reuses_and_resumes_active_job(
+    app_client, session, monkeypatch
+):
     proj = Project(project_id="demo", name="demo")
     prd = PRD(
         prd_id="prd-1",
@@ -364,7 +366,7 @@ async def test_generate_endpoint_reuses_active_job(app_client, session, monkeypa
     assert data["job_id"] == "gen_active"
     assert data["status"] == "running"
     assert data["reused"] is True
-    assert kicked == []
+    assert kicked == ["gen_active"]
 
 
 @pytest.mark.asyncio
@@ -645,6 +647,110 @@ async def test_run_job_batches_adjacent_actionable_chapters(memory_db, monkeypat
         assert job.status == "done"
         assert job.completed_chapters == 4
         assert job.saved_cases == 4
+
+
+@pytest.mark.asyncio
+async def test_run_job_resumes_running_job_after_process_restart(memory_db, monkeypatch):
+    from app.models import Project as ProjModel
+    from app.services import prd_generation_worker as worker
+
+    async with memory_db() as s:
+        s.add(ProjModel(project_id="demo", name="demo", base_url="http://x"))
+        s.add(
+            PRD(
+                prd_id="p1",
+                project_id="demo",
+                name="P",
+                raw_markdown="",
+                content_hash="h",
+                chapters=[
+                    {
+                        "level": 2,
+                        "title": f"C{i}",
+                        "normalized_title": f"c{i}",
+                        "body": f"User can view C{i} page.",
+                        "hash": f"h{i}",
+                        "position": i,
+                    }
+                    for i in range(6)
+                ],
+                version=1,
+            )
+        )
+        s.add(
+            PRDGenerationJob(
+                job_id="gen_resume",
+                prd_id="p1",
+                project_id="demo",
+                status="running",
+                total_chapters=6,
+                completed_chapters=4,
+                saved_cases=3,
+                results=[
+                    {
+                        "chapter_index": i,
+                        "chapter_title": f"C{i}",
+                        "saved_count": 3 if i == 0 else 0,
+                        "saved_case_ids": [],
+                        "coverage_notes": "already done",
+                        "skipped": False,
+                    }
+                    for i in range(4)
+                ],
+                request_payload={
+                    "chapter_indices": [0, 1, 2, 3, 4, 5],
+                    "max_cases_per_chapter": 8,
+                    "batch_chapter_count": 4,
+                },
+            )
+        )
+        await s.commit()
+
+    calls: list[list[int]] = []
+
+    class _StubBatch:
+        coverage_notes = "resumed"
+
+    async def _stub_batch(*, session, chapters, project_id, generation_job_id=None, **_kw):
+        from app.models import TestCase
+
+        calls.append([c.position for c in chapters])
+        out = []
+        for chapter in chapters:
+            tc = TestCase(
+                case_id=f"TC-{chapter.normalized_title}",
+                project_id=project_id,
+                name=f"case {chapter.normalized_title}",
+                intent="x",
+                generated_from=f"chapter:{chapter.level}:{chapter.normalized_title}",
+                generation_job_id=generation_job_id,
+                tags=[],
+                preconditions=[],
+                steps=[{"intent": "open page"}],
+                assertions=[],
+                manual_edited_fields=[],
+                review_status="pending",
+            )
+            session.add(tc)
+            out.append((chapter, [tc], _StubBatch()))
+        await session.commit()
+        return out
+
+    monkeypatch.setattr(worker, "generate_cases_for_chapters", _stub_batch)
+    monkeypatch.setattr(
+        worker, "_preflight_llm_provider", lambda _prefer, _timeout=20: _noop_async()
+    )
+
+    await worker.run_job("gen_resume")
+
+    assert calls == [[4, 5]]
+    async with memory_db() as s:
+        job = await s.get(PRDGenerationJob, "gen_resume")
+        assert job is not None
+        assert job.status == "done"
+        assert job.completed_chapters == 6
+        assert job.saved_cases == 5
+        assert [r["chapter_index"] for r in job.results] == [0, 1, 2, 3, 4, 5]
 
 
 @pytest.mark.asyncio

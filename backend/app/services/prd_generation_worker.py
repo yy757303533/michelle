@@ -36,6 +36,7 @@ from app.services.case_versioning import (
 from app.services.prd_parser import Chapter
 
 _log = get_logger(__name__)
+_TASKS: dict[str, asyncio.Task] = {}
 
 
 async def create_job(
@@ -145,9 +146,53 @@ async def rollback_generated_cases(session, job_id: str) -> int:
 
 
 def kick_off(job_id: str) -> asyncio.Task:
-    """Fire-and-forget the worker. Returns the task so callers can keep a
-    reference if they want; we don't gate anything on it."""
-    return asyncio.create_task(run_job(job_id))
+    """Fire-and-forget the worker, de-duped within this backend process.
+
+    Uvicorn reloads and process crashes erase in-memory tasks while the job row
+    remains `running`. Calling `kick_off` for an already-active DB row is
+    therefore intentional: if this process owns a task it is reused; otherwise
+    the worker resumes from persisted progress.
+    """
+    existing = _TASKS.get(job_id)
+    if existing is not None and not existing.done():
+        return existing
+    task = asyncio.create_task(_run_job_guarded(job_id))
+    _TASKS[job_id] = task
+    task.add_done_callback(lambda _task: _TASKS.pop(job_id, None))
+    return task
+
+
+async def _run_job_guarded(job_id: str) -> None:
+    try:
+        await run_job(job_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("prd.generation.worker_crashed", job_id=job_id, error=str(exc)[:200])
+        async with _db.async_session_maker() as session:
+            job = await session.get(PRDGenerationJob, job_id)
+            if job is not None and job.status in ("pending", "running"):
+                job.status = "failed"
+                job.error = f"worker crashed: {type(exc).__name__}: {str(exc)[:300]}"
+                job.finished_at = datetime.now(UTC)
+                await session.commit()
+
+
+async def resume_active_jobs() -> int:
+    """Resume pending/running generation jobs after backend startup/reload."""
+    async with _db.async_session_maker() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(PRDGenerationJob)
+                    .where(PRDGenerationJob.status.in_(["pending", "running"]))
+                    .order_by(PRDGenerationJob.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    for job in rows:
+        kick_off(job.job_id)
+    return len(rows)
 
 
 async def run_job(job_id: str) -> None:
@@ -165,8 +210,14 @@ async def run_job(job_id: str) -> None:
         if job is None:
             log.error("prd.generation.job_missing")
             return
-        if job.status in ("running", "done", "failed", "cancelled"):
+        if job.status in ("done", "failed", "cancelled"):
             return
+        existing_results: list[dict[str, Any]] = list(job.results or [])
+        completed_indices = {
+            int(row["chapter_index"])
+            for row in existing_results
+            if isinstance(row, dict) and "chapter_index" in row
+        }
         prd = await session.get(PRD, job.prd_id)
         proj = await session.get(Project, job.project_id) if prd else None
         if prd is None or proj is None:
@@ -199,7 +250,9 @@ async def run_job(job_id: str) -> None:
         # Mark running + commit so the polling client sees the transition
         # before the slow LLM loop begins.
         job.status = "running"
-        job.started_at = datetime.now(UTC)
+        if job.started_at is None:
+            job.started_at = datetime.now(UTC)
+        job.completed_chapters = len(existing_results)
         await session.commit()
 
         actionable_generation = any(
@@ -221,7 +274,7 @@ async def run_job(job_id: str) -> None:
                 log.error("prd.generation.provider_unavailable", error=job.error)
                 return
 
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = existing_results
         i = 0
         batch_size = int(body.get("batch_chapter_count", 4))
         while i < len(decisions):
@@ -231,6 +284,9 @@ async def run_job(job_id: str) -> None:
                 await rollback_generated_cases(session, job_id)
                 log.info("prd.generation.job_cancelled")
                 return
+            if d.chapter_index in completed_indices:
+                i += 1
+                continue
             chap = Chapter(**prd.chapters[d.chapter_index])
             if d.action != "regenerate":
                 row = {
@@ -263,6 +319,9 @@ async def run_job(job_id: str) -> None:
                     j = i + 1
                     while j < len(decisions) and len(batch_decisions) < max(1, batch_size):
                         nd = decisions[j]
+                        if nd.chapter_index in completed_indices:
+                            j += 1
+                            continue
                         nch = Chapter(**prd.chapters[nd.chapter_index])
                         if nd.action != "regenerate" or not is_actionable_chapter(nch):
                             break
@@ -342,6 +401,7 @@ async def run_job(job_id: str) -> None:
                             return
                         job.saved_cases += int(batch_row["saved_count"])
                         results.append(batch_row)
+                        completed_indices.add(int(batch_row["chapter_index"]))
                         job.results = list(results)
                         job.completed_chapters = len(results)
                         await session.commit()
@@ -368,6 +428,7 @@ async def run_job(job_id: str) -> None:
                 return
             job.saved_cases += saved_count
             results.append(row)
+            completed_indices.add(int(row["chapter_index"]))
             job.results = list(results)  # SQLAlchemy JSON column needs assignment to detect change
             job.completed_chapters = len(results)
             await session.commit()
