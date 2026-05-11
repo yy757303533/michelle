@@ -5,6 +5,30 @@ export interface StoredAutoGenerationState {
   batchSize: number;
 }
 
+export interface AutoGenerationChapter {
+  position: number;
+  level: number;
+  normalized_title: string;
+}
+
+export interface AutoGenerationCase {
+  case_id: string;
+  generated_from: string | null;
+}
+
+export interface AutoGenerationJobResult {
+  chapter_index: number;
+  error?: string;
+  skipped?: boolean;
+  skip_action?: string;
+  saved_case_ids?: string[];
+}
+
+export interface AutoGenerationJob {
+  status: string;
+  results: AutoGenerationJobResult[];
+}
+
 export function selectNextChapterBatch({
   selectedChapterIndices,
   processedChapterIndices,
@@ -20,6 +44,49 @@ export function selectNextChapterBatch({
     .sort((a, b) => a - b)
     .filter((index) => !processed.has(index))
     .slice(0, batchSize);
+}
+
+export function deriveHandledChapterIndices({
+  chapters,
+  cases,
+  jobs,
+  selectedChapterIndices,
+}: {
+  chapters: AutoGenerationChapter[];
+  cases: AutoGenerationCase[];
+  jobs: AutoGenerationJob[];
+  selectedChapterIndices: number[];
+}): number[] {
+  const selected = new Set(selectedChapterIndices);
+  const existingCaseIds = new Set(cases.map((row) => row.case_id));
+  const generatedFromWithCases = new Set(
+    cases
+      .map((row) => row.generated_from)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const handled = new Set<number>();
+
+  for (const chapter of chapters) {
+    if (!selected.has(chapter.position)) continue;
+    const signature = `chapter:${chapter.level}:${chapter.normalized_title}`;
+    if (generatedFromWithCases.has(signature)) handled.add(chapter.position);
+  }
+
+  for (const job of jobs) {
+    if (job.status !== "done") continue;
+    for (const result of job.results) {
+      if (!selected.has(result.chapter_index) || result.error) continue;
+      if (result.skipped && result.skip_action === "non_actionable") {
+        handled.add(result.chapter_index);
+        continue;
+      }
+      if (result.saved_case_ids?.some((caseId) => existingCaseIds.has(caseId))) {
+        handled.add(result.chapter_index);
+      }
+    }
+  }
+
+  return selectedChapterIndices.filter((index) => handled.has(index));
 }
 
 function isNumberArray(value: unknown): value is number[] {

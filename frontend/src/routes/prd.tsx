@@ -5,6 +5,7 @@ import { useCurrentProject } from "../lib/useCurrentProject";
 import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 import { apiFetch } from "../lib/adminAuth";
 import {
+  deriveHandledChapterIndices as deriveHandledChapterIndicesFromState,
   parseStoredAutoGeneration,
   selectNextChapterBatch,
   serializeAutoGeneration,
@@ -412,26 +413,12 @@ function PrdPage() {
 
   function deriveHandledChapterIndices(selectedChapterIndices: number[]): number[] {
     if (!uploaded) return [];
-    const generatedFromWithCases = new Set(
-      (projectCases.data?.data ?? [])
-        .map((row) => row.generated_from)
-        .filter((value): value is string => Boolean(value)),
-    );
-    const alreadyHandled = new Set<number>();
-    for (const chapter of uploaded.chapters) {
-      const signature = `chapter:${chapter.level}:${chapter.normalized_title}`;
-      if (generatedFromWithCases.has(signature)) alreadyHandled.add(chapter.position);
-    }
-    for (const priorJob of jobs.data?.data ?? []) {
-      if (priorJob.status !== "done") continue;
-      for (const result of priorJob.results) {
-        if (!result.error) alreadyHandled.add(result.chapter_index);
-      }
-    }
-    const processedChapterIndices = selectedChapterIndices.filter((index) =>
-      alreadyHandled.has(index),
-    );
-    return processedChapterIndices;
+    return deriveHandledChapterIndicesFromState({
+      chapters: uploaded.chapters,
+      cases: projectCases.data?.data ?? [],
+      jobs: jobs.data?.data ?? [],
+      selectedChapterIndices,
+    });
   }
 
   function startAutoGeneration() {
@@ -517,6 +504,19 @@ function PrdPage() {
     setAutoGeneration(restoredState);
     writeStoredAutoGeneration(uploaded.prd_id, restoredState);
   }, [activeServerJob, autoGeneration, selected, uploaded]);
+
+  useEffect(() => {
+    if (!uploaded || !autoGeneration || !projectCases.data || !jobs.data) return;
+    const processedChapterIndices = deriveHandledChapterIndices(
+      autoGeneration.selectedChapterIndices,
+    );
+    const current = autoGeneration.processedChapterIndices.join(",");
+    const next = processedChapterIndices.join(",");
+    if (current === next) return;
+    const nextState = { ...autoGeneration, processedChapterIndices };
+    setAutoGeneration(nextState);
+    writeStoredAutoGeneration(uploaded.prd_id, nextState.active ? nextState : null);
+  }, [autoGeneration, jobs.data, projectCases.data, uploaded]);
 
   /** Poll the active generation job until it reaches a terminal state. */
   const job = useQuery({
