@@ -132,6 +132,7 @@ class GeneratedAssertion(BaseModel):
     description: str
     source: Literal["prd_explicit", "domain_inferred", "exploratory"] = "domain_inferred"
     confidence: float = Field(default=0.6, ge=0.0, le=1.0)
+    evidence: str = ""
     rationale: str = ""
 
 
@@ -643,6 +644,9 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
     reviewer_notes: list[str] = []
     assertion_sources = [a.source for a in case.assertions]
     assertion_confidences = [float(a.confidence) for a in case.assertions]
+    explicit_assertions_without_evidence = [
+        a.description for a in case.assertions if a.source == "prd_explicit" and not a.evidence.strip()
+    ]
     avg_conf = (
         sum(assertion_confidences) / len(assertion_confidences) if assertion_confidences else 0.5
     )
@@ -661,6 +665,9 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
     if any(src != "prd_explicit" for src in assertion_sources):
         flags.append("needs_requirement_confirmation")
         reviewer_notes.append("至少一条断言不是 PRD 明确依据，review 时需要确认产品预期。")
+    if explicit_assertions_without_evidence:
+        flags.append("missing_prd_evidence")
+        reviewer_notes.append("PRD 明确断言缺少原文 evidence，review 时需要确认是否来自 PRD。")
     if any(src == "exploratory" for src in assertion_sources):
         flags.append("exploratory_boundary")
         reviewer_notes.append("包含探索性边界测试，失败后不应直接定性为产品 bug。")
@@ -688,7 +695,15 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
         reviewer_notes.append("断言标记为 PRD 明确依据，但和章节文本关键词重合较低。")
 
     severity = "low"
-    if any(f in flags for f in {"missing_assertions", "too_few_steps", "assertion_too_specific"}):
+    if any(
+        f in flags
+        for f in {
+            "missing_assertions",
+            "too_few_steps",
+            "assertion_too_specific",
+            "missing_prd_evidence",
+        }
+    ):
         severity = "high"
     elif flags:
         severity = "medium"

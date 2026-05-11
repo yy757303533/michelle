@@ -35,6 +35,7 @@ interface CaseRow {
     description: string;
     source?: "prd_explicit" | "domain_inferred" | "exploratory";
     confidence?: number;
+    evidence?: string;
     rationale?: string;
   }>;
   quality?: {
@@ -1206,6 +1207,7 @@ function CaseRowView({
                           {a.confidence != null && (
                             <> · confidence {Math.round(a.confidence * 100)}%</>
                           )}
+                          {a.evidence && <> · evidence: “{a.evidence}”</>}
                           {a.rationale && <> · {a.rationale}</>}
                         </div>
                       )}

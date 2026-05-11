@@ -20,6 +20,8 @@ def test_case_gen_prompt_requires_explicit_verification_milestones():
     assert "email verification" in prompt
     assert "steps" in prompt
     assert "assertions" in prompt
+    assert "evidence" in prompt
+    assert "chapter title alone" in prompt
 
 
 def test_render_substitutes_placeholders():

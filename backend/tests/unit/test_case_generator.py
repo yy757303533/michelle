@@ -249,6 +249,7 @@ def test_parse_batch_well_formed():
                         "description": "URL 跳转到 /home",
                         "source": "prd_explicit",
                         "confidence": 0.9,
+                        "evidence": "User can enter email and password to log in.",
                         "rationale": "PRD mentions login success",
                     }
                 ],
@@ -261,6 +262,10 @@ def test_parse_batch_well_formed():
     assert batch.cases[0].priority == "P0"
     assert batch.cases[0].assertions[0].source == "prd_explicit"
     assert batch.cases[0].assertions[0].confidence == 0.9
+    assert (
+        batch.cases[0].assertions[0].evidence
+        == "User can enter email and password to log in."
+    )
 
 
 def test_parse_batch_partial_validation_salvages_good_cases():
@@ -478,6 +483,45 @@ async def test_generate_cases_flags_over_specific_boundary_assertion(session):
     flags = saved[0].quality["flags"]
     assert "assertion_too_specific" in flags
     assert "exploratory_boundary" in flags
+
+
+@pytest.mark.asyncio
+async def test_generate_cases_flags_prd_explicit_assertion_without_evidence(session):
+    session.add(Project(project_id="demo", name="Demo", base_url="http://x"))
+    await session.commit()
+    prd = parse_prd("# T\n\n## Login\n\nUser can enter email and password to log in.\n")
+    chapter = prd.chapters[0]
+    payload = {
+        "coverage_notes": "",
+        "cases": [
+            {
+                "name": "login",
+                "intent": "valid login",
+                "steps": [{"intent": "打开登录页"}, {"intent": "提交有效账号"}],
+                "assertions": [
+                    {
+                        "description": "用户可以登录",
+                        "source": "prd_explicit",
+                        "confidence": 0.9,
+                        "evidence": "",
+                    }
+                ],
+            }
+        ],
+    }
+
+    saved, _ = await generate_cases_for_chapter(
+        project_id="demo",
+        project_name="Demo",
+        base_url="http://x",
+        chapter=chapter,
+        session=session,
+        gateway=_gw_returning(json.dumps(payload)),
+    )
+
+    assert saved[0].assertions[0]["evidence"] == ""
+    assert "missing_prd_evidence" in saved[0].quality["flags"]
+    assert saved[0].quality["severity"] == "high"
 
 
 @pytest.mark.asyncio

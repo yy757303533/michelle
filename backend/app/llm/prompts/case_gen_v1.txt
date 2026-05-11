@@ -46,6 +46,22 @@ Examples:
   separate post-verification flow/precondition; do not merge it into the
   initial registration case unless the UI can actually complete verification.
 
+## PRD traceability requirements
+
+Every generated case must be grounded in the PRD chapter text, not just the
+chapter title or generic product assumptions.
+
+- For every assertion, include an `evidence` field with a short exact quote or
+  very close excerpt from the PRD chapter that supports that assertion.
+- Use `source: "prd_explicit"` ONLY when the assertion is directly supported by
+  that `evidence` quote.
+- If the PRD does not explicitly state the expected behavior, do not invent it.
+  Either return fewer/zero cases, or mark the assertion as `domain_inferred` or
+  `exploratory` with confidence <= 0.6 and explain the gap in `rationale`.
+- Do not create cases from the chapter title alone. If the body has too little
+  browser-testable detail, return an empty `cases` array and say so in
+  `coverage_notes`.
+
 ## Output schema (return STRICT JSON, no prose around it)
 
 ```json
@@ -69,6 +85,7 @@ Examples:
           "description": "<一句话, 可被人验证>",
           "source": "prd_explicit | domain_inferred | exploratory",
           "confidence": 0.0,
+          "evidence": "<PRD 原文短引用；若不是 PRD 明确依据则留空或说明缺口>",
           "rationale": "<引用 PRD 原意或说明这是推断/探索>"
         }}
       ]
@@ -136,6 +153,11 @@ E.g. 测试 "密码错误时显示提示" / "邮箱不存在时跳转".
   - `prd_explicit`: the PRD chapter clearly states this expected behavior.
   - `domain_inferred`: reasonable product/QA inference, but not explicit.
   - `exploratory`: boundary/security/data exploration that needs human confirmation.
+- For every assertion, set `evidence`:
+  - Required and non-empty for `prd_explicit`.
+  - Must quote or closely excerpt the PRD chapter text, not the chapter title.
+  - Leave empty or explain the missing PRD basis for `domain_inferred` /
+    `exploratory`.
 - Do NOT invent exact error copy. If PRD does not specify text, assert the
   safer outcome instead: invalid data is rejected, no invalid transaction/result
   is created, or the corrected legal value is clear to the user.
