@@ -31,6 +31,21 @@ this chapter does not justify it; document why in `coverage_notes`):
 - **error** — invalid inputs, bad credentials, missing required fields
 - **security** — only if PRD mentions auth / permissions / sensitive data
 
+## Explicit post-action milestones
+
+If the PRD chapter explicitly says a user-visible milestone must happen after
+an action, include that milestone in both `steps[].expected` and
+`assertions[]`. Do not stop at the submit/click action.
+
+Examples:
+- If PRD says **Email Verification** or "email verification required after
+  initial registration", the registration happy-path case must submit valid
+  registration data and then expect a verification/check-email state, not a
+  completed account.
+- If PRD says "after first login following verification", keep that as a
+  separate post-verification flow/precondition; do not merge it into the
+  initial registration case unless the UI can actually complete verification.
+
 ## Output schema (return STRICT JSON, no prose around it)
 
 ```json

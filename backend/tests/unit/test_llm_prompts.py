@@ -14,6 +14,14 @@ def test_load_prompt_v1_files_exist():
     assert "browser test agent" in load_prompt("execute", "v1").lower()
 
 
+def test_case_gen_prompt_requires_explicit_verification_milestones():
+    prompt = load_prompt("case_gen", "v1").lower()
+
+    assert "email verification" in prompt
+    assert "steps" in prompt
+    assert "assertions" in prompt
+
+
 def test_render_substitutes_placeholders():
     rendered = render(
         "case_gen",

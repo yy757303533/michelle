@@ -328,6 +328,38 @@ async def test_delete_prd_keeps_generated_cases(session, app_client):
     assert cases[0].case_id == "TC-1"
 
 
+@pytest.mark.asyncio
+async def test_get_prd_returns_raw_markdown_and_chapter_bodies(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(
+        PRD(
+            prd_id="p1",
+            project_id="demo",
+            name="Spec",
+            raw_markdown="# Spec\n\n## Registration\n\nEmail verification required.",
+            content_hash="hash",
+            chapters=[
+                {
+                    "position": 0,
+                    "level": 2,
+                    "title": "Registration",
+                    "normalized_title": "registration",
+                    "hash": "abc123",
+                    "body": "Email verification required.",
+                }
+            ],
+        )
+    )
+    await session.commit()
+
+    r = await app_client.get("/api/prd/p1")
+
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["raw_markdown"] == "# Spec\n\n## Registration\n\nEmail verification required."
+    assert data["chapters"][0]["body"] == "Email verification required."
+
+
 # ── PRD generation background worker ───────────────────────────────────────
 
 

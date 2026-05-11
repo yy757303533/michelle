@@ -83,6 +83,7 @@ interface ChapterMeta {
   normalized_title: string;
   hash: string;
   body_chars: number;
+  body?: string;
 }
 
 interface UploadResponse {
@@ -90,6 +91,7 @@ interface UploadResponse {
     prd_id: string;
     version: number;
     title: string;
+    raw_markdown?: string;
     chapters: ChapterMeta[];
     prior_version_id: string | null;
     diff_summary: Record<string, number> | null;
@@ -949,6 +951,17 @@ function PrdPage() {
                 review them →
               </a>
             </div>
+          )}
+
+          {uploaded.raw_markdown && (
+            <details className="rounded border border-slate-200 bg-slate-50">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600">
+                View PRD content
+              </summary>
+              <pre className="max-h-96 overflow-auto border-t border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700 whitespace-pre-wrap">
+                {uploaded.raw_markdown}
+              </pre>
+            </details>
           )}
 
           <div className="text-sm">

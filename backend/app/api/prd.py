@@ -207,6 +207,7 @@ async def get_prd(
             "normalized_title": c.get("normalized_title"),
             "hash": (c.get("hash") or "")[:12],
             "body_chars": len(c.get("body") or ""),
+            "body": c.get("body") or "",
         }
         for c in row.chapters
     ]
@@ -218,6 +219,7 @@ async def get_prd(
             "title": row.name,
             "version": row.version,
             "uploaded_at": row.uploaded_at.isoformat(),
+            "raw_markdown": row.raw_markdown,
             "chapters": chapters,
             "prior_version_id": row.prev_version_id,
             "diff_summary": None,
