@@ -165,3 +165,23 @@ async def test_create_run_rejects_unapproved_case(session, app_client, monkeypat
     assert r.status_code == 409
     assert "approved" in r.text.lower()
     assert kicked == []
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_case_already_running(session, app_client, monkeypatch):
+    session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_run("r1", "running"))
+    await session.commit()
+
+    kicked: list[str] = []
+
+    import app.api.runs as runs_api
+
+    monkeypatch.setattr(runs_api, "kick_off", lambda **kw: kicked.append(kw["run_id"]))
+
+    r = await app_client.post("/api/runs/", json={"case_ids": ["TC-r1"]})
+
+    assert r.status_code == 409
+    assert "already has an active run" in r.text
+    assert kicked == []

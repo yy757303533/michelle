@@ -40,6 +40,22 @@ def _has_live_case_filter():
     return Run.case_id.in_(select(TestCase.case_id))
 
 
+async def _active_run_for_case(session: AsyncSession, *, case_id: str) -> Run | None:
+    return (
+        (
+            await session.execute(
+                select(Run)
+                .where(Run.case_id == case_id)
+                .where(Run.status.in_(["pending", "running"]))
+                .order_by(desc(Run.created_at))
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+
 class CreateRunsRequest(BaseModel):
     case_ids: list[str] = Field(min_length=1)
     env: str = "default"
@@ -71,6 +87,12 @@ async def create_runs(
         await require_project_role(
             getattr(request.state, "user", None), case.project_id, "reviewer", session
         )
+        active = await _active_run_for_case(session, case_id=cid)
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"case {cid} already has an active run ({active.status}: {active.run_id})"),
+            )
         try:
             run = await create_run_row(case_id=cid, env=body.env, session=session)
             runs.append(run)

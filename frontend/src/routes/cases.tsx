@@ -65,6 +65,8 @@ const STATUS_FILTERS: Array<{ key: string; label: string }> = [
   { key: "stale", label: "stale" },
 ];
 
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+
 function CasesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -143,6 +145,13 @@ function CasesPage() {
     if (!projectRuns.data) return out;
     for (const r of projectRuns.data.data) {
       if (!out.has(r.case_id)) out.set(r.case_id, r);
+    }
+    return out;
+  }, [projectRuns.data]);
+  const activeRunCaseIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const r of projectRuns.data?.data ?? []) {
+      if (ACTIVE_RUN_STATUSES.has(r.status)) out.add(r.case_id);
     }
     return out;
   }, [projectRuns.data]);
@@ -477,6 +486,9 @@ function CasesPage() {
         const pendingCount = selectedRows.filter((c) => c.review_status === "pending").length;
         const staleCount = selectedRows.filter((c) => c.review_status === "stale").length;
         const approvedCount = selectedRows.filter((c) => c.review_status === "approved").length;
+        const runnableApprovedCount = selectedRows.filter(
+          (c) => c.review_status === "approved" && !activeRunCaseIds.has(c.case_id),
+        ).length;
         const rejectedCount = selectedRows.filter((c) => c.review_status === "rejected").length;
         const reviewableCount = pendingCount + staleCount;          // approve/reject target
         const reviewedCount = approvedCount + rejectedCount;        // revert target
@@ -563,6 +575,7 @@ function CasesPage() {
           <button
             disabled={
               approvedCount === 0 ||
+              runnableApprovedCount === 0 ||
               bulkRun.isPending ||
               bulk.isPending ||
               bulkDelete.isPending ||
@@ -571,6 +584,7 @@ function CasesPage() {
             onClick={() => {
               const ids = selectedRows
                 .filter((c) => c.review_status === "approved")
+                .filter((c) => !activeRunCaseIds.has(c.case_id))
                 .map((c) => c.case_id);
               const skipped = selected.size - ids.length;
               const note =
@@ -593,10 +607,12 @@ function CasesPage() {
                 ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
                 : approvedCount === 0
                 ? "no approved cases in selection"
-                : `${approvedCount} approved → run`
+                : runnableApprovedCount === 0
+                ? "selected approved cases already have pending/running runs"
+                : `${runnableApprovedCount} approved → run`
             }
           >
-            ▶ Run {approvedCount > 0 ? `(${approvedCount})` : ""}
+            ▶ Run {runnableApprovedCount > 0 ? `(${runnableApprovedCount})` : ""}
           </button>
           <button
             disabled={deletableCount === 0 || bulk.isPending || bulkDelete.isPending}
@@ -979,6 +995,7 @@ function CaseRowView({
   llmDetail: string;
 }) {
   const runnerBlocked = isLLMRunnerBlocked(llmStatus);
+  const caseHasActiveRun = Boolean(lastRun && ACTIVE_RUN_STATUSES.has(lastRun.status));
   return (
     <>
       <tr
@@ -1075,15 +1092,17 @@ function CaseRowView({
             <>
               <button
                 className="text-xs px-2 py-0.5 rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50 mr-1"
-                disabled={runBusy || runnerBlocked}
+                disabled={runBusy || runnerBlocked || caseHasActiveRun}
                 onClick={onRun}
                 title={
                   runnerBlocked
                     ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
+                    : caseHasActiveRun
+                      ? `case already has an active ${lastRun?.status} run`
                     : "run this approved case"
                 }
               >
-                {runBusy ? "starting…" : "▶ Run"}
+                {runBusy ? "starting…" : caseHasActiveRun ? "running" : "▶ Run"}
               </button>
               <button
                 className="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 mr-1"
