@@ -76,7 +76,7 @@ class AdminTokenMiddleware(BaseHTTPMiddleware):
         request.state.user = user
         auth_enabled = True
         if auth_enabled and request.url.path.startswith("/api"):
-            public = request.url.path in {"/api/auth/login"}
+            public = request.url.path in {"/api/auth/login", "/api/auth/logout"}
             role = str((user or {}).get("role", ""))
             needs_auth = request.method != "OPTIONS"
             if request.url.path.startswith("/api/auth/users") or request.url.path.startswith(

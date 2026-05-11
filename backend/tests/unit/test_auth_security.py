@@ -97,3 +97,19 @@ async def test_login_sets_session_cookie(monkeypatch) -> None:
         assert me.json()["data"]["username"] == "admin"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_cookie_without_active_session(monkeypatch) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from app.config import settings
+    from app.main import app
+
+    monkeypatch.setattr(settings, "app_env", "dev")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post("/api/auth/logout")
+
+    assert r.status_code == 200
+    assert "michelle_session=" in r.headers.get("set-cookie", "")

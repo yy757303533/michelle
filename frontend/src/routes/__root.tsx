@@ -1,5 +1,5 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ProjectSwitcher } from "../components/ProjectSwitcher";
 import { HeaderClock } from "../components/HeaderClock";
@@ -10,6 +10,7 @@ export const Route = createRootRoute({
 });
 
 function RootLayout() {
+  const qc = useQueryClient();
   const [authToken, setAuthTokenState] = useState(getSessionToken());
   const [user, setUser] = useState(getCurrentUser<{ username: string; role: string }>());
   const health = useQuery({
@@ -90,6 +91,9 @@ function RootLayout() {
               user={user}
               onTokenChange={setAuthTokenState}
               onUserChange={setUser}
+              onLoggedOut={() => {
+                qc.removeQueries({ queryKey: ["auth-me"] });
+              }}
             />
             <HeaderClock />
           </div>
@@ -181,12 +185,14 @@ function AdminSessionControl({
   user,
   onTokenChange,
   onUserChange,
+  onLoggedOut,
 }: {
   required: boolean;
   token: string;
   user: { username: string; role: string } | null;
   onTokenChange: (token: string) => void;
   onUserChange: (user: { username: string; role: string } | null) => void;
+  onLoggedOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -261,11 +267,12 @@ function AdminSessionControl({
             {message && <div className="break-words text-slate-500">{message}</div>}
           </div>
           <button
-            onClick={() => {
-              void apiFetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+            onClick={async () => {
+              await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
               setSession("");
               onTokenChange("");
               onUserChange(null);
+              onLoggedOut();
               setOpen(false);
             }}
             className="mt-3 w-full rounded border border-red-200 px-2 py-1 text-red-700 hover:bg-red-50"

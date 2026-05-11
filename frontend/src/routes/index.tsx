@@ -433,7 +433,7 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
     },
     refetchInterval: 3000,
   });
-  const latestByCase = runs.data?.data.filter(
+  const latestByCase = (runs.data?.data ?? []).filter(
     (r, index, arr) => arr.findIndex((candidate) => candidate.case_id === r.case_id) === index,
   );
 
