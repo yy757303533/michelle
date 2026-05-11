@@ -757,6 +757,7 @@ function StepRow({
 function PhaseBadge({ phase }: { phase: string }) {
   const m: Record<string, string> = {
     prepare: "bg-slate-100 text-slate-600",
+    case_step: "bg-violet-100 text-violet-700",
     action: "bg-blue-100 text-blue-700",
     assertion: "bg-amber-100 text-amber-700",
     cleanup: "bg-zinc-100 text-zinc-600",

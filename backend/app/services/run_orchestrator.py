@@ -301,6 +301,32 @@ def _assertion_step_events(
     return rows
 
 
+def _persist_case_step_events(session: AsyncSession, run_id: str, case: TestCase) -> list[StepEvent]:
+    rows: list[StepEvent] = []
+    for step in case.steps or []:
+        if not isinstance(step, dict):
+            continue
+        intent = str(step.get("intent") or "").strip()
+        expected = str(step.get("expected") or "").strip()
+        if not intent and not expected:
+            continue
+        ev = StepEvent(
+            run_id=run_id,
+            step_index=len(rows),
+            phase="case_step",
+            event="case.step.planned",
+            intent=intent or "case step",
+            tool_name="case_step",
+            tool_args={"expected": expected} if expected else {},
+            tool_result=None,
+            status="ok",
+            error_message=None,
+        )
+        session.add(ev)
+        rows.append(ev)
+    return rows
+
+
 # ── Public entrypoint ──────────────────────────────────────────────────────
 
 
@@ -350,6 +376,7 @@ async def execute_case(
 
         run.status = "running"
         run.started_at = datetime.now(UTC)
+        _persist_case_step_events(session, run.run_id, case)
         await session.commit()
         log.info("orchestrator.run.started")
 

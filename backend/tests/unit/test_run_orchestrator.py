@@ -318,12 +318,20 @@ async def test_execute_case_passed_path(seeded, session):
         .scalars()
         .all()
     )
-    assert len(rows) == 2
-    assert rows[0].tool_name == "browser_navigate"
-    assert rows[0].phase == "prepare"
-    assert rows[0].status == "ok"
-    assert rows[1].tool_name == "browser_type"
-    assert rows[1].phase == "action"
+    assert len(rows) == 5
+    assert [r.tool_name for r in rows[:3]] == ["case_step", "case_step", "case_step"]
+    assert [r.intent for r in rows[:3]] == [
+        "open login page",
+        "type username admin",
+        "click submit",
+    ]
+    assert rows[0].phase == "case_step"
+    assert rows[0].tool_args == {"expected": "form is visible"}
+    assert rows[3].tool_name == "browser_navigate"
+    assert rows[3].phase == "prepare"
+    assert rows[3].status == "ok"
+    assert rows[4].tool_name == "browser_type"
+    assert rows[4].phase == "action"
 
 
 @pytest.mark.asyncio
@@ -466,8 +474,9 @@ async def test_execute_case_persists_partial_steps_from_generic_exception(
         .scalars()
         .all()
     )
-    assert len(rows) == 1
-    assert rows[0].tool_name == "browser_navigate"
+    execution_rows = [r for r in rows if r.tool_name != "case_step"]
+    assert len(execution_rows) == 1
+    assert execution_rows[0].tool_name == "browser_navigate"
 
 
 @pytest.mark.asyncio
@@ -559,9 +568,9 @@ async def test_execute_case_persists_generic_runtime_events(seeded, session, mon
         .scalars()
         .all()
     )
-    assert len(rows) == 1
-    assert rows[0].event == "agent.runtime.event"
-    assert rows[0].tool_name == "model_turn"
+    runtime_rows = [r for r in rows if r.event == "agent.runtime.event"]
+    assert len(runtime_rows) == 1
+    assert runtime_rows[0].tool_name == "model_turn"
 
 
 @pytest.mark.asyncio
