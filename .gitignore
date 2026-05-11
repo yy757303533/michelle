@@ -38,11 +38,16 @@ backend/data/*.sqlite
 backend/data/*.sqlite-journal
 backend/data/uploads/
 backend/artifacts/
+!backend/artifacts/
+backend/artifacts/*
 !backend/artifacts/.gitkeep
 
 # Logs
 *.log
 logs/
+!backend/logs/
+backend/logs/*
+!backend/logs/.gitkeep
 
 # Coverage
 .coverage

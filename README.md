@@ -121,6 +121,18 @@ Open `http://localhost:5173`. Upload a PRD on the PRD page, generate cases,
 approve, ▶ Run. When something fails, the AI diagnose button on the run
 page wires the rest.
 
+Runtime directories are tracked with `.gitkeep` files so a fresh clone has the
+expected layout:
+
+- `backend/data/` stores the local SQLite fallback DB when enabled.
+- `backend/logs/` stores local backend logs.
+- `backend/artifacts/` stores screenshots, reports, Playwright MCP cache, and
+  other run artifacts.
+
+The generated DB, logs, screenshots, reports, caches, and `.env` are deliberately
+ignored. They may contain credentials or machine-specific paths and are recreated
+locally by `make dev` and normal product usage.
+
 The default `DATABASE_URL` is PostgreSQL:
 `postgresql+asyncpg://michelle:michelle@127.0.0.1:5432/michelle`.
 For shared/internal pilot environments, set `APP_ENV=shared`, change
