@@ -428,11 +428,14 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
     queryKey: ["runs-recent", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<RunsResponse> => {
-      const r = await apiFetch(`/api/runs/?limit=5&project_id=${encodeURIComponent(projectId)}`);
+      const r = await apiFetch(`/api/runs/?limit=50&project_id=${encodeURIComponent(projectId)}`);
       return r.json();
     },
     refetchInterval: 3000,
   });
+  const latestByCase = runs.data?.data.filter(
+    (r, index, arr) => arr.findIndex((candidate) => candidate.case_id === r.case_id) === index,
+  );
 
   return (
     <Panel title="Recent runs" linkTo="/runs" linkLabel="all →">
@@ -442,7 +445,7 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
         <Empty cta="run an approved case" to="/cases" />
       ) : (
         <ul className="space-y-1.5 text-sm">
-          {runs.data?.data.slice(0, 5).map((r) => (
+          {latestByCase?.slice(0, 5).map((r) => (
             <li key={r.run_id} className="flex items-center gap-2">
               <Link
                 to="/runs/$id"

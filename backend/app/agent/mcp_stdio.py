@@ -170,12 +170,14 @@ def build_playwright_stdio_client(
     headless: bool,
     isolated: bool = True,
     extra_args: list[str] | None = None,
+    output_dir: Path | None = None,
     timeout_seconds: int | None = None,
 ) -> StdioMCPClient:
     cfg = build_playwright_mcp_config(
         headless=headless,
         isolated=isolated,
         extra_args=extra_args,
+        output_dir=str(output_dir) if output_dir is not None else None,
     )
     server = cfg["mcpServers"]["playwright"]
     return StdioMCPClient(

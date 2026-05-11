@@ -13,6 +13,7 @@ from app.agent.mcp_stdio import (
     _mcp_subprocess_env,
     _read_framed_json,
     _read_stdio_json,
+    build_playwright_stdio_client,
 )
 
 
@@ -92,3 +93,15 @@ def test_mcp_subprocess_env_resolves_relative_cache_from_app_cwd(tmp_path, monke
     env = _mcp_subprocess_env(run_cwd)
 
     assert env["NPM_CONFIG_CACHE"] == str(app_cwd / "artifacts" / ".npm-cache")
+
+
+def test_playwright_stdio_client_routes_output_to_run_dir(tmp_path):
+    client = build_playwright_stdio_client(
+        cwd=tmp_path,
+        headless=True,
+        isolated=True,
+        output_dir=tmp_path,
+    )
+
+    assert "--output-dir" in client.args
+    assert client.args[client.args.index("--output-dir") + 1] == str(tmp_path)

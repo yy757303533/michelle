@@ -921,5 +921,7 @@ async def _classify_and_persist(*, run_id: str) -> None:
     await _emit_failure_hook(run_id=run_id)
 
 
-# Surface the default timeout from settings so callers can override per env
-DEFAULT_RUN_TIMEOUT = max(60, settings.claude_timeout_seconds + 60)
+# Surface the default timeout from settings so callers can override per env.
+# Michelle's generic loop may spend several subprocess turns with codex-cli;
+# 240s was routinely exhausted before a login form case reached the assertion.
+DEFAULT_RUN_TIMEOUT = max(600, settings.claude_timeout_seconds + 60)

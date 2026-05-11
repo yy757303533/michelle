@@ -28,6 +28,7 @@ def build_playwright_mcp_config(
     headless: bool = True,
     browser: str = "chromium",
     extra_args: list[str] | None = None,
+    output_dir: str | None = None,
     package: str | None = None,
 ) -> dict[str, Any]:
     """Return an MCP servers config dict suitable for `claude --mcp-config <file>`."""
@@ -47,6 +48,8 @@ def build_playwright_mcp_config(
     if isolated:
         # `--isolated` keeps profile in-memory; new browser context per run.
         args.append("--isolated")
+    if output_dir:
+        args.extend(["--output-dir", output_dir])
     if extra_args:
         args.extend(extra_args)
 

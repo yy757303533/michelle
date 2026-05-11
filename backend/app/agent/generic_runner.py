@@ -59,6 +59,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
         build_playwright_mcp_config(
             isolated=req.isolated,
             headless=req.headless,
+            output_dir=str(work),
             extra_args=req.extra_mcp_args,
         ),
     )
@@ -77,6 +78,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             headless=req.headless,
             isolated=req.isolated,
             extra_args=req.extra_mcp_args,
+            output_dir=work,
         ) as mcp:
             tools = [tool for tool in await mcp.list_tools() if tool.name != "browser_install"]
             transcript = _initial_transcript(req.prompt, tools)
