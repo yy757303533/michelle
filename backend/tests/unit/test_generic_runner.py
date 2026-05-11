@@ -320,6 +320,84 @@ async def test_run_generic_emits_runtime_events(tmp_path, monkeypatch) -> None:
     assert [event.tool_name for event in events] == ["model_turn", "invalid_action"]
 
 
+@pytest.mark.asyncio
+async def test_run_generic_allows_repeated_snapshots(tmp_path, monkeypatch) -> None:
+    from app.llm.base import LLMResult
+
+    class FakeMCP:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            return {"content": [{"type": "text", "text": "Login button visible"}]}
+
+    fake_mcp = FakeMCP()
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls <= 3:
+                text = '{"tool":"browser_snapshot","arguments":{}}'
+            else:
+                text = (
+                    '{"final":{"case_status":"passed","step_count":3,'
+                    '"assertion_results":[{"description":"login visible",'
+                    '"passed":true,"evidence":"snapshot showed Login button visible"}],'
+                    '"failure_summary":""}}'
+                )
+            return LLMResult(text=text, provider="fake", model="fake-model")
+
+    fake_gateway = FakeGateway()
+    events: list[StepEvent] = []
+
+    async def on_event(step: StepEvent) -> None:
+        events.append(step)
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: fake_mcp,
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: fake_gateway)
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner.settings.generic_agent_max_turns", 4)
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(
+            prompt="inspect page",
+            work_dir=tmp_path,
+            timeout_seconds=60,
+            on_runtime_event=on_event,
+        )
+    )
+
+    assert [name for name, _args in fake_mcp.calls] == [
+        "browser_snapshot",
+        "browser_snapshot",
+        "browser_snapshot",
+    ]
+    assert "repeated_action" not in [event.tool_name for event in events]
+    assert outcome.parsed.summary.success is True
+
+
 class AsyncProvider:
     async def __call__(self):
         return "fake"

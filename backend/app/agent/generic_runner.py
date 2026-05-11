@@ -35,6 +35,7 @@ _log = get_logger(__name__)
 _DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 _MAX_TOOL_RESULT_TEXT_CHARS = 12_000
 _MIN_MODEL_TURN_SECONDS = 15.0
+_REPEATABLE_OBSERVATION_TOOLS = {"browser_snapshot"}
 
 
 class GenericRunnerError(RuntimeError):
@@ -194,7 +195,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 else:
                     last_action_key = action_key
                     repeated_action_count = 1
-                if repeated_action_count > 2:
+                if repeated_action_count > 2 and tool_name not in _REPEATABLE_OBSERVATION_TOOLS:
                     transcript.append(
                         f"Rejected repeated action: `{tool_name}` with the same arguments "
                         "has already been attempted twice. Choose a different tool/action, "
