@@ -360,6 +360,55 @@ async def test_get_prd_returns_raw_markdown_and_chapter_bodies(session, app_clie
     assert data["chapters"][0]["body"] == "Email verification required."
 
 
+@pytest.mark.asyncio
+async def test_case_generation_feedback_create_list_resolve(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(
+        TestCase(
+            case_id="TC-FB-1",
+            project_id="demo",
+            name="bad generated case",
+            intent="intent",
+            module="module",
+            generated_from="chapter:2:registration",
+            generation_job_id="job-1",
+            assertions=[{"description": "made up"}],
+        )
+    )
+    await session.commit()
+
+    created = await app_client.post(
+        "/api/case-feedback/",
+        json={
+            "case_id": "TC-FB-1",
+            "category": "hallucinated_requirement",
+            "note": "PRD did not say this.",
+            "evidence": "missing PRD basis",
+        },
+    )
+    assert created.status_code == 201
+    feedback = created.json()["data"]
+    assert feedback["case_id"] == "TC-FB-1"
+    assert feedback["project_id"] == "demo"
+    assert feedback["category"] == "hallucinated_requirement"
+    assert feedback["status"] == "open"
+
+    listed = await app_client.get("/api/case-feedback/?project_id=demo")
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 1
+    assert listed.json()["summary"] == [
+        {"category": "hallucinated_requirement", "status": "open", "count": 1}
+    ]
+
+    resolved = await app_client.patch(
+        f"/api/case-feedback/{feedback['feedback_id']}",
+        json={"status": "resolved", "resolved_by_commit": "abc123"},
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["data"]["status"] == "resolved"
+    assert resolved.json()["data"]["resolved_by_commit"] == "abc123"
+
+
 # ── PRD generation background worker ───────────────────────────────────────
 
 

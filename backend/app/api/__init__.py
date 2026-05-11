@@ -2,13 +2,14 @@
 
 from fastapi import APIRouter
 
-from app.api import auth, cases, diagnosis, llm, prd, projects, runs, settings
+from app.api import auth, case_feedback, cases, diagnosis, llm, prd, projects, runs, settings
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(prd.router, prefix="/prd", tags=["prd"])
 api_router.include_router(cases.router, prefix="/cases", tags=["cases"])
+api_router.include_router(case_feedback.router, prefix="/case-feedback", tags=["case-feedback"])
 api_router.include_router(runs.router, prefix="/runs", tags=["runs"])
 api_router.include_router(diagnosis.router, prefix="/diagnosis", tags=["diagnosis"])
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])

@@ -58,6 +58,47 @@ interface CasesResponse {
   truncated: boolean;
 }
 
+interface CaseFeedbackRow {
+  feedback_id: string;
+  case_id: string;
+  project_id: string;
+  generated_from: string | null;
+  generation_job_id: string | null;
+  category: FeedbackCategory;
+  note: string;
+  evidence: string;
+  status: "open" | "resolved";
+  resolved_by_commit: string | null;
+  created_at: string;
+}
+
+interface CaseFeedbackResponse {
+  data: CaseFeedbackRow[];
+  count: number;
+  summary: Array<{ category: FeedbackCategory; status: "open" | "resolved"; count: number }>;
+}
+
+type FeedbackCategory =
+  | "prompt_rule_missing"
+  | "prd_context_missing"
+  | "hallucinated_requirement"
+  | "missed_requirement"
+  | "wrong_auth_state"
+  | "not_browser_executable"
+  | "duplicate_or_low_value"
+  | "executor_limitation";
+
+const FEEDBACK_CATEGORIES: FeedbackCategory[] = [
+  "prompt_rule_missing",
+  "prd_context_missing",
+  "hallucinated_requirement",
+  "missed_requirement",
+  "wrong_auth_state",
+  "not_browser_executable",
+  "duplicate_or_low_value",
+  "executor_limitation",
+];
+
 const STATUS_FILTERS: Array<{ key: string; label: string }> = [
   { key: "", label: "all" },
   { key: "pending", label: "pending" },
@@ -163,6 +204,51 @@ function CasesPage() {
     }
     return out;
   }, [projectRuns.data]);
+
+  const feedback = useQuery({
+    queryKey: ["case-feedback", projectId],
+    enabled: Boolean(projectId),
+    queryFn: async (): Promise<CaseFeedbackResponse> => {
+      const r = await apiFetch(
+        `/api/case-feedback/?project_id=${encodeURIComponent(projectId)}&status=open&limit=200`,
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      return r.json();
+    },
+  });
+
+  const createFeedback = useMutation({
+    mutationFn: async (body: {
+      case_id: string;
+      category: FeedbackCategory;
+      note: string;
+      evidence: string;
+    }): Promise<{ data: CaseFeedbackRow }> => {
+      const r = await apiFetch("/api/case-feedback/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["case-feedback"] });
+    },
+  });
+
+  const resolveFeedback = useMutation({
+    mutationFn: async (feedbackId: string): Promise<{ data: CaseFeedbackRow }> => {
+      const r = await apiFetch(`/api/case-feedback/${feedbackId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "resolved" }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["case-feedback"] }),
+  });
 
   const review = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: "approve" | "reject" | "reset" }) => {
@@ -490,6 +576,15 @@ function CasesPage() {
         />
       )}
 
+      <GenerationFeedbackPanel
+        feedback={feedback.data?.data ?? []}
+        summary={feedback.data?.summary ?? []}
+        resolving={resolveFeedback.isPending}
+        resolvingId={resolveFeedback.variables ?? null}
+        onResolve={(id) => resolveFeedback.mutate(id)}
+        error={feedback.error as Error | null}
+      />
+
       {/* Bulk action bar */}
       {selected.size > 0 && (() => {
         // The selection partitions cleanly into review_status buckets
@@ -712,6 +807,9 @@ function CasesPage() {
                   onSubmitEdit={(patch) =>
                     editMut.mutate({ id: c.case_id, patch })
                   }
+                  onCreateFeedback={(payload) =>
+                    createFeedback.mutate({ case_id: c.case_id, ...payload })
+                  }
                   onDelete={() => {
                     if (window.confirm(`Delete ${c.case_id}? This cannot be undone.`)) {
                       deleteMut.mutate(c.case_id);
@@ -721,6 +819,9 @@ function CasesPage() {
                   runBusy={runMut.isPending && runMut.variables === c.case_id}
                   editBusy={editMut.isPending && editMut.variables?.id === c.case_id}
                   deleteBusy={deleteMut.isPending && deleteMut.variables === c.case_id}
+                  feedbackBusy={
+                    createFeedback.isPending && createFeedback.variables?.case_id === c.case_id
+                  }
                   llmStatus={llmStatus}
                   llmDetail={llmDetail}
                 />
@@ -957,6 +1058,158 @@ function DeleteBtn({ busy, onDelete }: { busy: boolean; onDelete: () => void }) 
   );
 }
 
+function GenerationFeedbackPanel({
+  feedback,
+  summary,
+  resolving,
+  resolvingId,
+  onResolve,
+  error,
+}: {
+  feedback: CaseFeedbackRow[];
+  summary: CaseFeedbackResponse["summary"];
+  resolving: boolean;
+  resolvingId: string | null;
+  onResolve: (id: string) => void;
+  error: Error | null;
+}) {
+  const openSummary = summary.filter((s) => s.status === "open" && s.count > 0);
+  if (!feedback.length && !error) return null;
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-amber-700">
+            Generation feedback
+          </div>
+          <div className="text-xs text-amber-900">
+            bad case → category → prompt/parser/filter fix → resolve
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1 text-xs">
+          {openSummary.map((s) => (
+            <span key={s.category} className="rounded bg-white px-1.5 py-0.5 font-mono">
+              {s.category}: {s.count}
+            </span>
+          ))}
+        </div>
+      </div>
+      {error && <div className="mt-2 text-xs text-red-600">{error.message}</div>}
+      {feedback.length > 0 && (
+        <ul className="mt-2 max-h-40 overflow-auto divide-y divide-amber-100">
+          {feedback.map((f) => (
+            <li key={f.feedback_id} className="py-1.5 text-xs">
+              <div className="flex items-start gap-2">
+                <Link
+                  to="/cases"
+                  search={{ case_id: f.case_id } as never}
+                  className="font-mono text-blue-700 hover:underline"
+                >
+                  {f.case_id}
+                </Link>
+                <span className="rounded bg-white px-1.5 py-0.5 font-mono text-amber-900">
+                  {f.category}
+                </span>
+                <span className="text-slate-700">{f.note || f.evidence || "no note"}</span>
+                <button
+                  className="ml-auto rounded border border-amber-200 bg-white px-2 py-0.5 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                  disabled={resolving && resolvingId === f.feedback_id}
+                  onClick={() => onResolve(f.feedback_id)}
+                >
+                  resolve
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function GenerationFeedbackForm({
+  busy,
+  onSubmit,
+}: {
+  busy: boolean;
+  onSubmit: (payload: { category: FeedbackCategory; note: string; evidence: string }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState<FeedbackCategory>("hallucinated_requirement");
+  const [note, setNote] = useState("");
+  const [evidence, setEvidence] = useState("");
+
+  const submit = () => {
+    onSubmit({ category, note, evidence });
+    setNote("");
+    setEvidence("");
+    setOpen(false);
+  };
+
+  if (!open) {
+    return (
+      <button
+        className="mt-3 rounded border border-amber-200 bg-white px-2 py-1 text-xs text-amber-800 hover:bg-amber-50"
+        onClick={() => setOpen(true)}
+      >
+        Mark generation issue
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded border border-amber-200 bg-white p-3 text-xs">
+      <div className="grid grid-cols-3 gap-2">
+        <label>
+          <span className="block text-slate-500 mb-1">category</span>
+          <select
+            className="w-full rounded border border-slate-200 px-2 py-1"
+            value={category}
+            onChange={(e) => setCategory(e.target.value as FeedbackCategory)}
+          >
+            {FEEDBACK_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="col-span-2">
+          <span className="block text-slate-500 mb-1">PRD evidence / missing basis</span>
+          <input
+            className="w-full rounded border border-slate-200 px-2 py-1"
+            value={evidence}
+            onChange={(e) => setEvidence(e.target.value)}
+            placeholder="paste PRD quote, or say PRD has no basis"
+          />
+        </label>
+        <label className="col-span-3">
+          <span className="block text-slate-500 mb-1">note</span>
+          <textarea
+            className="w-full rounded border border-slate-200 p-2"
+            rows={2}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="why this case is bad, and what rule should change"
+          />
+        </label>
+      </div>
+      <div className="mt-2 flex gap-2">
+        <button
+          disabled={busy}
+          onClick={submit}
+          className="rounded bg-amber-700 px-2 py-1 text-white hover:bg-amber-800 disabled:opacity-50"
+        >
+          {busy ? "saving…" : "Save feedback"}
+        </button>
+        <button onClick={() => setOpen(false)} className="px-2 py-1 text-slate-500">
+          cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface CaseRowLastRun {
   run_id: string;
   status: string;
@@ -980,11 +1233,13 @@ function CaseRowView({
   onEdit,
   onCancelEdit,
   onSubmitEdit,
+  onCreateFeedback,
   onDelete,
   busy,
   runBusy,
   editBusy,
   deleteBusy,
+  feedbackBusy,
   llmStatus,
   llmDetail,
 }: {
@@ -1002,11 +1257,17 @@ function CaseRowView({
   onEdit: () => void;
   onCancelEdit: () => void;
   onSubmitEdit: (patch: Partial<CaseRow>) => void;
+  onCreateFeedback: (payload: {
+    category: FeedbackCategory;
+    note: string;
+    evidence: string;
+  }) => void;
   onDelete: () => void;
   busy: boolean;
   runBusy: boolean;
   editBusy: boolean;
   deleteBusy: boolean;
+  feedbackBusy: boolean;
   llmStatus: "ready" | "starting" | "down" | "unknown";
   llmDetail: string;
 }) {
@@ -1250,6 +1511,10 @@ function CaseRowView({
                 </span>
               )}
             </div>
+            <GenerationFeedbackForm
+              busy={feedbackBusy}
+              onSubmit={onCreateFeedback}
+            />
           </td>
         </tr>
       )}
