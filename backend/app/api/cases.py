@@ -14,9 +14,10 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import Project, TestCase
+from app.models import Project, Run, TestCase
 from app.obs import EVENTS, get_logger
 from app.services.case_generator import CASE_ID_ALLOCATION_LOCK, _mint_case_id, _next_seq
+from app.services.run_orchestrator import rollback_run_scope
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -32,6 +33,16 @@ EDITABLE_FIELDS = {
     "steps",
     "assertions",
 }
+
+
+async def _delete_case_run_history(session: AsyncSession, case_id: str) -> int:
+    run_ids = (
+        (await session.execute(select(Run.run_id).where(Run.case_id == case_id))).scalars().all()
+    )
+    deleted = 0
+    for run_id in run_ids:
+        deleted += await rollback_run_scope(session, run_id=run_id, delete_run=True)
+    return deleted
 
 
 ReviewVerb = Literal["approve", "reject", "reset"]
@@ -375,9 +386,15 @@ async def delete_case(
             detail="approved cases cannot be deleted; reject it first if you really mean to remove",
         )
     prior = row.review_status
+    run_history_deleted = await _delete_case_run_history(session, case_id)
     await session.delete(row)
     await session.commit()
-    log.info("case.deleted", case_id=case_id, prior_status=prior)
+    log.info(
+        "case.deleted",
+        case_id=case_id,
+        prior_status=prior,
+        run_history_deleted=run_history_deleted,
+    )
 
 
 @router.get("/{case_id}")
@@ -557,10 +574,12 @@ async def bulk_delete(
 
     deleted: list[str] = []
     skipped_approved: list[str] = []
+    run_history_deleted = 0
     for r in rows:
         if r.review_status == "approved":
             skipped_approved.append(r.case_id)
             continue
+        run_history_deleted += await _delete_case_run_history(session, r.case_id)
         await session.delete(r)
         deleted.append(r.case_id)
     await session.commit()
@@ -569,6 +588,7 @@ async def bulk_delete(
         deleted_count=len(deleted),
         skipped_approved_count=len(skipped_approved),
         missing_count=len(missing),
+        run_history_deleted=run_history_deleted,
     )
     return {
         "data": {

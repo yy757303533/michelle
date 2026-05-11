@@ -293,6 +293,7 @@ async def project_aggregate_report(
             await session.execute(
                 select(Run)
                 .where(Run.project_id == project_id)
+                .where(Run.case_id.in_(select(TestCase.case_id)))
                 .order_by(desc(Run.created_at))
                 .limit(limit * 4)  # over-fetch then dedupe
             )

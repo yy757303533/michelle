@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
-from app.models import PRD, Project, TestCase
+from app.models import PRD, Diagnosis, Project, Run, StepEvent, TestCase
 from app.services.case_versioning import (
     mark_stale_for_removed_chapters,
     plan_regeneration,
@@ -538,6 +538,40 @@ async def test_delete_pending_case(session, app_client):
 
 
 @pytest.mark.asyncio
+async def test_delete_case_removes_its_run_history(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(_case("TC-RUN-DEL"))
+    session.add(
+        Run(
+            run_id="run-del",
+            trace_id="trace-run-del",
+            project_id="demo",
+            case_id="TC-RUN-DEL",
+            status="aborted",
+        )
+    )
+    session.add(StepEvent(run_id="run-del", step_index=0, event="agent.step.executed"))
+    session.add(
+        Diagnosis(
+            diag_id="diag-del",
+            run_id="run-del",
+            case_id="TC-RUN-DEL",
+            diagnoser_prompt_version="v1",
+            diagnoser_model="fake",
+            category="unknown",
+        )
+    )
+    await session.commit()
+
+    r = await app_client.delete("/api/cases/TC-RUN-DEL")
+
+    assert r.status_code == 204
+    assert (await session.execute(select(Run))).scalars().all() == []
+    assert (await session.execute(select(StepEvent))).scalars().all() == []
+    assert (await session.execute(select(Diagnosis))).scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_delete_approved_case_blocked(session, app_client):
     session.add(_case("TC-APP", review_status="approved"))
     await session.commit()
@@ -576,6 +610,30 @@ async def test_bulk_delete_skips_approved_and_reports(session, app_client):
     assert data["missing"] == ["TC-MISS"]
     # Approved row survives
     assert (await session.get(TestCase, "TC-APP")) is not None
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_removes_run_history_for_deleted_cases(session, app_client):
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(_case("TC-BULK-RUN"))
+    session.add(
+        Run(
+            run_id="run-bulk-del",
+            trace_id="trace-run-bulk-del",
+            project_id="demo",
+            case_id="TC-BULK-RUN",
+            status="aborted",
+        )
+    )
+    session.add(StepEvent(run_id="run-bulk-del", step_index=0, event="agent.step.executed"))
+    await session.commit()
+
+    r = await app_client.post("/api/cases/bulk-delete", json={"case_ids": ["TC-BULK-RUN"]})
+
+    assert r.status_code == 200
+    assert r.json()["data"]["deleted"] == ["TC-BULK-RUN"]
+    assert (await session.execute(select(Run))).scalars().all() == []
+    assert (await session.execute(select(StepEvent))).scalars().all() == []
 
 
 # ── POST /api/cases/ (manual create) ───────────────────────────────────────

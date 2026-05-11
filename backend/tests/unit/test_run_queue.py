@@ -56,9 +56,39 @@ def _run(run_id: str, status: str, project_id: str = "demo") -> Run:
     )
 
 
+def _case(case_id: str, project_id: str = "demo") -> TestCase:
+    return TestCase(
+        case_id=case_id,
+        project_id=project_id,
+        name=case_id,
+        intent=case_id,
+        review_status="approved",
+        steps=[{"intent": "open page"}],
+        assertions=[{"description": "page opens"}],
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_runs_hides_runs_for_deleted_cases(session, app_client):
+    session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_run("r1", "passed"))
+    session.add(_run("orphan", "aborted"))
+    await session.commit()
+
+    r = await app_client.get("/api/runs/?project_id=demo")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["run_id"] for row in body["data"]] == ["r1"]
+    assert body["count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_queue_lists_pending_and_running(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_case("TC-r2"))
     session.add(_run("r1", "pending"))
     session.add(_run("r2", "running"))
     session.add(_run("r3", "passed"))
@@ -91,6 +121,9 @@ async def test_cancel_rolls_back_run_scope(session, app_client):
 @pytest.mark.asyncio
 async def test_trends_returns_rollups(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_case("TC-r2"))
+    session.add(_case("TC-r3"))
     session.add(_run("r1", "passed"))
     session.add(_run("r2", "failed"))
     session.add(_run("r3", "flaky"))

@@ -36,6 +36,10 @@ router = APIRouter()
 log = get_logger(__name__)
 
 
+def _has_live_case_filter():
+    return Run.case_id.in_(select(TestCase.case_id))
+
+
 class CreateRunsRequest(BaseModel):
     case_ids: list[str] = Field(min_length=1)
     env: str = "default"
@@ -101,7 +105,7 @@ async def list_runs(
     limit: int = Query(default=50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(Run).order_by(desc(Run.created_at)).limit(limit)
+    stmt = select(Run).where(_has_live_case_filter()).order_by(desc(Run.created_at)).limit(limit)
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session
@@ -128,6 +132,7 @@ async def get_run_queue(
 ) -> dict:
     stmt = (
         select(Run)
+        .where(_has_live_case_filter())
         .where(Run.status.in_(["pending", "running"]))
         .order_by(Run.created_at)
         .limit(limit)
@@ -173,7 +178,7 @@ async def get_run_trends(
     limit: int = Query(default=1000, ge=1, le=5000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(Run).order_by(desc(Run.created_at)).limit(limit)
+    stmt = select(Run).where(_has_live_case_filter()).order_by(desc(Run.created_at)).limit(limit)
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session
