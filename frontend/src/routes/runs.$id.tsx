@@ -81,6 +81,20 @@ interface RunDetail {
       error_message: string | null;
       evidence: string;
     } | null;
+    performance: {
+      duration_ms: number | null;
+      recorded_step_latency_ms: number | null;
+      llm_ms: number | null;
+      browser_ms: number | null;
+      internal_tool_ms: number | null;
+      unaccounted_ms: number | null;
+      model_turns: number;
+      browser_tools: number;
+      internal_tools: number;
+      snapshots: number;
+      screenshots: number;
+      steps: number;
+    };
   };
 }
 
@@ -255,6 +269,7 @@ function RunDetailPage() {
   const steps = data!.data.steps;
   const timelineSteps = buildTimelineSteps(steps);
   const failureContext = data!.data.failure_context;
+  const perf = data!.data.performance;
   const live = !TERMINAL.has(run.status);
   const phaseCounts = phaseSummary(steps);
   const forensicArtifacts = (artifacts.data?.data ?? []).filter(
@@ -326,6 +341,20 @@ function RunDetailPage() {
         <Card label="tokens" value={`${run.input_tokens} in / ${run.output_tokens} out`} />
         <Card label="started" value={fmtTime(run.started_at)} />
         <Card label="ended" value={fmtTime(run.ended_at)} />
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="text-xs uppercase tracking-wide text-slate-400 mb-3">
+          performance split
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-sm">
+          <MiniMetric label="LLM" value={fmtMs(perf.llm_ms)} sub={`${perf.model_turns} turns`} />
+          <MiniMetric label="browser" value={fmtMs(perf.browser_ms)} sub={`${perf.browser_tools} tools`} />
+          <MiniMetric label="internal" value={fmtMs(perf.internal_tool_ms)} sub={`${perf.internal_tools} tools`} />
+          <MiniMetric label="unaccounted" value={fmtMs(perf.unaccounted_ms)} sub="queue/render/overhead" />
+          <MiniMetric label="snapshots" value={String(perf.snapshots)} sub="ARIA reads" />
+          <MiniMetric label="screenshots" value={String(perf.screenshots)} sub="image captures" />
+        </div>
       </div>
 
       {run.error_message && (
@@ -840,6 +869,16 @@ function Card({ label, value, sub }: { label: string; value: string; sub?: strin
       <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
       <div className="text-lg font-semibold mt-1">{value}</div>
       {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function MiniMetric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded border border-slate-100 p-2">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-base font-semibold">{value}</div>
+      {sub && <div className="text-[11px] text-slate-400">{sub}</div>}
     </div>
   );
 }

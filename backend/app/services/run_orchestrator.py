@@ -265,6 +265,7 @@ def _persist_step_events(
             tool_result=tool_result,
             screenshot_after=s.screenshot_path,
             status="failed" if s.result_is_error else "ok",
+            latency_ms=s.latency_ms,
             error_message=(s.result_text or "")[:500] if s.result_is_error else None,
         )
         session.add(ev)
@@ -602,6 +603,7 @@ async def _persist_runtime_event(
         tool_args=parsed.tool_args,
         tool_result=tool_result,
         status="failed" if parsed.result_is_error else "ok",
+        latency_ms=parsed.latency_ms,
         error_message=(parsed.result_text or "")[:500] if parsed.result_is_error else None,
     )
     session.add(ev)
@@ -666,6 +668,7 @@ def _step_event_summary(s: ParsedStep) -> dict[str, Any]:
         "console_warnings": s.console_warnings,
         "screenshot_path": s.screenshot_path,
         "is_error": s.result_is_error,
+        "latency_ms": s.latency_ms,
     }
 
 

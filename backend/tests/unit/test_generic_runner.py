@@ -385,7 +385,12 @@ async def test_run_generic_emits_runtime_events(tmp_path, monkeypatch) -> None:
             )
         )
 
-    assert [event.tool_name for event in events] == ["model_turn", "invalid_action"]
+    assert [event.tool_name for event in events] == [
+        "model_turn",
+        "model_result",
+        "invalid_action",
+    ]
+    assert events[1].latency_ms == 0
 
 
 @pytest.mark.asyncio

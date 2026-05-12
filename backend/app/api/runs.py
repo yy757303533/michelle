@@ -40,6 +40,63 @@ def _has_live_case_filter():
     return Run.case_id.in_(select(TestCase.case_id))
 
 
+def _performance_breakdown(run: Run, steps: list[StepEvent]) -> dict:
+    """Computed run timing summary for the UI.
+
+    New generic-loop runs persist per-step latency. Older runs will still show
+    counts, with timing buckets omitted when latency was not recorded.
+    """
+    llm_ms = 0
+    browser_ms = 0
+    internal_ms = 0
+    recorded_ms = 0
+    model_turn_events = 0
+    model_result_events = 0
+    browser_tools = 0
+    internal_tools = 0
+    screenshots = 0
+    snapshots = 0
+
+    for step in steps:
+        name = step.tool_name or ""
+        latency = step.latency_ms or 0
+        if latency:
+            recorded_ms += latency
+        if name == "model_turn":
+            model_turn_events += 1
+        elif name == "model_result":
+            model_result_events += 1
+            llm_ms += latency
+        elif name.startswith("browser_"):
+            browser_tools += 1
+            browser_ms += latency
+            if name == "browser_take_screenshot":
+                screenshots += 1
+            elif name == "browser_snapshot":
+                snapshots += 1
+        elif name.startswith("email_"):
+            internal_tools += 1
+            internal_ms += latency
+
+    total_ms = run.duration_ms
+    known_ms = llm_ms + browser_ms + internal_ms
+    unaccounted_ms = max(total_ms - known_ms, 0) if total_ms is not None else None
+    return {
+        "duration_ms": total_ms,
+        "recorded_step_latency_ms": recorded_ms or None,
+        "llm_ms": llm_ms or None,
+        "browser_ms": browser_ms or None,
+        "internal_tool_ms": internal_ms or None,
+        "unaccounted_ms": unaccounted_ms,
+        "model_turns": model_result_events or model_turn_events,
+        "browser_tools": browser_tools,
+        "internal_tools": internal_tools,
+        "snapshots": snapshots,
+        "screenshots": screenshots,
+        "steps": len(steps),
+    }
+
+
 async def _active_run_for_case(session: AsyncSession, *, case_id: str) -> Run | None:
     return (
         (
@@ -308,6 +365,7 @@ async def get_run(
             "run": run.model_dump(),
             "steps": [s.model_dump() for s in steps],
             "failure_context": _failure_context(steps),
+            "performance": _performance_breakdown(run, steps),
         }
     }
 

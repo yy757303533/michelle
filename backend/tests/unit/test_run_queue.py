@@ -104,6 +104,62 @@ async def test_queue_lists_pending_and_running(session, app_client):
 
 
 @pytest.mark.asyncio
+async def test_run_detail_returns_performance_breakdown(session, app_client):
+    session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_run("r1", "passed"))
+    session.add(StepEvent(run_id="r1", step_index=0, event="x", tool_name="model_turn"))
+    session.add(
+        StepEvent(
+            run_id="r1",
+            step_index=1,
+            event="x",
+            tool_name="model_result",
+            latency_ms=1200,
+        )
+    )
+    session.add(
+        StepEvent(
+            run_id="r1",
+            step_index=2,
+            event="x",
+            tool_name="browser_snapshot",
+            latency_ms=50,
+        )
+    )
+    session.add(
+        StepEvent(
+            run_id="r1",
+            step_index=3,
+            event="x",
+            tool_name="browser_take_screenshot",
+            latency_ms=80,
+        )
+    )
+    session.add(
+        StepEvent(
+            run_id="r1",
+            step_index=4,
+            event="x",
+            tool_name="email_wait_for_code",
+            latency_ms=500,
+        )
+    )
+    await session.commit()
+
+    r = await app_client.get("/api/runs/r1")
+
+    assert r.status_code == 200
+    perf = r.json()["data"]["performance"]
+    assert perf["llm_ms"] == 1200
+    assert perf["browser_ms"] == 130
+    assert perf["internal_tool_ms"] == 500
+    assert perf["model_turns"] == 1
+    assert perf["snapshots"] == 1
+    assert perf["screenshots"] == 1
+
+
+@pytest.mark.asyncio
 async def test_cancel_rolls_back_run_scope(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
     session.add(_run("r1", "pending"))

@@ -139,6 +139,20 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     temperature=0,
                     timeout_seconds=max(0.1, min(remaining, 120)),
                 )
+                runtime_event_index = await _emit_runtime_event(
+                    req,
+                    runtime_event_index,
+                    "model_result",
+                    {
+                        "turn": turn,
+                        "provider": result.provider,
+                        "model": result.model,
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                    },
+                    "received browser action from model",
+                    latency_ms=result.latency_ms,
+                )
                 total_input += result.input_tokens
                 total_output += result.output_tokens
                 events.append(
@@ -569,6 +583,7 @@ async def _call_mcp_tool_recording(
     )
     step.result_text = result_text
     step.result_is_error = is_error
+    step.latency_ms = elapsed_ms
     extracted = _parse_tool_result_text(result_text)
     step.page_url = extracted.get("page_url")
     step.page_title = extracted.get("page_title")
@@ -636,6 +651,7 @@ async def _call_internal_tool_recording(
     result_text = _redact_text(result_text, req.secrets)
     step.result_text = result_text
     step.result_is_error = is_error
+    step.latency_ms = elapsed_ms
     events.append(
         {
             "type": "tool",
@@ -726,6 +742,7 @@ async def _emit_runtime_event(
     result_text: str,
     *,
     is_error: bool = False,
+    latency_ms: int | None = None,
 ) -> int:
     if req.on_runtime_event is None:
         return index
@@ -739,6 +756,7 @@ async def _emit_runtime_event(
             is_playwright=False,
             result_text=result_text,
             result_is_error=is_error,
+            latency_ms=latency_ms,
         )
     )
     return index + 1
