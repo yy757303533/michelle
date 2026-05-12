@@ -582,6 +582,8 @@ async def _run_generation_batches(
                     batch=batch_result,
                     model=model,
                     generation_job_id=job.job_id,
+                    base_url=project.base_url,
+                    login_url=project.login_url or None,
                 )
                 row = {
                     "chapter_index": decision.chapter_index,

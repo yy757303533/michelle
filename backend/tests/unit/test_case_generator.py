@@ -555,6 +555,144 @@ async def test_generate_cases_skips_cases_without_steps(session):
     assert saved[0].name == "ok"
 
 
+@pytest.mark.asyncio
+async def test_generate_cases_accepts_logged_in_case_without_redundant_login_steps(session):
+    session.add(Project(project_id="demo", name="Demo", base_url="http://x", login_url="http://x/login"))
+    await session.commit()
+    prd = parse_prd("# T\n\n## Profile\n\nUser can update profile display name.\n")
+    chapter = prd.chapters[0]
+    payload = {
+        "coverage_notes": "",
+        "cases": [
+            {
+                "name": "update profile display name",
+                "intent": "verify logged-in user can update display name",
+                "auth_state": "logged-in",
+                "case_type": "happy_path",
+                "execution_scope": "authenticated",
+                "requires_real_login": True,
+                "steps": [{"intent": "打开个人资料页面"}, {"intent": "修改昵称并保存"}],
+                "assertions": [
+                    {
+                        "description": "昵称保存后可见",
+                        "source": "prd_explicit",
+                        "confidence": 0.9,
+                        "evidence": "User can update profile display name.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    saved, _ = await generate_cases_for_chapter(
+        project_id="demo",
+        project_name="Demo",
+        base_url="http://x",
+        login_url="http://x/login",
+        default_username="qa@example.test",
+        default_password="secret",
+        chapter=chapter,
+        session=session,
+        gateway=_gw_returning(json.dumps(payload)),
+    )
+
+    flags = saved[0].quality["flags"]
+    assert "auth_setup_unclear" not in flags
+    assert "redundant_login_steps" not in flags
+    assert saved[0].quality["case_type"] == "happy_path"
+    assert saved[0].quality["execution_scope"] == "authenticated"
+    assert saved[0].quality["requires_real_login"] is True
+
+
+@pytest.mark.asyncio
+async def test_generate_cases_flags_redundant_login_steps_for_logged_in_case(session):
+    session.add(Project(project_id="demo", name="Demo", base_url="http://x", login_url="http://x/login"))
+    await session.commit()
+    prd = parse_prd("# T\n\n## Profile\n\nUser can update profile display name.\n")
+    chapter = prd.chapters[0]
+    payload = {
+        "coverage_notes": "",
+        "cases": [
+            {
+                "name": "update profile display name",
+                "intent": "verify logged-in user can update display name",
+                "auth_state": "logged-in",
+                "steps": [
+                    {"intent": "打开登录页"},
+                    {"intent": "输入默认账号密码并登录"},
+                    {"intent": "打开个人资料页面"},
+                ],
+                "assertions": [
+                    {
+                        "description": "昵称保存后可见",
+                        "source": "prd_explicit",
+                        "confidence": 0.9,
+                        "evidence": "User can update profile display name.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    saved, _ = await generate_cases_for_chapter(
+        project_id="demo",
+        project_name="Demo",
+        base_url="http://x",
+        login_url="http://x/login",
+        default_username="qa@example.test",
+        default_password="secret",
+        chapter=chapter,
+        session=session,
+        gateway=_gw_returning(json.dumps(payload)),
+    )
+
+    assert "redundant_login_steps" in saved[0].quality["flags"]
+
+
+@pytest.mark.asyncio
+async def test_generate_cases_flags_account_entry_case_starting_from_base_url(session):
+    session.add(Project(project_id="demo", name="Demo", base_url="http://x", login_url="http://x/login"))
+    await session.commit()
+    prd = parse_prd("# T\n\n## Registration\n\nEmail verification is required after registration.\n")
+    chapter = prd.chapters[0]
+    payload = {
+        "coverage_notes": "",
+        "cases": [
+            {
+                "name": "registration requires email verification",
+                "intent": "verify registration email verification",
+                "auth_state": "logged-out",
+                "case_type": "happy_path",
+                "execution_scope": "registration",
+                "requires_email_verification": True,
+                "steps": [{"intent": "打开 http://x 首页并查找注册入口"}, {"intent": "提交注册信息"}],
+                "assertions": [
+                    {
+                        "description": "注册后要求邮箱验证",
+                        "source": "prd_explicit",
+                        "confidence": 0.9,
+                        "evidence": "Email verification is required after registration.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    saved, _ = await generate_cases_for_chapter(
+        project_id="demo",
+        project_name="Demo",
+        base_url="http://x",
+        login_url="http://x/login",
+        chapter=chapter,
+        session=session,
+        gateway=_gw_returning(json.dumps(payload)),
+    )
+
+    flags = saved[0].quality["flags"]
+    assert "account_entry_should_use_login_url" in flags
+    assert saved[0].quality["requires_email_verification"] is True
+
+
 # ── support ──
 
 

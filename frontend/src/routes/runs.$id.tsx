@@ -81,6 +81,13 @@ interface RunDetail {
       error_message: string | null;
       evidence: string;
     } | null;
+    failure_summary: {
+      category: string | null;
+      owner: string | null;
+      confidence: number;
+      signals: string[];
+      next_action: string;
+    };
     performance: {
       duration_ms: number | null;
       recorded_step_latency_ms: number | null;
@@ -269,6 +276,7 @@ function RunDetailPage() {
   const steps = data!.data.steps;
   const timelineSteps = buildTimelineSteps(steps);
   const failureContext = data!.data.failure_context;
+  const failureSummary = data!.data.failure_summary;
   const perf = data!.data.performance;
   const live = !TERMINAL.has(run.status);
   const phaseCounts = phaseSummary(steps);
@@ -360,6 +368,33 @@ function RunDetailPage() {
       {run.error_message && (
         <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 font-mono whitespace-pre-wrap">
           {run.error_message}
+        </div>
+      )}
+
+      {failureSummary?.category && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm">
+          <div className="text-xs uppercase tracking-wide text-amber-600 mb-2">
+            failure classification
+          </div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="font-semibold text-amber-900">{failureSummary.category}</span>
+            <span className="text-amber-800">owner: {failureSummary.owner || "unknown"}</span>
+            <span className="text-amber-700">
+              confidence {Math.round((failureSummary.confidence || 0) * 100)}%
+            </span>
+          </div>
+          {failureSummary.signals.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {failureSummary.signals.map((signal) => (
+                <span key={signal} className="px-2 py-0.5 rounded bg-white border border-amber-200 text-xs text-amber-800">
+                  {signal}
+                </span>
+              ))}
+            </div>
+          )}
+          {failureSummary.next_action && (
+            <div className="mt-2 text-amber-900">{failureSummary.next_action}</div>
+          )}
         </div>
       )}
 

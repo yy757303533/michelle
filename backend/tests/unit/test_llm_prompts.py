@@ -27,6 +27,10 @@ def test_case_gen_prompt_requires_explicit_verification_milestones():
     assert "stop at the earliest observable outcome" in prompt
     assert "verified/next registration state" in prompt
     assert "do not assert that a backend registration api request must happen" in prompt
+    assert "case_type" in prompt
+    assert "execution_scope" in prompt
+    assert "requires_email_verification" in prompt
+    assert "requires_real_login" in prompt
     assert "receivable temporary email" in prompt
     assert "random\n  unique email addresses are enough" in prompt
     assert "do not prepend login steps" in prompt

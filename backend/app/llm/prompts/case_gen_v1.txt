@@ -96,6 +96,10 @@ chapter title or generic product assumptions.
       "tags": ["happy" | "edge" | "error" | "security", ...],
       "priority": "P0" | "P1" | "P2",
       "auth_state": "logged-in" | "logged-out" | "wrong-creds" | "public",
+      "case_type": "happy_path" | "negative_validation" | "boundary" | "access_control" | "exploratory",
+      "execution_scope": "authenticated" | "public" | "login" | "registration" | "password_reset" | "account_entry" | "unknown",
+      "requires_email_verification": true | false,
+      "requires_real_login": true | false,
       "preconditions": ["..."],
       "steps": [
         {{ "intent": "<自然语言一步操作>", "expected": "<可选: 这一步后期望可见>" }}
@@ -118,6 +122,20 @@ chapter title or generic product assumptions.
 
 Each case implicitly belongs to ONE of these auth states. Pick the right
 one — getting this wrong makes the case fail or test the wrong thing.
+
+Also set the structured execution fields:
+- `case_type`: use `happy_path` for the primary success path,
+  `negative_validation` for invalid/missing input rejection, `boundary` for
+  limits, `access_control` for auth/permission behavior, and `exploratory`
+  only when the PRD is not explicit enough.
+- `execution_scope`: use `authenticated` for features behind login, `login`
+  for login UI/credential checks, `registration` for sign-up/account creation,
+  `password_reset` for forgot/reset password, `public` for unauthenticated
+  product pages, and `account_entry` for mixed account entry pages.
+- `requires_email_verification`: true only when the case must receive and use
+  a real email verification code/link.
+- `requires_real_login`: true for `auth_state: "logged-in"` cases that need the
+  configured project account.
 
 ### A) `logged-in` — feature lives behind a login wall (most common)
 

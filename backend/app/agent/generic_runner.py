@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 from app.agent.claude_runner import RunOutcome, RunRequest
+from app.agent.execution_policy import MAX_LLM_TIMEOUT_RETRIES_PER_RUN, classify_tool_result
 from app.agent.mcp_stdio import MCPClientError, MCPTool, build_playwright_stdio_client
 from app.agent.trace_parser import (
     ParsedRun,
@@ -27,7 +28,7 @@ from app.agent.trace_parser import (
     redact_bytes,
 )
 from app.config import settings
-from app.llm import LLMError, get_gateway
+from app.llm import LLMError, LLMTimeoutError, get_gateway
 from app.obs import EVENTS, get_logger
 from app.runtime_config import get_case_execution_provider
 from app.services.temp_email import TempEmailError, TempInbox, create_temp_inbox, wait_for_code
@@ -136,6 +137,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             max_turns = max(1, settings.generic_agent_max_turns)
             last_action_key: tuple[str, str] | None = None
             repeated_action_count = 0
+            llm_timeout_retries = 0
 
             for turn in range(max_turns):
                 remaining = _remaining_seconds(t0, req.timeout_seconds)
@@ -167,15 +169,51 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                 )
                 prefer_provider = await get_case_execution_provider()
                 model_prompt = _render_turn_prompt(req.prompt, tools, transcript)
-                result = await get_gateway().chat(
-                    model_prompt,
-                    prompt_version="execute_generic_json_v1",
-                    prefer=prefer_provider,
-                    skip=["claude-cli"],
-                    json_mode=True,
-                    temperature=0,
-                    timeout_seconds=max(0.1, min(remaining, 120)),
-                )
+                try:
+                    result = await get_gateway().chat(
+                        model_prompt,
+                        prompt_version="execute_generic_json_v1",
+                        prefer=prefer_provider,
+                        skip=["claude-cli"],
+                        json_mode=True,
+                        temperature=0,
+                        timeout_seconds=max(0.1, min(remaining, 120)),
+                    )
+                except LLMTimeoutError as exc:
+                    if llm_timeout_retries >= MAX_LLM_TIMEOUT_RETRIES_PER_RUN:
+                        raise
+                    llm_timeout_retries += 1
+                    transcript.append(
+                        "LLM_TIMEOUT_RECOVERY: the previous model call timed out before "
+                        "returning an action. Continue from the current observed state; "
+                        "prefer a compact action batch or final result if enough evidence exists."
+                    )
+                    runtime_event_index = await _emit_runtime_event(
+                        req,
+                        runtime_event_index,
+                        "model_retry",
+                        {
+                            "turn": turn,
+                            "provider": exc.provider,
+                            "reason": type(exc).__name__,
+                            "attempt": llm_timeout_retries,
+                        },
+                        f"retrying model turn after timeout: {exc}",
+                        is_error=True,
+                    )
+                    remaining = _remaining_seconds(t0, req.timeout_seconds)
+                    if remaining < _MIN_MODEL_TURN_SECONDS:
+                        raise
+                    model_prompt = _render_turn_prompt(req.prompt, tools, transcript)
+                    result = await get_gateway().chat(
+                        model_prompt,
+                        prompt_version="execute_generic_json_v1",
+                        prefer=prefer_provider,
+                        skip=["claude-cli"],
+                        json_mode=True,
+                        temperature=0,
+                        timeout_seconds=max(0.1, min(remaining, 120)),
+                    )
                 runtime_event_index = await _emit_runtime_event(
                     req,
                     runtime_event_index,
@@ -751,12 +789,13 @@ async def _call_mcp_tool_recording(
         tool_name=tool_name,
         safe_args=safe_args,
     )
-    screenshot_skipped = _is_recoverable_screenshot_timeout(tool_name, result_text, is_error)
-    if screenshot_skipped:
+    decision = classify_tool_result(tool_name, result_text, is_error)
+    tool_warning = decision.severity == "warning"
+    if decision.override_error:
         is_error = False
         result_text = (
-            "[screenshot skipped: Playwright timed out waiting for web fonts to load; "
-            "continue with browser_snapshot or page state evidence]\n"
+            f"[tool warning: {decision.reason}; continue with browser_snapshot "
+            "or page state evidence]\n"
             + _truncate_text(result_text, 600)
         )
     step.result_text = result_text
@@ -772,7 +811,7 @@ async def _call_mcp_tool_recording(
         not step.screenshot_path
         and tool_name == "browser_take_screenshot"
         and not is_error
-        and not screenshot_skipped
+        and not tool_warning
     ):
         filename = safe_args.get("filename")
         if isinstance(filename, str) and filename.strip():
@@ -794,13 +833,6 @@ async def _call_mcp_tool_recording(
         f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
     )
     return step
-
-
-def _is_recoverable_screenshot_timeout(tool_name: str, result_text: str, is_error: bool) -> bool:
-    if tool_name != "browser_take_screenshot" or not is_error:
-        return False
-    lowered = result_text.lower()
-    return "page.screenshot" in lowered and "waiting for fonts to load" in lowered
 
 
 async def _call_internal_tool_recording(

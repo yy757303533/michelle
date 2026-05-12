@@ -36,6 +36,22 @@ from app.obs import EVENTS, get_logger
 from app.services.prd_parser import Chapter
 
 AuthState = Literal["logged-in", "logged-out", "wrong-creds", "public"]
+CaseType = Literal[
+    "happy_path",
+    "negative_validation",
+    "boundary",
+    "access_control",
+    "exploratory",
+]
+ExecutionScope = Literal[
+    "authenticated",
+    "public",
+    "login",
+    "registration",
+    "password_reset",
+    "account_entry",
+    "unknown",
+]
 VALID_AUTH_STATES: tuple[str, ...] = ("logged-in", "logged-out", "wrong-creds", "public")
 
 _log = get_logger(__name__)
@@ -144,6 +160,10 @@ class GeneratedCase(BaseModel):
     tags: list[str] = Field(default_factory=list)
     priority: str = "P1"
     auth_state: AuthState = "logged-in"
+    case_type: CaseType = "exploratory"
+    execution_scope: ExecutionScope = "unknown"
+    requires_email_verification: bool = False
+    requires_real_login: bool = False
     preconditions: list[str] = Field(default_factory=list)
     steps: list[GeneratedStep] = Field(default_factory=list)
     assertions: list[GeneratedAssertion] = Field(default_factory=list)
@@ -258,6 +278,8 @@ async def generate_cases_for_chapter(
         prompt_version=pv_id,
         model=model,
         generation_job_id=generation_job_id,
+        base_url=base_url,
+        login_url=login_url,
         log=log,
     )
     return saved, raw
@@ -328,6 +350,8 @@ async def generate_cases_for_chapters(
             prompt_version=pv_id,
             model=model,
             generation_job_id=generation_job_id,
+            base_url=base_url,
+            login_url=login_url,
             log=_log.bind(project_id=project_id, chapter=chapter.normalized_title),
         )
         out.append((chapter, saved, batch))
@@ -459,6 +483,8 @@ async def persist_generated_batch(
     batch: GeneratedBatch,
     model: str,
     generation_job_id: str | None,
+    base_url: str = "",
+    login_url: str | None = None,
 ) -> list[TestCase]:
     """Persist one generated chapter batch. Worker calls this serially."""
     return await _persist_cases(
@@ -469,6 +495,8 @@ async def persist_generated_batch(
         prompt_version=prompt_id("case_gen", "v1"),
         model=model,
         generation_job_id=generation_job_id,
+        base_url=base_url,
+        login_url=login_url,
         log=_log.bind(project_id=project_id, chapter=chapter.normalized_title),
     )
 
@@ -482,6 +510,8 @@ async def _persist_cases(
     prompt_version: str,
     model: str,
     generation_job_id: str | None,
+    base_url: str = "",
+    login_url: str | None = None,
     log,
 ) -> list[TestCase]:
     saved: list[TestCase] = []
@@ -508,7 +538,7 @@ async def _persist_cases(
                 preconditions=gc.preconditions,
                 steps=[s.model_dump() for s in gc.steps],
                 assertions=[a.model_dump() for a in gc.assertions],
-                quality=_quality_review(gc, chapter),
+                quality=_quality_review(gc, chapter, base_url=base_url, login_url=login_url),
                 source="ai-generated",
                 prompt_version=prompt_version,
                 model_version=model or "unknown",
@@ -640,7 +670,13 @@ def _chapter_id(chapter: Chapter) -> str:
     return f"{chapter.level}:{chapter.normalized_title}"
 
 
-def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
+def _quality_review(
+    case: GeneratedCase,
+    chapter: Chapter,
+    *,
+    base_url: str = "",
+    login_url: str | None = None,
+) -> dict:
     flags: list[str] = []
     reviewer_notes: list[str] = []
     assertion_sources = [a.source for a in case.assertions]
@@ -661,6 +697,7 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
             " ".join(a.description for a in case.assertions),
         ]
     ).lower()
+    step_text = " ".join(s.intent for s in case.steps).lower()
     chapter_text = (chapter.body or "").lower()
 
     if any(src != "prd_explicit" for src in assertion_sources):
@@ -684,11 +721,21 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
     if not case.assertions:
         flags.append("missing_assertions")
         reviewer_notes.append("缺少可验证断言。")
-    if case.auth_state == "logged-in" and not any(
-        "登录" in s.intent or "login" in s.intent.lower() for s in case.steps
-    ):
+    has_login_step = any("登录" in s.intent or "login" in s.intent.lower() for s in case.steps)
+    if case.auth_state == "logged-in" and has_login_step:
+        flags.append("redundant_login_steps")
+        reviewer_notes.append("logged-in 用例不应包含登录步骤；运行器会使用项目配置做确定性登录。")
+    if case.auth_state == "logged-in" and case.requires_real_login and not login_url:
         flags.append("auth_setup_unclear")
-        reviewer_notes.append("logged-in 用例没有显式登录步骤，确认项目默认登录态是否可用。")
+        reviewer_notes.append("用例需要真实登录，但项目未配置 login_url。")
+    if (
+        login_url
+        and case.auth_state in {"logged-out", "wrong-creds"}
+        and case.execution_scope in {"login", "registration", "password_reset", "account_entry"}
+        and _starts_from_base_url(step_text, base_url)
+    ):
+        flags.append("account_entry_should_use_login_url")
+        reviewer_notes.append("账号入口类用例应从项目 login_url 开始，而不是从 base_url 首页探索入口。")
 
     prd_overlap = _keyword_overlap(text, chapter_text)
     if prd_overlap < 0.08 and "prd_explicit" in assertion_sources:
@@ -718,7 +765,20 @@ def _quality_review(case: GeneratedCase, chapter: Chapter) -> dict:
         "avg_assertion_confidence": round(avg_conf, 2),
         "prd_keyword_overlap": round(prd_overlap, 2),
         "reviewer_notes": reviewer_notes,
+        "case_type": case.case_type,
+        "execution_scope": case.execution_scope,
+        "requires_email_verification": bool(case.requires_email_verification),
+        "requires_real_login": bool(case.requires_real_login),
     }
+
+
+def _starts_from_base_url(step_text: str, base_url: str) -> bool:
+    if not base_url:
+        return False
+    normalized_base = base_url.rstrip("/").lower()
+    if normalized_base and normalized_base in step_text:
+        return True
+    return any(token in step_text for token in ("base_url", "首页", "home page", "homepage"))
 
 
 def _looks_too_specific(text: str) -> bool:

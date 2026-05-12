@@ -160,6 +160,44 @@ async def test_run_detail_returns_performance_breakdown(session, app_client):
 
 
 @pytest.mark.asyncio
+async def test_run_detail_returns_failure_summary_for_llm_timeout(session, app_client):
+    session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    run = _run("r1", "aborted")
+    run.error_message = "generic loop LLM error: codex CLI timed out after 120s"
+    session.add(run)
+    await session.commit()
+
+    r = await app_client.get("/api/runs/r1")
+
+    assert r.status_code == 200
+    failure = r.json()["data"]["failure_summary"]
+    assert failure["category"] == "llm_timeout"
+    assert failure["owner"] == "executor"
+    assert "retry" in failure["next_action"]
+
+
+@pytest.mark.asyncio
+async def test_run_detail_returns_failure_summary_for_bad_case(session, app_client):
+    session.add(Project(project_id="demo", name="Demo"))
+    bad_case = _case("TC-r1")
+    bad_case.quality = {"flags": ["missing_prd_evidence"]}
+    session.add(bad_case)
+    run = _run("r1", "failed")
+    run.error_message = "assertion failed"
+    session.add(run)
+    await session.commit()
+
+    r = await app_client.get("/api/runs/r1")
+
+    assert r.status_code == 200
+    failure = r.json()["data"]["failure_summary"]
+    assert failure["category"] == "bad_case"
+    assert failure["owner"] == "case"
+    assert "missing_prd_evidence" in failure["signals"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_rolls_back_run_scope(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
     session.add(_run("r1", "pending"))

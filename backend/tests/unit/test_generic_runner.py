@@ -17,6 +17,7 @@ from app.agent.generic_runner import (
 )
 from app.agent.mcp_stdio import MCPTool
 from app.agent.trace_parser import StepEvent
+from app.llm.base import LLMTimeoutError
 from app.services.temp_email import TempInbox
 
 
@@ -726,6 +727,88 @@ async def test_run_generic_treats_font_screenshot_timeout_as_nonfatal(
     assert outcome.parsed.steps[0].result_is_error is False
     assert outcome.parsed.steps[0].screenshot_path is None
     assert outcome.parsed.steps[1].tool_name == "browser_snapshot"
+    assert outcome.parsed.summary.success is True
+
+
+@pytest.mark.asyncio
+async def test_run_generic_retries_once_after_llm_timeout(tmp_path, monkeypatch) -> None:
+    from app.llm.base import LLMResult
+
+    class FakeMCP:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                )
+            ]
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            return {"content": [{"type": "text", "text": "### Page state\nDashboard visible"}]}
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMTimeoutError("codex CLI timed out after 120s", provider="fake")
+            if self.calls == 2:
+                return LLMResult(
+                    text='{"tool":"browser_snapshot","arguments":{}}',
+                    provider="fake",
+                    model="fake-model",
+                )
+            return LLMResult(
+                text=(
+                    '{"final":{"case_status":"passed","step_count":1,'
+                    '"assertion_results":[{"description":"dashboard visible",'
+                    '"passed":true,"evidence":"Dashboard visible in snapshot"}],'
+                    '"failure_summary":""}}'
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    fake_mcp = FakeMCP()
+    fake_gateway = FakeGateway()
+    events: list[StepEvent] = []
+
+    async def on_event(step: StepEvent) -> None:
+        events.append(step)
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: fake_mcp,
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: fake_gateway)
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner.settings.generic_agent_max_turns", 2)
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(
+            prompt="verify dashboard",
+            work_dir=tmp_path,
+            timeout_seconds=180,
+            on_runtime_event=on_event,
+        )
+    )
+
+    assert fake_gateway.calls == 3
+    assert [name for name, _args in fake_mcp.calls] == ["browser_snapshot"]
+    assert "model_retry" in [event.tool_name for event in events]
     assert outcome.parsed.summary.success is True
 
 

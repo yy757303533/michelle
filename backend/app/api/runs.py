@@ -360,11 +360,13 @@ async def get_run(
     )
     steps_stmt = select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
     steps = (await session.execute(steps_stmt)).scalars().all()
+    case = await session.get(TestCase, run.case_id)
     return {
         "data": {
             "run": run.model_dump(),
             "steps": [s.model_dump() for s in steps],
             "failure_context": _failure_context(steps),
+            "failure_summary": _failure_summary(run, steps, case),
             "performance": _performance_breakdown(run, steps),
         }
     }
@@ -577,4 +579,90 @@ def _failure_context(steps: list[StepEvent]) -> dict | None:
         "intent": failed.intent,
         "error_message": failed.error_message,
         "evidence": evidence[:1000],
+    }
+
+
+def _failure_summary(run: Run, steps: list[StepEvent], case: TestCase | None) -> dict:
+    if run.status in {"passed", "running", "pending"}:
+        return {
+            "category": None,
+            "owner": None,
+            "confidence": 0.0,
+            "signals": [],
+            "next_action": "",
+        }
+
+    message = (run.error_message or "").lower()
+    failed = next((s for s in steps if s.status == "failed"), None)
+    failed_text = ""
+    if failed is not None:
+        failed_text = " ".join(
+            str(part or "")
+            for part in (
+                failed.tool_name,
+                failed.intent,
+                failed.error_message,
+                failed.tool_result,
+            )
+        ).lower()
+    case_flags = []
+    if case and isinstance(case.quality, dict):
+        raw_flags = case.quality.get("flags") or []
+        if isinstance(raw_flags, list):
+            case_flags = [str(flag) for flag in raw_flags]
+
+    signals: list[str] = []
+    category = "unknown"
+    owner = "unknown"
+    confidence = 0.4
+    next_action = "Run AI diagnosis or inspect the failed step evidence."
+
+    if "timed out" in message and ("codex" in message or "claude" in message or "llm" in message):
+        category = "llm_timeout"
+        owner = "executor"
+        confidence = 0.9
+        signals.append("llm_timeout")
+        next_action = "retry the run; if repeated, reduce LLM turns or switch provider"
+    elif "screenshot" in failed_text and "timeout" in failed_text:
+        category = "environment_error"
+        owner = "environment"
+        confidence = 0.8
+        signals.append("screenshot_timeout")
+        next_action = "retry; screenshot timeout should not block core assertions"
+    elif any(
+        flag
+        in {
+            "missing_prd_evidence",
+            "weak_prd_traceability",
+            "too_few_steps",
+            "missing_assertions",
+            "account_entry_should_use_login_url",
+            "redundant_login_steps",
+        }
+        for flag in case_flags
+    ):
+        category = "bad_case"
+        owner = "case"
+        confidence = 0.85
+        signals.extend(case_flags)
+        next_action = "mark the case feedback reason, fix generation rules, then regenerate"
+    elif failed is not None and failed.tool_name == "assertion":
+        category = "product_bug"
+        owner = "product"
+        confidence = 0.65
+        signals.append("assertion_failed")
+        next_action = "inspect assertion evidence and confirm whether the product violates the PRD"
+    elif run.status == "aborted":
+        category = "executor_error"
+        owner = "executor"
+        confidence = 0.65
+        signals.append("run_aborted")
+        next_action = "inspect executor logs and retry after transient errors are fixed"
+
+    return {
+        "category": category,
+        "owner": owner,
+        "confidence": confidence,
+        "signals": signals,
+        "next_action": next_action,
     }
