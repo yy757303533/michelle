@@ -46,6 +46,8 @@ def test_execute_prompt_handles_same_url_spa_state_changes():
     assert "email_wait_for_code" in prompt
     assert "use random emails" in prompt
     assert "screenshots are for evidence" in prompt
+    assert "web-font loading" in prompt
+    assert "prefer snapshots for routine state checks" in prompt
     assert "compact sequence" in prompt
     assert "configured login url" in prompt
     assert "do not open base url only to discover" in prompt

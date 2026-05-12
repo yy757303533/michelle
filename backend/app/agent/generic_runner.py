@@ -751,6 +751,14 @@ async def _call_mcp_tool_recording(
         tool_name=tool_name,
         safe_args=safe_args,
     )
+    screenshot_skipped = _is_recoverable_screenshot_timeout(tool_name, result_text, is_error)
+    if screenshot_skipped:
+        is_error = False
+        result_text = (
+            "[screenshot skipped: Playwright timed out waiting for web fonts to load; "
+            "continue with browser_snapshot or page state evidence]\n"
+            + _truncate_text(result_text, 600)
+        )
     step.result_text = result_text
     step.result_is_error = is_error
     step.latency_ms = elapsed_ms
@@ -760,7 +768,12 @@ async def _call_mcp_tool_recording(
     step.console_errors = extracted.get("console_errors")
     step.console_warnings = extracted.get("console_warnings")
     step.screenshot_path = extracted.get("screenshot_path")
-    if not step.screenshot_path and tool_name == "browser_take_screenshot":
+    if (
+        not step.screenshot_path
+        and tool_name == "browser_take_screenshot"
+        and not is_error
+        and not screenshot_skipped
+    ):
         filename = safe_args.get("filename")
         if isinstance(filename, str) and filename.strip():
             step.screenshot_path = filename.strip()
@@ -781,6 +794,13 @@ async def _call_mcp_tool_recording(
         f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
     )
     return step
+
+
+def _is_recoverable_screenshot_timeout(tool_name: str, result_text: str, is_error: bool) -> bool:
+    if tool_name != "browser_take_screenshot" or not is_error:
+        return False
+    lowered = result_text.lower()
+    return "page.screenshot" in lowered and "waiting for fonts to load" in lowered
 
 
 async def _call_internal_tool_recording(
@@ -972,7 +992,7 @@ Rules:
 - If a click keeps the same URL but changes the visible form/heading/stepper, treat it as a real state change and evaluate assertions against that new page state.
 - Do not treat missing network/API requests as a failure unless the case explicitly requires an API-side observable effect. Multi-step registration often advances to a verification-code step before final API submission.
 - For main/happy registration flows that need email verification, use email_create_temp_inbox before filling the email field, fill the returned email_address, then use email_wait_for_code after the UI asks for a verification code. Use random emails only for flows that do not need to receive mail.
-- Screenshots are expensive. Take them at key evidence points only: after entering the target page/state, after a submit/major transition, on failure, and final. Do not screenshot after routine typing unless the case specifically needs visual proof of the typed value.
+- Screenshots are expensive and may block on web-font loading. Prefer browser_snapshot for routine state checks after clicks/submits. Take screenshots only at key visual evidence points, on failure, and final; do not place a screenshot between a submit and the snapshot needed for the next decision.
 - Include `case_step_index` as a 1-based number when the tool action is executing or verifying a numbered test step. Omit it for unrelated probing.
 - Keep `reason` short. It is for trace readability, not hidden planning.
 

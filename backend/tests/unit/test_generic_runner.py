@@ -81,6 +81,7 @@ def test_render_turn_prompt_includes_execution_guardrails() -> None:
     assert "email_create_temp_inbox" in prompt
     assert "email_wait_for_code" in prompt
     assert "Screenshots are expensive" in prompt
+    assert "do not place a screenshot between a submit and the snapshot" in prompt
     assert "browser_snapshot" in prompt
 
 
@@ -625,6 +626,107 @@ async def test_run_generic_carries_case_step_index_on_tool_action(tmp_path, monk
     assert outcome.parsed.steps[0].tool_name == "browser_click"
     assert outcome.parsed.steps[0].tool_args == {"element": "Sign up", "ref": "e1"}
     assert outcome.parsed.steps[0].case_step_index == 2
+
+
+@pytest.mark.asyncio
+async def test_run_generic_treats_font_screenshot_timeout_as_nonfatal(
+    tmp_path, monkeypatch
+) -> None:
+    from app.llm.base import LLMResult
+
+    class FakeMCP:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(
+                    name="browser_take_screenshot",
+                    description="screenshot",
+                    input_schema={"type": "object"},
+                ),
+                MCPTool(
+                    name="browser_snapshot",
+                    description="snapshot",
+                    input_schema={"type": "object"},
+                ),
+            ]
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            if name == "browser_take_screenshot":
+                return {
+                    "isError": True,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "### Result\nTimeoutError: page.screenshot: "
+                                "Timeout 5000ms exceeded.\nCall log:\n"
+                                "  - taking page screenshot\n"
+                                "  - waiting for fonts to load...\n"
+                            ),
+                        }
+                    ],
+                }
+            return {"content": [{"type": "text", "text": "### Page state\nVerify code visible"}]}
+
+    class FakeGateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResult(
+                    text=(
+                        '{"actions":['
+                        '{"tool":"browser_take_screenshot","arguments":{"filename":"step.png"}},'
+                        '{"tool":"browser_snapshot","arguments":{}}'
+                        "]}"
+                    ),
+                    provider="fake",
+                    model="fake-model",
+                )
+            return LLMResult(
+                text=(
+                    '{"final":{"case_status":"passed","step_count":2,'
+                    '"assertion_results":[{"description":"state observed",'
+                    '"passed":true,"evidence":"snapshot ran after screenshot timeout"}],'
+                    '"failure_summary":""}}'
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    fake_mcp = FakeMCP()
+    fake_gateway = FakeGateway()
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: fake_mcp,
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: fake_gateway)
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+    monkeypatch.setattr("app.agent.generic_runner.settings.generic_agent_max_turns", 2)
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(prompt="verify page", work_dir=tmp_path, timeout_seconds=60)
+    )
+
+    assert [name for name, _args in fake_mcp.calls] == [
+        "browser_take_screenshot",
+        "browser_snapshot",
+    ]
+    assert outcome.parsed.steps[0].result_is_error is False
+    assert outcome.parsed.steps[0].screenshot_path is None
+    assert outcome.parsed.steps[1].tool_name == "browser_snapshot"
+    assert outcome.parsed.summary.success is True
 
 
 class AsyncProvider:

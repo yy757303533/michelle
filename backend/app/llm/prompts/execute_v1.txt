@@ -44,9 +44,10 @@ For each step:
    modal open/close, batch action result), call `mcp__playwright__browser_take_screenshot`
    with `filename: "step-<N>.png"` where N is the step number. Skip
    pure-snapshot steps (no UI change) to keep the trace tight.
-   Screenshots are for evidence, not every keystroke: target page reached,
-   submit/major transition result, failure, and final state are enough unless
-   the case explicitly needs visual proof of an intermediate field value.
+   Screenshots are for evidence, not every keystroke, and they can block on
+   web-font loading. Prefer snapshots for routine state checks after clicks
+   and submits. Do not place a screenshot between a submit and the snapshot
+   needed for the next decision unless the case specifically needs visual proof.
 5. If a step fails (element not found, click had no effect), do NOT panic-loop
    — try one alternative interpretation, then proceed and let the assertion
    catch the failure.
