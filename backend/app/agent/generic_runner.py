@@ -30,12 +30,14 @@ from app.config import settings
 from app.llm import LLMError, get_gateway
 from app.obs import EVENTS, get_logger
 from app.runtime_config import get_case_execution_provider
+from app.services.temp_email import TempEmailError, TempInbox, create_temp_inbox, wait_for_code
 
 _log = get_logger(__name__)
 _DATA_URI_RE = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
 _MAX_TOOL_RESULT_TEXT_CHARS = 12_000
 _MIN_MODEL_TURN_SECONDS = 15.0
 _REPEATABLE_OBSERVATION_TOOLS = {"browser_snapshot"}
+_INTERNAL_TOOL_NAMES = {"email_create_temp_inbox", "email_wait_for_code"}
 
 
 class GenericRunnerError(RuntimeError):
@@ -72,6 +74,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
     total_output = 0
     t0 = time.monotonic()
     runtime_event_index = 0
+    temp_inboxes: dict[str, TempInbox] = {}
 
     try:
         async with build_playwright_stdio_client(
@@ -82,6 +85,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             output_dir=work,
         ) as mcp:
             tools = [tool for tool in await mcp.list_tools() if tool.name != "browser_install"]
+            tools.extend(_internal_tools())
             transcript = _initial_transcript(req.prompt, tools)
             runtime_event_index = await _bootstrap_configured_login(
                 req=req,
@@ -168,75 +172,99 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     events.append({"type": "final", "text": final_text})
                     break
 
-                tool_name = str(action.get("tool") or action.get("action") or "")
-                arguments = action.get("arguments") or action.get("args") or {}
-                if not isinstance(arguments, dict):
-                    arguments = {}
-                if tool_name not in {t.name for t in tools}:
-                    transcript.append(
-                        f"Model requested invalid tool `{tool_name}`. "
-                        "Choose one of the listed tools or return final."
+                for batch_index, next_action in enumerate(_action_sequence(action), start=1):
+                    tool_name = str(next_action.get("tool") or next_action.get("action") or "")
+                    arguments = next_action.get("arguments") or next_action.get("args") or {}
+                    if not isinstance(arguments, dict):
+                        arguments = {}
+                    if tool_name not in {t.name for t in tools}:
+                        transcript.append(
+                            f"Model requested invalid tool `{tool_name}`. "
+                            "Choose one of the listed tools or return final."
+                        )
+                        runtime_event_index = await _emit_runtime_event(
+                            req,
+                            runtime_event_index,
+                            "invalid_action",
+                            {"turn": turn, "tool": tool_name},
+                            f"invalid tool requested: {tool_name}",
+                            is_error=True,
+                        )
+                        break
+                    case_step_index = _coerce_case_step_index(next_action.get("case_step_index"))
+                    action_key = (
+                        tool_name,
+                        json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str),
                     )
-                    runtime_event_index = await _emit_runtime_event(
-                        req,
-                        runtime_event_index,
-                        "invalid_action",
-                        {"turn": turn, "tool": tool_name},
-                        f"invalid tool requested: {tool_name}",
-                        is_error=True,
-                    )
-                    continue
-                case_step_index = _coerce_case_step_index(action.get("case_step_index"))
-                action_key = (
-                    tool_name,
-                    json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str),
-                )
-                if action_key == last_action_key:
-                    repeated_action_count += 1
-                else:
-                    last_action_key = action_key
-                    repeated_action_count = 1
-                if repeated_action_count > 2 and tool_name not in _REPEATABLE_OBSERVATION_TOOLS:
-                    transcript.append(
-                        f"Rejected repeated action: `{tool_name}` with the same arguments "
-                        "has already been attempted twice. Choose a different tool/action, "
-                        "inspect the page, or return failed final with evidence."
-                    )
-                    runtime_event_index = await _emit_runtime_event(
-                        req,
-                        runtime_event_index,
-                        "repeated_action",
-                        {"turn": turn, "tool": tool_name, "arguments": arguments},
-                        f"repeated action rejected: {tool_name}",
-                        is_error=True,
-                    )
-                    continue
+                    if action_key == last_action_key:
+                        repeated_action_count += 1
+                    else:
+                        last_action_key = action_key
+                        repeated_action_count = 1
+                    if (
+                        repeated_action_count > 2
+                        and tool_name not in _REPEATABLE_OBSERVATION_TOOLS
+                    ):
+                        transcript.append(
+                            f"Rejected repeated action: `{tool_name}` with the same arguments "
+                            "has already been attempted twice. Choose a different tool/action, "
+                            "inspect the page, or return failed final with evidence."
+                        )
+                        runtime_event_index = await _emit_runtime_event(
+                            req,
+                            runtime_event_index,
+                            "repeated_action",
+                            {"turn": turn, "tool": tool_name, "arguments": arguments},
+                            f"repeated action rejected: {tool_name}",
+                            is_error=True,
+                        )
+                        break
 
-                runtime_event_index = await _emit_runtime_event(
-                    req,
-                    runtime_event_index,
-                    "tool_start",
-                    _with_case_step_index(
-                        {
-                            "turn": turn,
-                            "tool": tool_name,
-                            "arguments": _redact_value(arguments, req.secrets),
-                        },
-                        case_step_index,
-                    ),
-                    f"starting {tool_name}",
-                )
-                await _call_mcp_tool_recording(
-                    req=req,
-                    mcp=mcp,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    events=events,
-                    steps=steps,
-                    transcript=transcript,
-                    turn=turn,
-                    case_step_index=case_step_index,
-                )
+                    runtime_event_index = await _emit_runtime_event(
+                        req,
+                        runtime_event_index,
+                        "tool_start",
+                        _with_case_step_index(
+                            {
+                                "turn": turn,
+                                "batch_index": batch_index,
+                                "tool": tool_name,
+                                "arguments": _redact_value(arguments, req.secrets),
+                            },
+                            case_step_index,
+                        ),
+                        f"starting {tool_name}",
+                    )
+                    if tool_name in _INTERNAL_TOOL_NAMES:
+                        step = await _call_internal_tool_recording(
+                            req=req,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            temp_inboxes=temp_inboxes,
+                            events=events,
+                            steps=steps,
+                            transcript=transcript,
+                            turn=turn,
+                            case_step_index=case_step_index,
+                        )
+                    else:
+                        step = await _call_mcp_tool_recording(
+                            req=req,
+                            mcp=mcp,
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            events=events,
+                            steps=steps,
+                            transcript=transcript,
+                            turn=turn,
+                            case_step_index=case_step_index,
+                        )
+                    if step.result_is_error:
+                        transcript.append(
+                            "Stopped the current action batch because the last tool returned "
+                            "an error. Inspect the page or choose a recovery action next."
+                        )
+                        break
             else:
                 raise _generic_error(
                     f"generic agent exceeded {max_turns} turns",
@@ -462,6 +490,42 @@ def _extract_login_refs(text: str) -> tuple[str, str, str, str] | None:
     return None
 
 
+def _internal_tools() -> list[MCPTool]:
+    return [
+        MCPTool(
+            name="email_create_temp_inbox",
+            description=(
+                "Create a disposable email inbox for registration flows that require "
+                "email verification. Use the returned email_address in the web form."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "purpose": {
+                        "type": "string",
+                        "description": "Short reason for creating this inbox.",
+                    }
+                },
+            },
+        ),
+        MCPTool(
+            name="email_wait_for_code",
+            description=(
+                "Wait for a verification email in a previously created disposable inbox "
+                "and extract a 4-8 digit code."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "inbox_id": {"type": "string"},
+                    "email_address": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600},
+                },
+            },
+        ),
+    ]
+
+
 async def _call_mcp_tool_recording(
     *,
     req: RunRequest,
@@ -532,6 +596,90 @@ async def _call_mcp_tool_recording(
         f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
     )
     return step
+
+
+async def _call_internal_tool_recording(
+    *,
+    req: RunRequest,
+    tool_name: str,
+    arguments: dict[str, Any],
+    temp_inboxes: dict[str, TempInbox],
+    events: list[dict[str, Any]],
+    steps: list[StepEvent],
+    transcript: list[str],
+    turn: int | str,
+    case_step_index: int | None = None,
+) -> StepEvent:
+    idx = len(steps)
+    safe_args = _redact_value(arguments, req.secrets)
+    step = StepEvent(
+        step_index=idx,
+        tool_name=tool_name,
+        tool_full_name=f"michelle.{tool_name}",
+        tool_args=safe_args,
+        tool_use_id=f"generic-{idx}",
+        is_playwright=False,
+        case_step_index=case_step_index,
+    )
+    steps.append(step)
+
+    started = time.monotonic()
+    try:
+        payload = await _call_internal_tool(tool_name, arguments, temp_inboxes)
+        result_text = json.dumps(payload, ensure_ascii=False)
+        is_error = False
+    except TempEmailError as exc:
+        result_text = str(exc)
+        is_error = True
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    result_text = _redact_text(result_text, req.secrets)
+    step.result_text = result_text
+    step.result_is_error = is_error
+    events.append(
+        {
+            "type": "tool",
+            "turn": turn,
+            "tool": tool_name,
+            "arguments": safe_args,
+            "is_error": is_error,
+            "elapsed_ms": elapsed_ms,
+            "result_text": result_text[:4000],
+        }
+    )
+    transcript.append(
+        f"TOOL {tool_name}({json.dumps(safe_args, ensure_ascii=False)}) "
+        f"=> {'ERROR' if is_error else 'OK'}\n{result_text[:6000]}"
+    )
+    return step
+
+
+async def _call_internal_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    temp_inboxes: dict[str, TempInbox],
+) -> dict[str, Any]:
+    if tool_name == "email_create_temp_inbox":
+        inbox = await create_temp_inbox()
+        temp_inboxes[inbox.inbox_id] = inbox
+        temp_inboxes[inbox.address] = inbox
+        return {
+            "type": "temp_email_inbox",
+            "provider": inbox.provider,
+            "inbox_id": inbox.inbox_id,
+            "email_address": inbox.address,
+            "instruction": "Use email_address in the registration form, then call email_wait_for_code.",
+        }
+    if tool_name == "email_wait_for_code":
+        key = str(arguments.get("inbox_id") or arguments.get("email_address") or "").strip()
+        if not key or key not in temp_inboxes:
+            raise TempEmailError("email_wait_for_code requires a known inbox_id or email_address")
+        timeout = arguments.get("timeout_seconds")
+        timeout_seconds = timeout if isinstance(timeout, int) and timeout > 0 else None
+        payload = await wait_for_code(temp_inboxes[key], timeout_seconds=timeout_seconds)
+        payload["type"] = "temp_email_code"
+        return payload
+    raise TempEmailError(f"unknown internal tool: {tool_name}")
 
 
 def _initial_transcript(_prompt: str, _tools: list[MCPTool]) -> list[str]:
@@ -605,13 +753,16 @@ def _render_turn_prompt(test_prompt: str, tools: list[MCPTool], transcript: list
     history = "\n\n".join(transcript[-12:])
     return f"""You are Michelle's browser test execution loop.
 
-You must execute the test case by choosing exactly one Playwright MCP tool per
-turn, or return a final RESULT when done.
+You must execute the test case by choosing either one tool action, a short batch
+of low-risk tool actions, or a final RESULT when done.
 
 Return ONLY one JSON object, no markdown:
 
 Tool action:
 {{"tool":"browser_snapshot","arguments":{{}},"case_step_index":1,"reason":"why this action is next"}}
+
+Action batch:
+{{"actions":[{{"tool":"browser_fill_form","arguments":{{"fields":[]}},"case_step_index":2,"reason":"fill known fields"}},{{"tool":"browser_click","arguments":{{"element":"Next","ref":"e1"}},"case_step_index":3,"reason":"continue"}}]}}
 
 Final:
 {{"final":{{"case_status":"passed|failed","step_count":N,"assertion_results":[{{"description":"...","passed":true|false,"evidence":"..."}}],"failure_summary":"<empty if passed; one sentence if failed>"}}}}
@@ -622,7 +773,14 @@ Rules:
 - Mark passed only when every explicit assertion is supported by observed evidence.
 - If a required element is missing or an action fails twice, inspect once, then try a different route or return failed with evidence.
 - Do not repeat the same tool with identical arguments more than twice.
+- Prefer a short `actions` batch, up to 5 actions, when refs and inputs are already known and the next actions are deterministic, such as fill form -> click Next -> wait -> screenshot.
+- Do not batch across an unknown page transition that needs fresh observation. After a navigation, modal open, verification step, or unexpected validation state, observe before deciding the next semantic action.
 - Prefer browser_snapshot to understand the current page, browser_navigate to open URLs, and locator/ref based actions when the snapshot provides refs.
+- Do not judge navigation or submission success from URL changes alone. For SPA and multi-step forms, the URL may stay the same while the page advances. Compare visible evidence: page heading/title text, stepper/current step, form fields, button labels, verification/success/error messages, modal content, and loading/disabled state.
+- If a click keeps the same URL but changes the visible form/heading/stepper, treat it as a real state change and evaluate assertions against that new page state.
+- Do not treat missing network/API requests as a failure unless the case explicitly requires an API-side observable effect. Multi-step registration often advances to a verification-code step before final API submission.
+- For main/happy registration flows that need email verification, use email_create_temp_inbox before filling the email field, fill the returned email_address, then use email_wait_for_code after the UI asks for a verification code. Use random emails only for flows that do not need to receive mail.
+- Screenshots are expensive. Take them at key evidence points only: after entering the target page/state, after a submit/major transition, on failure, and final. Do not screenshot after routine typing unless the case specifically needs visual proof of the typed value.
 - Include `case_step_index` as a 1-based number when the tool action is executing or verifying a numbered test step. Omit it for unrelated probing.
 - Keep `reason` short. It is for trace readability, not hidden planning.
 
@@ -657,6 +815,18 @@ def _parse_action(text: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise GenericRunnerError("model JSON action must be an object")
     return data
+
+
+def _action_sequence(action: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize single-action and batched-action model responses."""
+    raw_actions = action.get("actions") or action.get("batch")
+    if not isinstance(raw_actions, list):
+        return [action]
+    normalized: list[dict[str, Any]] = []
+    for raw in raw_actions[:5]:
+        if isinstance(raw, dict):
+            normalized.append(raw)
+    return normalized or [action]
 
 
 def _coerce_case_step_index(raw: Any) -> int | None:

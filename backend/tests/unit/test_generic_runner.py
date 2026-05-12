@@ -5,7 +5,10 @@ import pytest
 from app.agent.claude_runner import RunRequest
 from app.agent.generic_runner import (
     GenericRunnerError,
+    _action_sequence,
+    _call_internal_tool,
     _final_has_enough_evidence,
+    _internal_tools,
     _normalize_final_payload,
     _parse_action,
     _render_turn_prompt,
@@ -14,6 +17,7 @@ from app.agent.generic_runner import (
 )
 from app.agent.mcp_stdio import MCPTool
 from app.agent.trace_parser import StepEvent
+from app.services.temp_email import TempInbox
 
 
 def test_parse_action_accepts_fenced_json() -> None:
@@ -30,6 +34,26 @@ def test_parse_action_accepts_json_with_trailing_prose() -> None:
     assert action["final"]["case_status"] == "passed"
 
 
+def test_action_sequence_supports_batched_actions() -> None:
+    actions = _action_sequence(
+        {
+            "actions": [
+                {"tool": "browser_fill_form", "arguments": {"fields": []}},
+                {"tool": "browser_click", "arguments": {"ref": "e1"}},
+            ]
+        }
+    )
+
+    assert [a["tool"] for a in actions] == ["browser_fill_form", "browser_click"]
+
+
+def test_action_sequence_caps_batch_size() -> None:
+    actions = _action_sequence({"actions": [{"tool": f"t{i}"} for i in range(8)]})
+
+    assert len(actions) == 5
+    assert actions[-1]["tool"] == "t4"
+
+
 def test_render_turn_prompt_includes_execution_guardrails() -> None:
     prompt = _render_turn_prompt(
         "open the login page",
@@ -44,9 +68,53 @@ def test_render_turn_prompt_includes_execution_guardrails() -> None:
     )
 
     assert "Return ONLY one JSON object" in prompt
+    assert "Action batch" in prompt
+    assert "up to 5 actions" in prompt
     assert "Do not return final before using at least one tool" in prompt
     assert "Never invent page state" in prompt
+    assert "URL changes alone" in prompt
+    assert "stepper/current step" in prompt
+    assert "missing network/API requests" in prompt
+    assert "verification-code step" in prompt
+    assert "email_create_temp_inbox" in prompt
+    assert "email_wait_for_code" in prompt
+    assert "Screenshots are expensive" in prompt
     assert "browser_snapshot" in prompt
+
+
+def test_internal_email_tools_are_available() -> None:
+    names = {tool.name for tool in _internal_tools()}
+
+    assert "email_create_temp_inbox" in names
+    assert "email_wait_for_code" in names
+
+
+async def test_internal_email_tools_create_and_wait(monkeypatch) -> None:
+    inbox = TempInbox(
+        inbox_id="inbox-1",
+        address="michelle@example.test",
+        password="secret",
+        token="token",
+        provider="mail_tm",
+    )
+
+    async def fake_create_temp_inbox() -> TempInbox:
+        return inbox
+
+    async def fake_wait_for_code(_inbox: TempInbox, *, timeout_seconds=None):
+        return {"email_address": _inbox.address, "code": "123456", "subject": "Verify"}
+
+    monkeypatch.setattr("app.agent.generic_runner.create_temp_inbox", fake_create_temp_inbox)
+    monkeypatch.setattr("app.agent.generic_runner.wait_for_code", fake_wait_for_code)
+    store: dict[str, TempInbox] = {}
+
+    created = await _call_internal_tool("email_create_temp_inbox", {}, store)
+    code = await _call_internal_tool("email_wait_for_code", {"inbox_id": "inbox-1"}, store)
+
+    assert created["email_address"] == "michelle@example.test"
+    assert store["inbox-1"] is inbox
+    assert store["michelle@example.test"] is inbox
+    assert code["code"] == "123456"
 
 
 def test_normalize_final_payload_requires_valid_status_and_step_count() -> None:

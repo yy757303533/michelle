@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     default_target_username: str = ""
     default_target_password: str = ""
 
+    # ── Temporary inbox for real registration E2E flows ──
+    temp_email_provider: str = "mail_tm"
+    """Temporary inbox provider for registration flows: mail_tm | none."""
+    temp_email_base_url: str = "https://api.mail.tm"
+    temp_email_code_timeout_seconds: int = 120
+    temp_email_poll_interval_seconds: int = 5
+
     @property
     def artifacts_path(self) -> Path:
         p = Path(self.artifacts_dir).resolve()

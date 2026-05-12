@@ -22,6 +22,29 @@ def test_case_gen_prompt_requires_explicit_verification_milestones():
     assert "assertions" in prompt
     assert "evidence" in prompt
     assert "chapter title alone" in prompt
+    assert "runtime cost discipline" in prompt
+    assert "only the primary happy-path case" in prompt
+    assert "stop at the earliest observable outcome" in prompt
+    assert "verified/next registration state" in prompt
+    assert "do not assert that a backend registration api request must happen" in prompt
+    assert "receivable temporary email" in prompt
+    assert "random\n  unique email addresses are enough" in prompt
+
+
+def test_execute_prompt_handles_same_url_spa_state_changes():
+    prompt = load_prompt("execute", "v1").lower()
+
+    assert "url changes alone" in prompt
+    assert "same url" in prompt
+    assert "stepper" in prompt
+    assert "visible page state changed" in prompt
+    assert "absence of a network request is not" in prompt
+    assert "verification-code step" in prompt
+    assert "email_create_temp_inbox" in prompt
+    assert "email_wait_for_code" in prompt
+    assert "use random emails" in prompt
+    assert "screenshots are for evidence" in prompt
+    assert "compact sequence" in prompt
 
 
 def test_render_substitutes_placeholders():

@@ -44,9 +44,35 @@ For each step:
    modal open/close, batch action result), call `mcp__playwright__browser_take_screenshot`
    with `filename: "step-<N>.png"` where N is the step number. Skip
    pure-snapshot steps (no UI change) to keep the trace tight.
+   Screenshots are for evidence, not every keystroke: target page reached,
+   submit/major transition result, failure, and final state are enough unless
+   the case explicitly needs visual proof of an intermediate field value.
 5. If a step fails (element not found, click had no effect), do NOT panic-loop
    — try one alternative interpretation, then proceed and let the assertion
    catch the failure.
+6. **State-change judgment for SPA and multi-step forms:** do not decide pass/fail
+   from URL changes alone. A page can stay on the same URL while moving to a new
+   step. Compare the ARIA snapshot and screenshots before/after the action:
+   page heading/title text, stepper/current step, visible form fields, button
+   labels, success/verification/error messages, modal content, and disabled/loading
+   state. Treat a same-URL flow as advanced when the visible page state changed
+   to the expected next step.
+7. **Network/API evidence:** absence of a network request is not, by itself, a
+   failure. Many multi-step registration flows do not submit the final backend
+   request until a later verification-code step. Use lack of network/API calls
+   as failure evidence only when the test case explicitly requires an API-side
+   observable effect, or when the UI stayed on the same visible step with no
+   new validation, loading, or next-step state.
+8. **Email verification:** if this is a main/happy registration flow and the
+   case needs an email verification code, use the `email_create_temp_inbox`
+   tool before filling the email field, fill the returned `email_address`, then
+   call `email_wait_for_code` after the UI indicates a code/check-email step.
+   Enter the returned code into the browser UI and continue. Use random emails
+   only for cases that do not need to receive a verification email.
+9. **Execution speed:** when the current snapshot already gives reliable refs
+   and the next actions are deterministic, perform them as a compact sequence
+   instead of re-planning after every small operation. Re-observe only after
+   meaningful page changes or unexpected results.
 
 When all steps are done, evaluate each assertion against current state, take
 one final `mcp__playwright__browser_take_screenshot` with `filename: "final.png"`,

@@ -31,6 +31,21 @@ this chapter does not justify it; document why in `coverage_notes`):
 - **error** — invalid inputs, bad credentials, missing required fields
 - **security** — only if PRD mentions auth / permissions / sensitive data
 
+## Runtime cost discipline
+
+Generate cases like a real QA lead balancing signal and runtime:
+
+- Only the primary happy-path case should complete expensive external steps
+  such as email verification, payment, or full onboarding.
+- Validation/error/edge cases should stop at the earliest observable outcome
+  that proves the rule, such as a field-level error or disabled button. Do not
+  continue into email verification or later onboarding unless that is the rule
+  being tested.
+- Prefer one strong main-flow case plus focused short validation cases over many
+  long end-to-end cases that repeat the same setup.
+- Avoid adding screenshots, waits, or "verify still normal" style steps to the
+  generated step list unless they are required to prove the PRD behavior.
+
 ## Explicit post-action milestones
 
 If the PRD chapter explicitly says a user-visible milestone must happen after
@@ -39,9 +54,14 @@ an action, include that milestone in both `steps[].expected` and
 
 Examples:
 - If PRD says **Email Verification** or "email verification required after
-  initial registration", the registration happy-path case must submit valid
-  registration data and then expect a verification/check-email state, not a
-  completed account.
+  initial registration", the registration happy-path case should fill valid
+  initial registration data with a receivable temporary email, click the visible
+  Next/continue action, retrieve the verification code from that inbox, enter it
+  when the UI asks for a code, and expect the verified/next registration state,
+  not a completed account unless the PRD says registration completes there.
+  Do NOT assert that a backend registration API request must happen before the
+  verification/code step unless the PRD explicitly says so; many real products
+  only submit final registration after the verification code is entered.
 - If PRD says "after first login following verification", keep that as a
   separate post-verification flow/precondition; do not merge it into the
   initial registration case unless the UI can actually complete verification.
@@ -145,6 +165,15 @@ E.g. 测试 "密码错误时显示提示" / "邮箱不存在时跳转".
 - Output ONLY the JSON object above. No markdown fences, no commentary.
 - Every step.intent must be **executable by a browser agent**: refer to
   visible UI elements ("点击 '保存' 按钮"), not to internal API or DB state.
+- For multi-step forms, model each visible step separately. A "Next" button may
+  only advance to the next form section or verification-code page. Do not make
+  assertions about network/API submission unless the PRD explicitly requires an
+  observable API effect.
+- For registration happy-path cases that require email verification, explicitly
+  say to use a receivable temporary email/inbox and retrieve the verification
+  code. For non-happy-path, validation, required-field, password-rule, duplicate,
+  or exploratory email cases that do not need to complete verification, random
+  unique email addresses are enough.
 - Prefer 4-10 steps per case. Pad obvious wait/verify steps if needed.
 - If multiple chapters are provided, set `chapter_id` to the exact chapter id
   shown in that chapter heading.
