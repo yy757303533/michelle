@@ -38,6 +38,7 @@ _MAX_TOOL_RESULT_TEXT_CHARS = 12_000
 _MIN_MODEL_TURN_SECONDS = 15.0
 _REPEATABLE_OBSERVATION_TOOLS = {"browser_snapshot"}
 _INTERNAL_TOOL_NAMES = {"email_create_temp_inbox", "email_wait_for_code"}
+_MAX_ACTION_BATCH_SIZE = 8
 
 
 class GenericRunnerError(RuntimeError):
@@ -700,10 +701,13 @@ async def _call_internal_tool(
 
 def _initial_transcript(_prompt: str, _tools: list[MCPTool]) -> list[str]:
     return [
-        "Start by taking a browser_snapshot unless you need to navigate first. "
-        "Use short, deliberate actions. Do not repeat the same action with the "
-        "same arguments more than twice. Do not return final until at least one "
-        "tool observation supports the assertion result."
+        "Start from the configured login URL when the case is about login, "
+        "registration, password reset, or account entry and that URL is provided "
+        "in the test prompt. Do not open the base URL only to discover a login "
+        "or registration entry. After a snapshot exposes reliable refs, group "
+        "deterministic actions into a compact batch. Do not repeat the same "
+        "action with the same arguments more than twice. Do not return final "
+        "until at least one tool observation supports the assertion result."
     ]
 
 
@@ -771,7 +775,7 @@ def _render_turn_prompt(test_prompt: str, tools: list[MCPTool], transcript: list
     history = "\n\n".join(transcript[-12:])
     return f"""You are Michelle's browser test execution loop.
 
-You must execute the test case by choosing either one tool action, a short batch
+You must execute the test case by choosing either one tool action, a compact batch
 of low-risk tool actions, or a final RESULT when done.
 
 Return ONLY one JSON object, no markdown:
@@ -791,8 +795,9 @@ Rules:
 - Mark passed only when every explicit assertion is supported by observed evidence.
 - If a required element is missing or an action fails twice, inspect once, then try a different route or return failed with evidence.
 - Do not repeat the same tool with identical arguments more than twice.
-- Prefer a short `actions` batch, up to 5 actions, when refs and inputs are already known and the next actions are deterministic, such as fill form -> click Next -> wait -> screenshot.
-- Do not batch across an unknown page transition that needs fresh observation. After a navigation, modal open, verification step, or unexpected validation state, observe before deciding the next semantic action.
+- Prefer an `actions` batch, up to 8 actions, whenever refs and inputs are already known and the next actions are deterministic. Do not spend a separate model turn for routine sequences such as create inbox -> navigate -> snapshot, fill known fields -> click Next -> screenshot, wait for code -> fill code -> wait -> snapshot.
+- If the Login context provides a configured Login URL and the case is about login, registration, password reset, or account entry, navigate to that Login URL first. Do not navigate to Base URL only to discover a login/register link unless the Login URL failed with concrete evidence.
+- Do not batch across an unknown page transition that needs fresh observation. After a navigation, modal open, verification step, or unexpected validation state, the same batch may include one observation tool at the end, but the next semantic decision must use that fresh observation.
 - Prefer browser_snapshot to understand the current page, browser_navigate to open URLs, and locator/ref based actions when the snapshot provides refs.
 - Do not judge navigation or submission success from URL changes alone. For SPA and multi-step forms, the URL may stay the same while the page advances. Compare visible evidence: page heading/title text, stepper/current step, form fields, button labels, verification/success/error messages, modal content, and loading/disabled state.
 - If a click keeps the same URL but changes the visible form/heading/stepper, treat it as a real state change and evaluate assertions against that new page state.
@@ -841,7 +846,7 @@ def _action_sequence(action: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw_actions, list):
         return [action]
     normalized: list[dict[str, Any]] = []
-    for raw in raw_actions[:5]:
+    for raw in raw_actions[:_MAX_ACTION_BATCH_SIZE]:
         if isinstance(raw, dict):
             normalized.append(raw)
     return normalized or [action]

@@ -45,6 +45,8 @@ def test_execute_prompt_handles_same_url_spa_state_changes():
     assert "use random emails" in prompt
     assert "screenshots are for evidence" in prompt
     assert "compact sequence" in prompt
+    assert "configured login url" in prompt
+    assert "do not open base url only to discover" in prompt
 
 
 def test_render_substitutes_placeholders():

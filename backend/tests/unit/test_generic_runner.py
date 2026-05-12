@@ -48,10 +48,10 @@ def test_action_sequence_supports_batched_actions() -> None:
 
 
 def test_action_sequence_caps_batch_size() -> None:
-    actions = _action_sequence({"actions": [{"tool": f"t{i}"} for i in range(8)]})
+    actions = _action_sequence({"actions": [{"tool": f"t{i}"} for i in range(10)]})
 
-    assert len(actions) == 5
-    assert actions[-1]["tool"] == "t4"
+    assert len(actions) == 8
+    assert actions[-1]["tool"] == "t7"
 
 
 def test_render_turn_prompt_includes_execution_guardrails() -> None:
@@ -69,7 +69,9 @@ def test_render_turn_prompt_includes_execution_guardrails() -> None:
 
     assert "Return ONLY one JSON object" in prompt
     assert "Action batch" in prompt
-    assert "up to 5 actions" in prompt
+    assert "up to 8 actions" in prompt
+    assert "Login URL" in prompt
+    assert "Do not navigate to Base URL only to discover" in prompt
     assert "Do not return final before using at least one tool" in prompt
     assert "Never invent page state" in prompt
     assert "URL changes alone" in prompt

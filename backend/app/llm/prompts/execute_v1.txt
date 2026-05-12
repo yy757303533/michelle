@@ -69,10 +69,17 @@ For each step:
    call `email_wait_for_code` after the UI indicates a code/check-email step.
    Enter the returned code into the browser UI and continue. Use random emails
    only for cases that do not need to receive a verification email.
-9. **Execution speed:** when the current snapshot already gives reliable refs
+9. **Login/register entry:** if the Login Context provides a configured Login
+   URL and the case is about login, registration, password reset, or account
+   entry, open that Login URL directly. Do not open Base URL only to discover
+   a login/register link unless the configured Login URL fails with concrete
+   evidence.
+10. **Execution speed:** when the current snapshot already gives reliable refs
    and the next actions are deterministic, perform them as a compact sequence
-   instead of re-planning after every small operation. Re-observe only after
-   meaningful page changes or unexpected results.
+   instead of re-planning after every small operation. Group routine sequences
+   such as fill known fields -> click Next -> wait/screenshot, or wait for code
+   -> fill code -> wait/snapshot. Re-observe only after meaningful page changes
+   or unexpected results.
 
 When all steps are done, evaluate each assertion against current state, take
 one final `mcp__playwright__browser_take_screenshot` with `filename: "final.png"`,

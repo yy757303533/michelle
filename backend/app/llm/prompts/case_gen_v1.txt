@@ -142,7 +142,11 @@ E.g. **注册 / 忘记密码 / 登录 UI 本身的渲染**.
 
 - 不要 prepend 登录步骤
 - `preconditions: ["fresh browser session, user is NOT logged in"]`
-- 第一步通常是 `navigate to base_url` 或直接 `/register` / `/login`
+- 如果 Login context 提供了项目 login URL，登录 UI、注册入口、忘记密码、
+  account entry 相关 case 的第一步优先打开该 login URL；不要先打开
+  base_url 首页再探索登录/注册链接
+- 只有在没有 login URL，或 PRD 明确要求从首页入口验证时，第一步才使用
+  `navigate to base_url` 或直接 `/register` / `/login`
 - 这种 case 即使项目有默认账号，agent 在运行时也不应该用它登录
 
 ### C) `deliberately-wrong-creds` — testing rejection / error message
