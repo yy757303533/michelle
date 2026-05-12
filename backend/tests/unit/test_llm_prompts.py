@@ -8,33 +8,15 @@ from app.llm.prompts.registry import PromptNotFoundError, load_prompt, prompt_id
 
 
 def test_load_prompt_v1_files_exist():
-    # All three v1 prompts ship with the project
-    assert "PRD chapter" in load_prompt("case_gen", "v1")
+    # Runtime LLM prompts still ship with the project. Coverage-based case
+    # drafting is deterministic service code, not a PRD-to-case prompt.
     assert "diagnosis" in load_prompt("diagnose", "v1").lower()
     assert "browser test agent" in load_prompt("execute", "v1").lower()
 
 
-def test_case_gen_prompt_requires_explicit_verification_milestones():
-    prompt = load_prompt("case_gen", "v1").lower()
-
-    assert "email verification" in prompt
-    assert "steps" in prompt
-    assert "assertions" in prompt
-    assert "evidence" in prompt
-    assert "chapter title alone" in prompt
-    assert "runtime cost discipline" in prompt
-    assert "only the primary happy-path case" in prompt
-    assert "stop at the earliest observable outcome" in prompt
-    assert "verified/next registration state" in prompt
-    assert "do not assert that a backend registration api request must happen" in prompt
-    assert "case_type" in prompt
-    assert "execution_scope" in prompt
-    assert "requires_email_verification" in prompt
-    assert "requires_real_login" in prompt
-    assert "receivable temporary email" in prompt
-    assert "random\n  unique email addresses are enough" in prompt
-    assert "do not prepend login steps" in prompt
-    assert "deterministic login bootstrap" in prompt
+def test_retired_case_gen_prompt_is_not_registered():
+    with pytest.raises(PromptNotFoundError):
+        load_prompt("case_gen", "v1")
 
 
 def test_execute_prompt_handles_same_url_spa_state_changes():
@@ -59,22 +41,18 @@ def test_execute_prompt_handles_same_url_spa_state_changes():
 
 def test_render_substitutes_placeholders():
     rendered = render(
-        "case_gen",
+        "diagnose",
         "v1",
-        project_name="Demo",
-        max_cases=5,
-        target_cases=3,
-        base_url="http://example.com",
-        login_context="(no creds)",
-        chapter_id="ch1",
-        chapter_text="some PRD content",
-        module_hint="login",
+        case_name="Login",
+        case_summary="Demo login case",
+        failed_step_index=2,
+        failed_step_summary="button not found",
+        trace_tail_lines=1,
+        trace_tail="browser_click failed",
     )
-    assert "Demo" in rendered
-    assert "up to 3 concrete UI test cases" in rendered
-    assert "not a quota" in rendered
-    assert "ch1" in rendered
-    assert "some PRD content" in rendered
+    assert "Demo login case" in rendered
+    assert "button not found" in rendered
+    assert "browser_click failed" in rendered
 
 
 def test_load_prompt_missing_raises():
@@ -83,4 +61,18 @@ def test_load_prompt_missing_raises():
 
 
 def test_prompt_id_format():
-    assert prompt_id("case_gen", "v1") == "case_gen_v1"
+    assert prompt_id("test_design", "v1") == "test_design_v1"
+
+
+def test_test_design_prompt_requires_reviewable_coverage_contract():
+    prompt = load_prompt("test_design", "v1").lower()
+
+    assert "strict json" in prompt
+    assert "do not draft test cases" in prompt
+    assert "deduplicate" in prompt
+    assert "quoted prd evidence" in prompt
+    assert "executable" in prompt
+    assert "one coverage item" in prompt
+    assert "requirement" in prompt
+    assert "risk_type" in prompt
+    assert "coverage_type" in prompt

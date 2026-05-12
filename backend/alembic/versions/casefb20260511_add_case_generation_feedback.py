@@ -1,4 +1,4 @@
-"""add case generation feedback
+"""add case draft feedback
 
 Revision ID: casefb20260511
 Revises: 2f41e0a9c8b7
@@ -21,12 +21,12 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.create_table(
-        "case_generation_feedback",
+        "case_draft_feedback",
         sa.Column("feedback_id", sa.String(), nullable=False),
         sa.Column("case_id", sa.String(), nullable=False),
         sa.Column("project_id", sa.String(), nullable=False),
         sa.Column("generated_from", sa.String(), nullable=True),
-        sa.Column("generation_job_id", sa.String(), nullable=True),
+        sa.Column("design_job_id", sa.String(), nullable=True),
         sa.Column("category", sa.String(), nullable=False),
         sa.Column("note", sa.String(), nullable=False, server_default=""),
         sa.Column("evidence", sa.String(), nullable=False, server_default=""),
@@ -41,21 +41,21 @@ def upgrade() -> None:
         "case_id",
         "project_id",
         "generated_from",
-        "generation_job_id",
+        "design_job_id",
         "category",
         "status",
     ):
-        op.create_index(f"ix_case_generation_feedback_{column}", "case_generation_feedback", [column])
+        op.create_index(f"ix_case_draft_feedback_{column}", "case_draft_feedback", [column])
 
 
 def downgrade() -> None:
     for column in (
         "status",
         "category",
-        "generation_job_id",
+        "design_job_id",
         "generated_from",
         "project_id",
         "case_id",
     ):
-        op.drop_index(f"ix_case_generation_feedback_{column}", table_name="case_generation_feedback")
-    op.drop_table("case_generation_feedback")
+        op.drop_index(f"ix_case_draft_feedback_{column}", table_name="case_draft_feedback")
+    op.drop_table("case_draft_feedback")

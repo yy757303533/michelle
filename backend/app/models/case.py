@@ -25,6 +25,7 @@ class TestCase(SQLModel, table=True):
 
     case_id: str = Field(primary_key=True, description="TC-YYYYMMDD-NNN")
     project_id: str = Field(index=True)
+    coverage_id: str | None = Field(default=None, index=True)
 
     name: str
     intent: str
@@ -55,9 +56,6 @@ class TestCase(SQLModel, table=True):
     prompt_version: str | None = None
     model_version: str | None = None
     generated_from: str | None = None  # e.g. "prd:<prd_id>:chapter:<idx>"
-    generation_job_id: str | None = Field(default=None, index=True)
-    """Batch/task id that created this case. Used for atomic cancellation
-    rollback of AI-generated batches before human review takes ownership."""
 
     # Review
     review_status: str = "pending"  # pending | approved | rejected

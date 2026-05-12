@@ -38,8 +38,25 @@ interface RunsResponse {
     run_id: string;
     case_id: string;
     status: string;
+    project_id: string;
     duration_ms: number | null;
     started_at: string | null;
+  }>;
+  count: number;
+}
+
+interface RegressionAssetsResponse {
+  data: Array<{
+    asset_id: string;
+    case_id: string;
+    source_run_id: string;
+    status: string;
+    action_plan: Array<Record<string, unknown>>;
+    locator_candidates: Array<Record<string, unknown>>;
+    assertions: Array<Record<string, unknown>>;
+    last_replay_run_id: string | null;
+    last_status: string;
+    updated_at: string;
   }>;
   count: number;
 }
@@ -126,7 +143,7 @@ function Dashboard() {
           )}
         </h1>
         <p className="text-slate-500 text-sm mt-1">
-          PRD → AI cases → review → autonomous run → AI diagnosis → sediment.
+          PRD → coverage review → case drafts → run → regression asset → replay → diagnosis.
         </p>
       </div>
 
@@ -141,6 +158,7 @@ function Dashboard() {
         <RecentRunsWidget projectId={projectId} />
         <PRDsWidget projectId={projectId} />
       </div>
+      {projectId && <RegressionAssetsWidget projectId={projectId} />}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <LLMProvidersWidget />
@@ -469,6 +487,314 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
       )}
     </Panel>
   );
+}
+
+function RegressionAssetsWidget({ projectId }: { projectId: string }) {
+  const qc = useQueryClient();
+  const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const assets = useQuery({
+    queryKey: ["regression-assets", projectId],
+    enabled: Boolean(projectId),
+    queryFn: async (): Promise<RegressionAssetsResponse> => {
+      const r = await apiFetch(
+        `/api/regression-assets/?project_id=${encodeURIComponent(projectId)}`,
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 10000,
+  });
+  const runs = useQuery({
+    queryKey: ["asset-source-runs", projectId],
+    enabled: Boolean(projectId),
+    queryFn: async (): Promise<RunsResponse> => {
+      const r = await apiFetch(`/api/runs/?limit=100&project_id=${encodeURIComponent(projectId)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 10000,
+  });
+  const assetSourceRunIds = new Set((assets.data?.data ?? []).map((asset) => asset.source_run_id));
+  const eligibleRuns = (runs.data?.data ?? [])
+    .filter((run) => run.status === "passed" && !assetSourceRunIds.has(run.run_id))
+    .slice(0, 5);
+  const approve = useMutation({
+    mutationFn: async (assetId: string) => {
+      const r = await apiFetch(`/api/regression-assets/${assetId}/approve`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["regression-assets", projectId] }),
+  });
+  const replay = useMutation({
+    mutationFn: async (assetId: string) => {
+      const r = await apiFetch(`/api/regression-assets/${assetId}/replay`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["regression-assets", projectId] });
+      qc.invalidateQueries({ queryKey: ["runs-recent", projectId] });
+    },
+  });
+  const extract = useMutation({
+    mutationFn: async (runId: string) => {
+      const r = await apiFetch(`/api/regression-assets/from-run/${runId}`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["regression-assets", projectId] }),
+  });
+  const repair = useMutation({
+    mutationFn: async ({
+      assetId,
+      body,
+    }: {
+      assetId: string;
+      body: {
+        status: string;
+        action_plan: Array<Record<string, unknown>>;
+        locator_candidates: Array<Record<string, unknown>>;
+        assertions: Array<Record<string, unknown>>;
+      };
+    }) => {
+      const r = await apiFetch(`/api/regression-assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      setEditingAssetId(null);
+      qc.invalidateQueries({ queryKey: ["regression-assets", projectId] });
+    },
+  });
+  const assetRows = assets.data?.data ?? [];
+
+  return (
+    <Panel title="Regression assets">
+      {assets.isLoading ? (
+        <span className="text-slate-400 text-sm">…</span>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-2">
+            {assetRows.slice(0, 8).map((asset) => (
+              <div key={asset.asset_id} className="border-b border-slate-100 pb-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <code className="text-xs text-blue-700">{asset.asset_id.slice(0, 12)}</code>
+                  <span className="text-xs text-slate-500">{asset.case_id}</span>
+                  <StatusPill status={asset.status} small />
+                  {asset.last_status && <StatusPill status={asset.last_status} small />}
+                  {asset.last_replay_run_id && (
+                    <Link
+                      to="/runs/$id"
+                      params={{ id: asset.last_replay_run_id }}
+                      className="text-xs text-blue-700 hover:underline"
+                    >
+                      replay run
+                    </Link>
+                  )}
+                  <button
+                    disabled={asset.status !== "draft" || approve.isPending}
+                    onClick={() => approve.mutate(asset.asset_id)}
+                    className="ml-auto rounded border border-emerald-200 px-2 py-1 text-xs text-emerald-700 disabled:opacity-50"
+                  >
+                    approve
+                  </button>
+                  <button
+                    disabled={asset.status !== "approved" || replay.isPending}
+                    onClick={() => replay.mutate(asset.asset_id)}
+                    className="rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+                  >
+                    replay
+                  </button>
+                  <button
+                    onClick={() =>
+                      setEditingAssetId((current) =>
+                        current === asset.asset_id ? null : asset.asset_id,
+                      )
+                    }
+                    className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-700"
+                  >
+                    repair
+                  </button>
+                </div>
+                {editingAssetId === asset.asset_id && (
+                  <AssetRepairEditor
+                    asset={asset}
+                    isSaving={repair.isPending}
+                    onCancel={() => setEditingAssetId(null)}
+                    onSave={(body) => repair.mutate({ assetId: asset.asset_id, body })}
+                  />
+                )}
+              </div>
+            ))}
+            {!assetRows.length && (
+              <div className="text-sm text-slate-500">No regression assets yet.</div>
+            )}
+          </div>
+          <div>
+            <div className="mb-2 text-xs uppercase tracking-wide text-slate-400">
+              Passed runs ready to extract
+            </div>
+            <div className="space-y-2">
+              {eligibleRuns.map((run) => (
+                <div key={run.run_id} className="flex items-center gap-2 text-sm">
+                  <Link
+                    to="/runs/$id"
+                    params={{ id: run.run_id }}
+                    className="font-mono text-xs text-blue-700 hover:underline"
+                  >
+                    {run.run_id.slice(0, 8)}
+                  </Link>
+                  <span className="text-xs text-slate-500">{run.case_id}</span>
+                  <button
+                    disabled={extract.isPending}
+                    onClick={() => extract.mutate(run.run_id)}
+                    className="ml-auto rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+                  >
+                    extract
+                  </button>
+                </div>
+              ))}
+              {!eligibleRuns.length && (
+                <div className="text-sm text-slate-500">No new passed runs.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {(approve.error || replay.error || extract.error) && (
+        <pre className="mt-2 whitespace-pre-wrap text-xs text-red-600">
+          {((approve.error || replay.error || extract.error) as Error).message}
+        </pre>
+      )}
+      {repair.error && (
+        <pre className="mt-2 whitespace-pre-wrap text-xs text-red-600">
+          {(repair.error as Error).message}
+        </pre>
+      )}
+    </Panel>
+  );
+}
+
+type RegressionAssetRow = RegressionAssetsResponse["data"][number];
+
+function AssetRepairEditor({
+  asset,
+  isSaving,
+  onCancel,
+  onSave,
+}: {
+  asset: RegressionAssetRow;
+  isSaving: boolean;
+  onCancel: () => void;
+  onSave: (body: {
+    status: string;
+    action_plan: Array<Record<string, unknown>>;
+    locator_candidates: Array<Record<string, unknown>>;
+    assertions: Array<Record<string, unknown>>;
+  }) => void;
+}) {
+  const [status, setStatus] = useState(asset.status === "needs_repair" ? "draft" : asset.status);
+  const [actionPlan, setActionPlan] = useState(formatJson(asset.action_plan));
+  const [locators, setLocators] = useState(formatJson(asset.locator_candidates));
+  const [assertions, setAssertions] = useState(formatJson(asset.assertions));
+  const [error, setError] = useState("");
+
+  function parseJsonArray(label: string, raw: string): Array<Record<string, unknown>> {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array`);
+    return parsed.map((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error(`${label}[${index}] must be an object`);
+      }
+      return item as Record<string, unknown>;
+    });
+  }
+
+  return (
+    <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <label className="text-xs font-medium text-slate-600">
+          Status
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+            className="ml-2 rounded border border-slate-200 bg-white px-2 py-1 text-xs"
+          >
+            <option value="draft">draft</option>
+            <option value="approved">approved</option>
+            <option value="needs_repair">needs_repair</option>
+            <option value="retired">retired</option>
+          </select>
+        </label>
+        <button
+          disabled={isSaving}
+          onClick={() => {
+            try {
+              setError("");
+              onSave({
+                status,
+                action_plan: parseJsonArray("action_plan", actionPlan),
+                locator_candidates: parseJsonArray("locator_candidates", locators),
+                assertions: parseJsonArray("assertions", assertions),
+              });
+            } catch (err) {
+              setError((err as Error).message);
+            }
+          }}
+          className="ml-auto rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+        >
+          save repair
+        </button>
+        <button
+          disabled={isSaving}
+          onClick={onCancel}
+          className="rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+        >
+          cancel
+        </button>
+      </div>
+      <div className="grid gap-2">
+        <JsonField label="action_plan" value={actionPlan} onChange={setActionPlan} rows={8} />
+        <JsonField label="locator_candidates" value={locators} onChange={setLocators} rows={4} />
+        <JsonField label="assertions" value={assertions} onChange={setAssertions} rows={4} />
+      </div>
+      {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
+    </div>
+  );
+}
+
+function JsonField({
+  label,
+  value,
+  onChange,
+  rows,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  rows: number;
+}) {
+  return (
+    <label className="block text-xs font-medium text-slate-600">
+      {label}
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        rows={rows}
+        spellCheck={false}
+        className="mt-1 w-full rounded border border-slate-200 bg-white p-2 font-mono text-xs text-slate-800"
+      />
+    </label>
+  );
+}
+
+function formatJson(value: unknown): string {
+  return JSON.stringify(value ?? [], null, 2);
 }
 
 function PRDsWidget({ projectId }: { projectId: string }) {
@@ -937,7 +1263,8 @@ interface RuntimeSettingsResponse {
     max_concurrent_runs: RuntimeKnob<number>;
     headless: RuntimeKnob<boolean>;
     executor_loop: RuntimeKnob<"auto" | "generic_openai" | "claude_cli">;
-    case_generation_provider: RuntimeKnob<string>;
+    test_design_provider: RuntimeKnob<string>;
+    case_drafting_provider: RuntimeKnob<string>;
     case_execution_provider: RuntimeKnob<string>;
     diagnosis_provider: RuntimeKnob<string>;
     email_enabled: RuntimeKnob<boolean>;
@@ -996,7 +1323,8 @@ function RuntimeSettingsPanel() {
 
   const concurrencyKnob = settings.data?.data.max_concurrent_runs;
   const headlessKnob = settings.data?.data.headless;
-  const caseGenerationProviderKnob = settings.data?.data.case_generation_provider;
+  const testDesignProviderKnob = settings.data?.data.test_design_provider;
+  const caseDraftingProviderKnob = settings.data?.data.case_drafting_provider;
   const caseExecutionProviderKnob = settings.data?.data.case_execution_provider;
   const diagnosisProviderKnob = settings.data?.data.diagnosis_provider;
   const emailKnobs = settings.data?.data;
@@ -1094,7 +1422,8 @@ function RuntimeSettingsPanel() {
       {settings.isLoading ||
       !concurrencyKnob ||
       !headlessKnob ||
-      !caseGenerationProviderKnob ||
+      !testDesignProviderKnob ||
+      !caseDraftingProviderKnob ||
       !caseExecutionProviderKnob ||
       !diagnosisProviderKnob ||
       !artifactKnob ? (
@@ -1106,24 +1435,30 @@ function RuntimeSettingsPanel() {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <code className="text-xs text-slate-500">model_routing</code>
               <span className="text-xs text-slate-400">
-                generation / execution / diagnosis
+                design / drafting / execution / diagnosis
               </span>
             </div>
-            <div className="grid gap-2 md:grid-cols-3">
+            <div className="grid gap-2 md:grid-cols-4">
               <ProviderSelect
-                label="1. Generate cases"
-                knob={caseGenerationProviderKnob}
+                label="1. Analyze coverage"
+                knob={testDesignProviderKnob}
                 disabled={save.isPending}
-                onChange={(value) => save.mutate({ case_generation_provider: value })}
+                onChange={(value) => save.mutate({ test_design_provider: value })}
               />
               <ProviderSelect
-                label="2. Execute cases"
+                label="2. Draft cases"
+                knob={caseDraftingProviderKnob}
+                disabled={save.isPending}
+                onChange={(value) => save.mutate({ case_drafting_provider: value })}
+              />
+              <ProviderSelect
+                label="3. Execute cases"
                 knob={caseExecutionProviderKnob}
                 disabled={save.isPending}
                 onChange={(value) => save.mutate({ case_execution_provider: value })}
               />
               <ProviderSelect
-                label="3. Diagnose failures"
+                label="4. Diagnose failures"
                 knob={diagnosisProviderKnob}
                 disabled={save.isPending}
                 onChange={(value) => save.mutate({ diagnosis_provider: value })}

@@ -207,6 +207,7 @@ async def record_feedback(
     *,
     diag_id: str,
     feedback: str,
+    feedback_target: str = "",
     reason: str = "",
     note: str = "",
     session: AsyncSession,
@@ -222,6 +223,10 @@ async def record_feedback(
 
     was_confirmed = diag.human_feedback == "confirmed"
     diag.human_feedback = feedback
+    if feedback_target:
+        if feedback_target not in {"pattern", "asset", "case", "coverage"}:
+            raise DiagnoserError(f"invalid feedback_target {feedback_target!r}")
+        diag.feedback_target = feedback_target
     reason = reason.strip()
     detail = note.strip()
     if reason:
@@ -236,13 +241,54 @@ async def record_feedback(
         feedback=feedback,
     )
 
-    # Only absorb on the transition into confirmed, never on a repeat.
+    # Only route on the transition into confirmed, never on a repeat.
     if feedback == "confirmed" and not was_confirmed:
+        await _route_confirmed_feedback(diag=diag, session=session)
+
+    return diag
+
+
+async def _route_confirmed_feedback(*, diag: Diagnosis, session: AsyncSession) -> None:
+    target = diag.feedback_target or "pattern"
+    if target == "pattern":
         from app.services.pattern_store import absorb_diagnosis
 
         await absorb_diagnosis(diag=diag, session=session)
+        return
 
-    return diag
+    if target == "asset" and diag.asset_id:
+        from app.models import RegressionAsset
+
+        asset = await session.get(RegressionAsset, diag.asset_id)
+        if asset is not None:
+            asset.status = "needs_repair"
+            asset.last_status = f"diagnosis_confirmed:{diag.category}"
+            asset.updated_at = datetime.now(UTC)
+            await session.commit()
+        return
+
+    if target in {"case", "coverage"}:
+        case = await session.get(TestCase, diag.case_id)
+        if case is None:
+            return
+        if target == "case":
+            quality = dict(case.quality or {})
+            notes = list(quality.get("reviewer_notes") or [])
+            notes.append(f"Diagnosis {diag.diag_id} confirmed: {diag.category}")
+            quality["reviewer_notes"] = notes
+            quality["needs_review"] = True
+            case.quality = quality
+            case.updated_at = datetime.now(UTC)
+            await session.commit()
+            return
+        if case.coverage_id:
+            from app.models import CoverageItem
+
+            coverage = await session.get(CoverageItem, case.coverage_id)
+            if coverage is not None:
+                coverage.review_status = "stale"
+                coverage.updated_at = datetime.now(UTC)
+                await session.commit()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

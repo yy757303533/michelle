@@ -15,7 +15,7 @@ import {
 
 const PRD_URL_KEY = "prd_id";
 const CHAPTERS_PER_RUN_KEY = "prd_chapters_per_run";
-const GENERATION_TIMEOUT_KEY = "prd_generation_timeout_seconds";
+const GENERATION_TIMEOUT_KEY = "prd_analysis_timeout_seconds";
 const AUTO_GENERATION_KEY_PREFIX = "prd_auto_generation";
 const RECOMMENDED_CHAPTERS_PER_RUN = 5;
 const DEFAULT_GENERATION_TIMEOUT_SECONDS = 180;
@@ -136,16 +136,15 @@ interface GenerationProgress {
   };
 }
 
-/** POST /generate now returns 202 + a job_id; results stream into the
- * job row over the next several minutes via background work. The page
- * polls `/api/prd/jobs/<job_id>` to surface progress. */
+/** POST /analyze returns the created requirement and coverage ids. */
 interface GenerateAcceptResponse {
   data: {
-    job_id: string;
     prd_id: string;
-    status: "pending" | "running" | "done" | "failed" | "cancelled";
-    total_chapters: number;
-    reused?: boolean;
+    project_id: string;
+    requirements_created: number;
+    coverage_created: number;
+    requirement_ids: string[];
+    coverage_ids: string[];
   };
 }
 
@@ -201,10 +200,26 @@ interface RuntimeKnob<T = string> {
 
 interface RuntimeSettingsResponse {
   data: {
-    case_generation_provider: RuntimeKnob<string>;
-    case_generation_preflight_timeout_seconds: RuntimeKnob<number>;
-    case_generation_parallelism: RuntimeKnob<number>;
+    test_design_provider: RuntimeKnob<string>;
+    test_design_preflight_timeout_seconds: RuntimeKnob<number>;
+    case_drafting_provider: RuntimeKnob<string>;
   };
+}
+
+interface CoverageRow {
+  coverage_id: string;
+  project_id: string;
+  prd_id: string;
+  requirement_id: string;
+  chapter_index: number;
+  risk_type: string;
+  coverage_type: string;
+  title: string;
+  scenario: string;
+  rationale: string;
+  priority: string;
+  review_status: "proposed" | "accepted" | "rejected" | "stale";
+  linked_case_id: string | null;
 }
 
 function PrdPage() {
@@ -230,7 +245,6 @@ function PrdPage() {
   const [chaptersPerRunInput, setChaptersPerRunInput] = useState(readChaptersPerRun);
   const [generationTimeoutInput, setGenerationTimeoutInput] =
     useState(readGenerationTimeout);
-  const [parallelismInput, setParallelismInput] = useState("1");
   const [prdViewTab, setPrdViewTab] = useState<PrdViewTab>("chapters");
 
   const setActivePrdId = (id: string) => {
@@ -256,42 +270,73 @@ function PrdPage() {
     },
   });
 
+  const coverage = useQuery({
+    queryKey: ["coverage", uploaded?.prd_id],
+    enabled: Boolean(uploaded?.prd_id),
+    queryFn: async (): Promise<{ data: CoverageRow[]; count: number }> => {
+      if (!uploaded) throw new Error("upload first");
+      const r = await apiFetch(`/api/coverage/?prd_id=${encodeURIComponent(uploaded.prd_id)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+  });
+
+  const reviewCoverage = useMutation({
+    mutationFn: async ({
+      coverageId,
+      action,
+    }: {
+      coverageId: string;
+      action: "accept" | "reject" | "reset";
+    }) => {
+      const r = await apiFetch(`/api/coverage/${coverageId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["coverage", uploaded?.prd_id] });
+    },
+  });
+
+  const draftCoverageCase = useMutation({
+    mutationFn: async (coverageId: string) => {
+      const r = await apiFetch(`/api/coverage/${coverageId}/draft-case`, { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["coverage", uploaded?.prd_id] });
+      qc.invalidateQueries({ queryKey: ["cases"] });
+      qc.invalidateQueries({ queryKey: ["cases-summary"] });
+      qc.invalidateQueries({ queryKey: ["cases-for-prd-overlay"] });
+    },
+  });
+
   useEffect(() => {
-    const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+    const value = runtimeSettings.data?.data.test_design_preflight_timeout_seconds.value;
     if (typeof value === "number") setPreflightTimeoutInput(String(value));
-    const parallelism = runtimeSettings.data?.data.case_generation_parallelism.value;
-    if (typeof parallelism === "number") setParallelismInput(String(parallelism));
   }, [runtimeSettings.data]);
 
   async function updateRuntimeTimeout(seconds: number): Promise<RuntimeSettingsResponse> {
     const r = await apiFetch("/api/settings/runtime", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ case_generation_preflight_timeout_seconds: seconds }),
+      body: JSON.stringify({ test_design_preflight_timeout_seconds: seconds }),
     });
     if (!r.ok) throw new Error(await r.text());
     const data = (await r.json()) as RuntimeSettingsResponse;
     qc.setQueryData(["runtime-settings"], data);
-    setPreflightTimeoutInput(String(data.data.case_generation_preflight_timeout_seconds.value));
-    return data;
-  }
-
-  async function updateRuntimeParallelism(value: number): Promise<RuntimeSettingsResponse> {
-    const r = await apiFetch("/api/settings/runtime", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ case_generation_parallelism: value }),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    const data = (await r.json()) as RuntimeSettingsResponse;
-    qc.setQueryData(["runtime-settings"], data);
-    setParallelismInput(String(data.data.case_generation_parallelism.value));
+    setPreflightTimeoutInput(String(data.data.test_design_preflight_timeout_seconds.value));
     return data;
   }
 
   function parseTimeoutInput(): number {
     const raw = Number.parseInt(preflightTimeoutInput, 10);
-    const spec = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds;
+    const spec = runtimeSettings.data?.data.test_design_preflight_timeout_seconds;
     const min = spec?.min ?? 5;
     const max = spec?.max ?? 300;
     if (!Number.isFinite(raw) || raw < min || raw > max) {
@@ -303,7 +348,7 @@ function PrdPage() {
   async function saveTimeoutIfChanged(): Promise<number> {
     const seconds = parseTimeoutInput();
     const current =
-      runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+      runtimeSettings.data?.data.test_design_preflight_timeout_seconds.value;
     if (current !== seconds) await updateRuntimeTimeout(seconds);
     return seconds;
   }
@@ -311,16 +356,8 @@ function PrdPage() {
   const saveTimeout = useMutation({
     mutationFn: updateRuntimeTimeout,
     onError: () => {
-      const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+      const value = runtimeSettings.data?.data.test_design_preflight_timeout_seconds.value;
       if (typeof value === "number") setPreflightTimeoutInput(String(value));
-    },
-  });
-
-  const saveParallelism = useMutation({
-    mutationFn: updateRuntimeParallelism,
-    onError: () => {
-      const value = runtimeSettings.data?.data.case_generation_parallelism.value;
-      if (typeof value === "number") setParallelismInput(String(value));
     },
   });
 
@@ -328,12 +365,12 @@ function PrdPage() {
     try {
       const seconds = parseTimeoutInput();
       if (
-        seconds !== runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value
+        seconds !== runtimeSettings.data?.data.test_design_preflight_timeout_seconds.value
       ) {
         saveTimeout.mutate(seconds);
       }
     } catch {
-      const value = runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.value;
+      const value = runtimeSettings.data?.data.test_design_preflight_timeout_seconds.value;
       setPreflightTimeoutInput(String(value ?? 20));
     }
   }
@@ -380,28 +417,6 @@ function PrdPage() {
         String(DEFAULT_GENERATION_TIMEOUT_SECONDS),
       );
     }
-  }
-
-  function parseParallelismInput(): number {
-    const raw = Number.parseInt(parallelismInput, 10);
-    const spec = runtimeSettings.data?.data.case_generation_parallelism;
-    const min = spec?.min ?? 1;
-    const max = spec?.max ?? 3;
-    if (!Number.isFinite(raw) || raw < min || raw > max) {
-      throw new Error(`parallelism must be between ${min} and ${max}`);
-    }
-    return raw;
-  }
-
-  function persistParallelismFromInput(value: string) {
-    setParallelismInput(value);
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isFinite(parsed)) return;
-    const spec = runtimeSettings.data?.data.case_generation_parallelism;
-    const min = spec?.min ?? 1;
-    const max = spec?.max ?? 3;
-    if (parsed < min || parsed > max || parsed === spec?.value) return;
-    saveParallelism.mutate(parsed);
   }
 
   // Cases for the current project, used to overlay "✓ N cases generated"
@@ -502,29 +517,23 @@ function PrdPage() {
     mutationFn: async ({ chapterIndices }: GenerateVariables): Promise<GenerateAcceptResponse> => {
       if (!uploaded) throw new Error("upload first");
       await saveTimeoutIfChanged();
-      const generationTimeoutSeconds = parseGenerationTimeoutInput();
-      const parallelism = parseParallelismInput();
       if (chapterIndices.length === 0) throw new Error("no chapters queued");
-      const r = await apiFetch(`/api/prd/${uploaded.prd_id}/generate`, {
+      const r = await apiFetch(`/api/prd/${uploaded.prd_id}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chapter_indices: chapterIndices,
-          max_cases_per_chapter: 5,
-          generation_timeout_seconds: generationTimeoutSeconds,
-          parallelism,
-          prefer_provider:
-            runtimeSettings.data?.data.case_generation_provider.value === "auto"
-              ? null
-              : runtimeSettings.data?.data.case_generation_provider.value,
         }),
       });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
     onSuccess: (resp) => {
-      setActiveJobId(resp.data.job_id);
-      qc.invalidateQueries({ queryKey: ["prd-jobs", resp.data.prd_id] });
+      setActiveJobId(null);
+      setAutoGeneration(null);
+      if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, null);
+      qc.invalidateQueries({ queryKey: ["coverage"] });
+      qc.invalidateQueries({ queryKey: ["coverage", resp.data.prd_id] });
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["cases-summary"] });
     },
@@ -568,45 +577,12 @@ function PrdPage() {
 
   function startAutoGeneration() {
     if (!uploaded) return;
-    let batchSize: number;
-    let generationTimeoutSeconds: number;
-    try {
-      batchSize = parseChaptersPerRunInput();
-      generationTimeoutSeconds = parseGenerationTimeoutInput();
-    } catch {
-      setChaptersPerRunInput(String(RECOMMENDED_CHAPTERS_PER_RUN));
-      window.localStorage.setItem(
-        CHAPTERS_PER_RUN_KEY,
-        String(RECOMMENDED_CHAPTERS_PER_RUN),
-      );
-      setGenerationTimeoutInput(String(DEFAULT_GENERATION_TIMEOUT_SECONDS));
-      window.localStorage.setItem(
-        GENERATION_TIMEOUT_KEY,
-        String(DEFAULT_GENERATION_TIMEOUT_SECONDS),
-      );
-      batchSize = RECOMMENDED_CHAPTERS_PER_RUN;
-      generationTimeoutSeconds = DEFAULT_GENERATION_TIMEOUT_SECONDS;
-    }
-    window.localStorage.setItem(CHAPTERS_PER_RUN_KEY, String(batchSize));
-    window.localStorage.setItem(GENERATION_TIMEOUT_KEY, String(generationTimeoutSeconds));
     const selectedChapterIndices = [...selected].sort((a, b) => a - b);
-    const processedChapterIndices = deriveHandledChapterIndices(selectedChapterIndices);
-    const firstBatch = selectNextChapterBatch({
-      selectedChapterIndices,
-      processedChapterIndices,
-      batchSize,
-    });
-    const nextState = {
-      active: firstBatch.length > 0,
-      selectedChapterIndices,
-      processedChapterIndices,
-      batchSize,
-    };
-    setAutoGeneration(nextState);
-    writeStoredAutoGeneration(uploaded.prd_id, nextState);
+    setAutoGeneration(null);
+    writeStoredAutoGeneration(uploaded.prd_id, null);
     handledTerminalJobIds.current.clear();
-    if (firstBatch.length > 0) {
-      generate.mutate({ chapterIndices: firstBatch });
+    if (selectedChapterIndices.length > 0) {
+      generate.mutate({ chapterIndices: selectedChapterIndices });
     }
   }
 
@@ -621,7 +597,7 @@ function PrdPage() {
 
   const jobs = useQuery({
     queryKey: ["prd-jobs", uploaded?.prd_id],
-    enabled: Boolean(uploaded?.prd_id),
+    enabled: false,
     refetchInterval: (q) => {
       const rows = (q.state.data as GenerationJobsResponse | undefined)?.data ?? [];
       return rows.some((j) => j.status === "pending" || j.status === "running")
@@ -675,7 +651,7 @@ function PrdPage() {
   /** Poll the active generation job until it reaches a terminal state. */
   const job = useQuery({
     queryKey: ["prd-job", activeJobId],
-    enabled: Boolean(activeJobId),
+    enabled: false,
     refetchInterval: (q) => {
       const status = (q.state.data as GenerationJob | undefined)?.data?.status;
       return status === "done" || status === "failed" || status === "cancelled" ? false : 2000;
@@ -688,10 +664,7 @@ function PrdPage() {
   });
 
   const effectiveJob = job.data?.data ?? activeServerJob;
-  const isGenerating =
-    effectiveJob?.status === "running" ||
-    effectiveJob?.status === "pending" ||
-    generate.isPending;
+  const isGenerating = generate.isPending;
   useEffect(() => {
     if (!autoGeneration?.active || !effectiveJob) return;
     if (
@@ -768,11 +741,9 @@ function PrdPage() {
     setSelected(next);
   };
 
-  /** Map chapter signature → count of cases that point at it. Built from
-   * /api/cases/ rather than tracked locally, so reloads, tab switches, and
-   * background generation finishing all show up the same way: as the count
-   * going up. The signature must match what `case_generator.py` writes to
-   * `generated_from`: `chapter:<level>:<normalized_title>`. */
+  /** Map case provenance → count of drafted cases. New drafts are linked
+   * through coverage ids, while older imported data may still carry chapter
+   * signatures from the retired flow. */
   const casesByChapter = (() => {
     const out: Record<string, { total: number; pending: number; approved: number }> = {};
     if (!projectCases.data || !uploaded) return out;
@@ -842,7 +813,7 @@ function PrdPage() {
           </div>
         )}
         <p className="text-slate-500 text-sm mt-1">
-          Paste markdown, see chapters detected, pick which to AI-generate cases for.
+          Paste markdown, see chapters detected, then analyze selected chapters into reviewable coverage.
         </p>
       </div>
 
@@ -952,18 +923,15 @@ function PrdPage() {
             )}
           </div>
 
-          {/* Generation status banner — visible regardless of whether the
-              user clicked Generate this session. Pulls live from /api/cases
-              so background generation finishing shows up here even if the
-              page was unmounted when the request returned. */}
+          {/* Drafted case status banner. Cases now come from accepted coverage,
+              not from direct PRD generation. */}
           {totalCasesForPrd > 0 && (
             <div className="bg-emerald-50 border border-emerald-200 rounded p-2 text-xs flex items-center gap-2">
               <span className="text-emerald-700 font-medium">
-                ✓ {totalCasesForPrd} cases generated for this PRD
+                ✓ {totalCasesForPrd} case drafts linked to this PRD
               </span>
               <span className="text-slate-500">
-                (live count, refreshes every 5s — background generation will
-                update this number as it completes)
+                (live count, refreshes every 5s)
               </span>
               <a
                 href={`/cases?project_id=${encodeURIComponent(projectId)}`}
@@ -1075,6 +1043,123 @@ function PrdPage() {
             )}
           </div>
 
+          <div className="border-t border-slate-100 pt-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-slate-400">
+                  Coverage review
+                </div>
+                <div className="text-xs text-slate-500">
+                  Accept coverage before drafting executable case reviews.
+                </div>
+              </div>
+              <span className="text-xs text-slate-500">
+                {coverage.data?.count ?? 0} items
+              </span>
+            </div>
+            {coverage.isLoading ? (
+              <div className="text-sm text-slate-400">Loading coverage…</div>
+            ) : coverage.data?.data.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-left text-slate-400">
+                    <tr>
+                      <th className="pb-1">coverage</th>
+                      <th className="pb-1 w-24">risk</th>
+                      <th className="pb-1 w-24">status</th>
+                      <th className="pb-1 w-48">actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {coverage.data.data.map((row) => (
+                      <tr key={row.coverage_id} className="border-t border-slate-100">
+                        <td className="py-2 pr-3">
+                          <div className="font-medium text-slate-800">{row.title}</div>
+                          <div className="text-xs text-slate-500">{row.scenario}</div>
+                        </td>
+                        <td className="text-xs text-slate-600">
+                          {row.risk_type}
+                          <div className="text-slate-400">{row.coverage_type}</div>
+                        </td>
+                        <td>
+                          <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
+                            {row.review_status}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="flex flex-wrap gap-1">
+                            <button
+                              className="rounded border border-emerald-200 px-2 py-1 text-xs text-emerald-700 disabled:opacity-50"
+                              disabled={
+                                row.review_status === "accepted" || reviewCoverage.isPending
+                              }
+                              onClick={() =>
+                                reviewCoverage.mutate({
+                                  coverageId: row.coverage_id,
+                                  action: "accept",
+                                })
+                              }
+                            >
+                              Accept
+                            </button>
+                            <button
+                              className="rounded border border-red-200 px-2 py-1 text-xs text-red-700 disabled:opacity-50"
+                              disabled={
+                                row.review_status === "rejected" || reviewCoverage.isPending
+                              }
+                              onClick={() =>
+                                reviewCoverage.mutate({
+                                  coverageId: row.coverage_id,
+                                  action: "reject",
+                                })
+                              }
+                            >
+                              Reject
+                            </button>
+                            <button
+                              className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 disabled:opacity-50"
+                              disabled={
+                                row.review_status === "proposed" || reviewCoverage.isPending
+                              }
+                              onClick={() =>
+                                reviewCoverage.mutate({
+                                  coverageId: row.coverage_id,
+                                  action: "reset",
+                                })
+                              }
+                            >
+                              Reset
+                            </button>
+                            <button
+                              className="rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50"
+                              disabled={
+                                row.review_status !== "accepted" ||
+                                Boolean(row.linked_case_id) ||
+                                draftCoverageCase.isPending
+                              }
+                              onClick={() => draftCoverageCase.mutate(row.coverage_id)}
+                            >
+                              {row.linked_case_id ? "Drafted" : "Draft case"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded border border-dashed border-slate-200 p-4 text-sm text-slate-500">
+                No coverage yet. Select chapters and analyze coverage.
+              </div>
+            )}
+            {(reviewCoverage.error || draftCoverageCase.error) && (
+              <pre className="mt-2 whitespace-pre-wrap text-xs text-red-600">
+                {((reviewCoverage.error || draftCoverageCase.error) as Error).message}
+              </pre>
+            )}
+          </div>
+
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -1093,7 +1178,7 @@ function PrdPage() {
                     ? autoProgress?.active
                       ? `generating ${autoProgress.processed}/${autoProgress.total} selected…`
                       : `generating ${effectiveJob.completed_chapters}/${effectiveJob.total_chapters}…`
-                    : `Generate cases for ${runChapterCount} chapter${runChapterCount === 1 ? "" : "s"}`}
+                    : `Analyze coverage for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
               </button>
               <label className="inline-flex items-center gap-1 text-xs text-slate-500">
                 Chapters/run
@@ -1127,8 +1212,8 @@ function PrdPage() {
                 Probe timeout
                 <input
                   type="number"
-                  min={runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.min ?? 5}
-                  max={runtimeSettings.data?.data.case_generation_preflight_timeout_seconds.max ?? 300}
+                  min={runtimeSettings.data?.data.test_design_preflight_timeout_seconds.min ?? 5}
+                  max={runtimeSettings.data?.data.test_design_preflight_timeout_seconds.max ?? 300}
                   step={5}
                   value={preflightTimeoutInput}
                   disabled={runtimeSettings.isLoading || saveTimeout.isPending || isGenerating}
@@ -1144,7 +1229,7 @@ function PrdPage() {
                 s
               </label>
               <label className="inline-flex items-center gap-1 text-xs text-slate-500">
-                Batch timeout
+                Analysis timeout
                 <input
                   type="number"
                   min={30}
@@ -1163,23 +1248,10 @@ function PrdPage() {
                 />
                 s
               </label>
-              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
-                Parallel
-                <select
-                  value={parallelismInput}
-                  disabled={runtimeSettings.isLoading || saveParallelism.isPending || isGenerating}
-                  onChange={(e) => persistParallelismFromInput(e.target.value)}
-                  className="border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
-                >
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                </select>
-              </label>
               <span className="text-xs text-slate-500">
-                provider:{" "}
+                design provider:{" "}
                 <code>
-                  {runtimeSettings.data?.data.case_generation_provider.value ?? "auto"}
+                  {runtimeSettings.data?.data.test_design_provider.value ?? "auto"}
                 </code>
               </span>
             </div>

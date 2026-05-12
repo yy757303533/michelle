@@ -119,7 +119,7 @@ class BaseChatClient(ABC):
 
         Args:
             prompt: user prompt content
-            prompt_version: caller-supplied label (e.g. "case_gen_v1") so logs/sediment can correlate
+            prompt_version: caller-supplied label (e.g. "test_design_v1") so logs/sediment can correlate
             system: optional system prompt
             image: optional PNG/JPEG bytes for multimodal providers
             max_tokens: provider-specific cap on output tokens

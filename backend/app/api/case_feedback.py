@@ -1,4 +1,4 @@
-"""Case generation feedback endpoints."""
+"""Case draft feedback endpoints."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import CaseGenerationFeedback, TestCase
+from app.models import CaseDraftFeedback, TestCase
 
 router = APIRouter()
 
@@ -42,33 +42,33 @@ class FeedbackResolve(BaseModel):
 
 
 @router.get("/")
-async def list_case_generation_feedback(
+async def list_case_draft_feedback(
     request: Request,
     project_id: str | None = None,
     status: Literal["open", "resolved"] | None = None,
     limit: int = Query(default=200, ge=1, le=1000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(CaseGenerationFeedback).order_by(desc(CaseGenerationFeedback.created_at))
+    stmt = select(CaseDraftFeedback).order_by(desc(CaseDraftFeedback.created_at))
     summary_stmt = (
-        select(CaseGenerationFeedback.category, CaseGenerationFeedback.status, func.count())
-        .group_by(CaseGenerationFeedback.category, CaseGenerationFeedback.status)
+        select(CaseDraftFeedback.category, CaseDraftFeedback.status, func.count())
+        .group_by(CaseDraftFeedback.category, CaseDraftFeedback.status)
     )
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session
         )
-        stmt = stmt.where(CaseGenerationFeedback.project_id == project_id)
-        summary_stmt = summary_stmt.where(CaseGenerationFeedback.project_id == project_id)
+        stmt = stmt.where(CaseDraftFeedback.project_id == project_id)
+        summary_stmt = summary_stmt.where(CaseDraftFeedback.project_id == project_id)
     else:
         allowed = await accessible_project_ids(getattr(request.state, "user", None), session)
         if allowed is not None:
             if not allowed:
                 return {"data": [], "count": 0, "summary": []}
-            stmt = stmt.where(CaseGenerationFeedback.project_id.in_(allowed))
-            summary_stmt = summary_stmt.where(CaseGenerationFeedback.project_id.in_(allowed))
+            stmt = stmt.where(CaseDraftFeedback.project_id.in_(allowed))
+            summary_stmt = summary_stmt.where(CaseDraftFeedback.project_id.in_(allowed))
     if status:
-        stmt = stmt.where(CaseGenerationFeedback.status == status)
+        stmt = stmt.where(CaseDraftFeedback.status == status)
     rows = (await session.execute(stmt.limit(limit))).scalars().all()
     summary_rows = (await session.execute(summary_stmt)).all()
     return {
@@ -82,7 +82,7 @@ async def list_case_generation_feedback(
 
 
 @router.post("/", status_code=201)
-async def create_case_generation_feedback(
+async def create_case_draft_feedback(
     body: FeedbackCreate,
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -93,11 +93,11 @@ async def create_case_generation_feedback(
     await require_project_role(
         getattr(request.state, "user", None), case.project_id, "reviewer", session
     )
-    row = CaseGenerationFeedback(
+    row = CaseDraftFeedback(
         case_id=case.case_id,
         project_id=case.project_id,
         generated_from=case.generated_from,
-        generation_job_id=case.generation_job_id,
+        design_job_id=None,
         category=body.category,
         note=body.note[:2000],
         evidence=body.evidence[:2000],
@@ -112,7 +112,7 @@ async def create_case_generation_feedback(
     await session.refresh(row)
     await audit(
         actor=getattr(request.state, "user", None),
-        action="case_generation_feedback.created",
+        action="case_draft_feedback.created",
         method=request.method,
         path=request.url.path,
         status_code=201,
@@ -126,13 +126,13 @@ async def create_case_generation_feedback(
 
 
 @router.patch("/{feedback_id}")
-async def update_case_generation_feedback(
+async def update_case_draft_feedback(
     feedback_id: str,
     body: FeedbackResolve,
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(CaseGenerationFeedback, feedback_id)
+    row = await session.get(CaseDraftFeedback, feedback_id)
     if row is None:
         raise HTTPException(status_code=404, detail="feedback not found")
     await require_project_role(

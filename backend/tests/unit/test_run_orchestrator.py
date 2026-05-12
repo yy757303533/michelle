@@ -77,7 +77,7 @@ async def seeded(session: AsyncSession) -> tuple[Project, TestCase]:
         ],
         assertions=[{"description": "URL changes to /home"}],
         source="ai-generated",
-        prompt_version="case_gen_v1",
+        prompt_version="coverage_draft_v1",
         model_version="claude-opus",
         review_status="approved",
     )

@@ -14,7 +14,19 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import PRD, PRDGenerationJob, Project, ProjectMember, Run, StepEvent, TestCase, User
+from app.models import (
+    PRD,
+    CoverageItem,
+    DesignGenerationJob,
+    Project,
+    ProjectMember,
+    RegressionAsset,
+    RequirementItem,
+    Run,
+    StepEvent,
+    TestCase,
+    User,
+)
 from app.services.report_html import (
     FAIL,
     PASS,
@@ -113,7 +125,15 @@ async def delete_project(
     for run_id in run_ids:
         run_history_deleted += await rollback_run_scope(session, run_id=run_id, delete_run=True)
 
-    for model in (PRDGenerationJob, TestCase, PRD, ProjectMember):
+    for model in (
+        RegressionAsset,
+        TestCase,
+        CoverageItem,
+        RequirementItem,
+        DesignGenerationJob,
+        PRD,
+        ProjectMember,
+    ):
         rows = (
             (await session.execute(select(model).where(model.project_id == project_id)))
             .scalars()

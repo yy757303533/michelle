@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -74,8 +75,7 @@ async def test_codex_prefers_output_last_message_file(tmp_path):
 
     async def _communicate():
         out_path = tmp_path.joinpath("seen").read_text()
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.write("final answer\n")
+        Path(out_path).write_text("final answer\n", encoding="utf-8")
         return b"session header\nfinal answer\n", b""
 
     proc.communicate = AsyncMock(side_effect=_communicate)

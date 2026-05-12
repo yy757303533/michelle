@@ -29,7 +29,8 @@ _SENSITIVE_KEY_PARTS = (
 
 _DOMAIN_LOG_FILES = {
     "prd_upload": "prd_upload.log",
-    "case_generation": "case_generation.log",
+    "test_design": "test_design.log",
+    "case_drafting": "case_drafting.log",
     "case_execution": "case_execution.log",
     "diagnosis": "diagnosis.log",
     "settings": "settings.log",
@@ -67,12 +68,12 @@ def _event_domain(event_dict: dict[str, Any]) -> str | None:
     event = str(event_dict.get("event") or "")
     prompt_version = str(event_dict.get("prompt_version") or "")
 
-    if event.startswith("prd.generation.") or event.startswith("case.generation."):
-        return "case_generation"
-    if event == "case.generated":
-        return "case_generation"
-    if prompt_version.startswith("case_gen"):
-        return "case_generation"
+    if event.startswith("design.") or prompt_version.startswith("test_design"):
+        return "test_design"
+    if event.startswith("case.draft.") or event == "case.drafted":
+        return "case_drafting"
+    if prompt_version.startswith("coverage_draft"):
+        return "case_drafting"
 
     if event.startswith("prd."):
         return "prd_upload"

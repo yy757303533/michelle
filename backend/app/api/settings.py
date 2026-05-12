@@ -27,7 +27,7 @@ class SettingsUpdate(BaseModel):
     max_concurrent_runs: int | None = Field(default=None, ge=1, le=32)
     headless: bool | None = None
     executor_loop: Literal["auto", "generic_openai", "claude_cli"] | None = None
-    case_generation_provider: (
+    test_design_provider: (
         Literal[
             "auto",
             "claude-cli",
@@ -35,7 +35,15 @@ class SettingsUpdate(BaseModel):
         ]
         | None
     ) = None
-    case_generation_preflight_timeout_seconds: int | None = Field(default=None, ge=5, le=300)
+    test_design_preflight_timeout_seconds: int | None = Field(default=None, ge=5, le=300)
+    case_drafting_provider: (
+        Literal[
+            "auto",
+            "claude-cli",
+            "codex-cli",
+        ]
+        | None
+    ) = None
     case_execution_provider: (
         Literal[
             "auto",

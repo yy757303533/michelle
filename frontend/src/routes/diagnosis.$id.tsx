@@ -19,6 +19,7 @@ interface DiagnosisRow {
   fix_suggestion: string;
   human_feedback: string | null;
   feedback_note: string;
+  feedback_target: string;
   feedback_at: string | null;
   created_at: string;
 }
@@ -52,6 +53,7 @@ function DiagnosisDetailPage() {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
   const [reason, setReason] = useState("");
+  const [feedbackTarget, setFeedbackTarget] = useState("pattern");
 
   const byRun = useQuery({
     queryKey: ["diagnosis-by-run", id],
@@ -84,7 +86,12 @@ function DiagnosisDetailPage() {
       const r = await apiFetch(`/api/diagnosis/${args.diag_id}/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feedback: args.feedback, reason, note }),
+        body: JSON.stringify({
+          feedback: args.feedback,
+          feedback_target: args.feedback === "confirmed" ? feedbackTarget : "",
+          reason,
+          note,
+        }),
       });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
@@ -92,6 +99,7 @@ function DiagnosisDetailPage() {
     onSuccess: () => {
       setNote("");
       setReason("");
+      setFeedbackTarget("pattern");
       qc.invalidateQueries({ queryKey: ["diagnosis-by-run", id] });
     },
   });
@@ -184,6 +192,11 @@ function DiagnosisDetailPage() {
                 <span className="text-slate-500">
                   {diag.feedback_at && new Date(diag.feedback_at).toLocaleString()}
                 </span>
+                {diag.feedback_target && (
+                  <span className="ml-2 text-xs text-slate-500">
+                    target: <code>{diag.feedback_target}</code>
+                  </span>
+                )}
                 {diag.feedback_note && (
                   <p className="text-xs text-slate-600 mt-1 italic">{diag.feedback_note}</p>
                 )}
@@ -209,6 +222,16 @@ function DiagnosisDetailPage() {
                     <option value="fix_not_actionable">fix not actionable</option>
                     <option value="model_hallucinated">model hallucinated</option>
                     <option value="other">other</option>
+                  </select>
+                  <select
+                    value={feedbackTarget}
+                    onChange={(e) => setFeedbackTarget(e.target.value)}
+                    className="border border-slate-200 rounded px-2 py-1 text-sm"
+                  >
+                    <option value="pattern">pattern</option>
+                    <option value="asset">asset</option>
+                    <option value="case">case</option>
+                    <option value="coverage">coverage</option>
                   </select>
                   <button
                     disabled={feedback.isPending}

@@ -16,7 +16,7 @@ from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
 from app.models import Project, Run, TestCase
 from app.obs import EVENTS, get_logger
-from app.services.case_generator import CASE_ID_ALLOCATION_LOCK, _mint_case_id, _next_seq
+from app.services.case_drafter import CASE_ID_ALLOCATION_LOCK, _mint_case_id, _next_seq
 from app.services.run_orchestrator import rollback_run_scope
 
 router = APIRouter()

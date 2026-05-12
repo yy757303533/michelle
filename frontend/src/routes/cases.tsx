@@ -63,7 +63,7 @@ interface CaseFeedbackRow {
   case_id: string;
   project_id: string;
   generated_from: string | null;
-  generation_job_id: string | null;
+  design_job_id: string | null;
   category: FeedbackCategory;
   note: string;
   evidence: string;
@@ -206,11 +206,11 @@ function CasesPage() {
   }, [projectRuns.data]);
 
   const feedback = useQuery({
-    queryKey: ["case-feedback", projectId],
+    queryKey: ["case-draft-feedback", projectId],
     enabled: Boolean(projectId),
     queryFn: async (): Promise<CaseFeedbackResponse> => {
       const r = await apiFetch(
-        `/api/case-feedback/?project_id=${encodeURIComponent(projectId)}&status=open&limit=200`,
+        `/api/case-draft-feedback/?project_id=${encodeURIComponent(projectId)}&status=open&limit=200`,
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       return r.json();
@@ -224,7 +224,7 @@ function CasesPage() {
       note: string;
       evidence: string;
     }): Promise<{ data: CaseFeedbackRow }> => {
-      const r = await apiFetch("/api/case-feedback/", {
+      const r = await apiFetch("/api/case-draft-feedback/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -233,13 +233,13 @@ function CasesPage() {
       return r.json();
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["case-feedback"] });
+      qc.invalidateQueries({ queryKey: ["case-draft-feedback"] });
     },
   });
 
   const resolveFeedback = useMutation({
     mutationFn: async (feedbackId: string): Promise<{ data: CaseFeedbackRow }> => {
-      const r = await apiFetch(`/api/case-feedback/${feedbackId}`, {
+      const r = await apiFetch(`/api/case-draft-feedback/${feedbackId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: "resolved" }),
@@ -247,7 +247,7 @@ function CasesPage() {
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["case-feedback"] }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["case-draft-feedback"] }),
   });
 
   const review = useMutation({

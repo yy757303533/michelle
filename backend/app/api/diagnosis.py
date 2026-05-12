@@ -30,6 +30,7 @@ class GenerateRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     feedback: Literal["confirmed", "wrong", "partially_correct"]
+    feedback_target: Literal["", "pattern", "asset", "case", "coverage"] = ""
     reason: Literal[
         "",
         "category_wrong",
@@ -209,6 +210,7 @@ async def submit_feedback(
         diag = await record_feedback(
             diag_id=diag_id,
             feedback=body.feedback,
+            feedback_target=body.feedback_target,
             reason=body.reason,
             note=body.note,
             session=session,

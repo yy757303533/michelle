@@ -127,12 +127,6 @@ async def lifespan(app: FastAPI):
     if healed:
         log.info("run.lifecycle.startup_healed", count=healed)
 
-    from app.services.prd_generation_worker import resume_active_jobs
-
-    resumed_generation_jobs = await resume_active_jobs()
-    if resumed_generation_jobs:
-        log.info("prd.generation.startup_resumed", count=resumed_generation_jobs)
-
     yield
 
     # Shutdown heal: best-effort cleanup before exit. Covers Ctrl+C; SIGKILL

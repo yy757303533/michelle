@@ -103,7 +103,7 @@ KNOBS: dict[str, dict[str, Any]] = {
             "no generic provider is configured."
         ),
     },
-    "case_generation_provider": {
+    "test_design_provider": {
         "type": _coerce_llm_provider,
         "choices": [
             "auto",
@@ -111,26 +111,29 @@ KNOBS: dict[str, dict[str, Any]] = {
             "codex-cli",
         ],
         "describe": (
-            "Preferred LLM provider for PRD-to-case generation. Auto follows "
+            "Preferred LLM provider for PRD-to-coverage analysis. Auto follows "
             "gateway priority and fallback order."
         ),
     },
-    "case_generation_preflight_timeout_seconds": {
+    "test_design_preflight_timeout_seconds": {
         "type": _coerce_int,
         "min": 5,
         "max": 300,
         "describe": (
-            "Seconds to wait for the PRD-to-case generation provider preflight "
+            "Seconds to wait for the PRD-to-coverage analysis provider preflight "
             "before failing fast."
         ),
     },
-    "case_generation_parallelism": {
-        "type": _coerce_int,
-        "min": 1,
-        "max": 3,
+    "case_drafting_provider": {
+        "type": _coerce_llm_provider,
+        "choices": [
+            "auto",
+            "claude-cli",
+            "codex-cli",
+        ],
         "describe": (
-            "How many PRD-to-case LLM batches one generation job may run at once. "
-            "Keep this low for CLI providers to avoid local contention and rate limits."
+            "Preferred LLM provider for accepted-coverage-to-case drafting. Auto follows "
+            "gateway priority and fallback order."
         ),
     },
     "case_execution_provider": {
@@ -239,9 +242,9 @@ _BOOTSTRAP_DEFAULTS: dict[str, Any] = {
     "executor_loop": lambda: (
         settings.executor_loop if settings.executor_loop in EXECUTOR_LOOPS else "auto"
     ),
-    "case_generation_provider": lambda: "auto",
-    "case_generation_preflight_timeout_seconds": lambda: 20,
-    "case_generation_parallelism": lambda: 1,
+    "test_design_provider": lambda: "auto",
+    "test_design_preflight_timeout_seconds": lambda: 20,
+    "case_drafting_provider": lambda: "auto",
     "case_execution_provider": lambda: "auto",
     "diagnosis_provider": lambda: "auto",
     "email_enabled": lambda: False,
@@ -313,30 +316,32 @@ async def get_executor_loop(session: AsyncSession | None = None) -> str:
         return str(await _read_raw(s, "executor_loop"))
 
 
-async def get_case_generation_provider(session: AsyncSession | None = None) -> str | None:
-    """Preferred provider for PRD-to-case generation. None means gateway auto."""
+async def get_test_design_provider(session: AsyncSession | None = None) -> str | None:
+    """Preferred provider for PRD-to-coverage analysis. None means gateway auto."""
     if session is not None:
-        value = str(await _read_raw(session, "case_generation_provider"))
+        value = str(await _read_raw(session, "test_design_provider"))
         return None if value == "auto" else value
     async with _db.async_session_maker() as s:
-        value = str(await _read_raw(s, "case_generation_provider"))
+        value = str(await _read_raw(s, "test_design_provider"))
         return None if value == "auto" else value
 
 
-async def get_case_generation_preflight_timeout(session: AsyncSession | None = None) -> int:
-    """Provider preflight timeout for PRD-to-case generation."""
+async def get_test_design_preflight_timeout(session: AsyncSession | None = None) -> int:
+    """Provider preflight timeout for PRD-to-coverage analysis."""
     if session is not None:
-        return int(await _read_raw(session, "case_generation_preflight_timeout_seconds"))
+        return int(await _read_raw(session, "test_design_preflight_timeout_seconds"))
     async with _db.async_session_maker() as s:
-        return int(await _read_raw(s, "case_generation_preflight_timeout_seconds"))
+        return int(await _read_raw(s, "test_design_preflight_timeout_seconds"))
 
 
-async def get_case_generation_parallelism(session: AsyncSession | None = None) -> int:
-    """Maximum concurrent LLM batches for one PRD-to-case generation job."""
+async def get_case_drafting_provider(session: AsyncSession | None = None) -> str | None:
+    """Preferred provider for accepted-coverage-to-case drafting. None means gateway auto."""
     if session is not None:
-        return int(await _read_raw(session, "case_generation_parallelism"))
+        value = str(await _read_raw(session, "case_drafting_provider"))
+        return None if value == "auto" else value
     async with _db.async_session_maker() as s:
-        return int(await _read_raw(s, "case_generation_parallelism"))
+        value = str(await _read_raw(s, "case_drafting_provider"))
+        return None if value == "auto" else value
 
 
 async def get_case_execution_provider(session: AsyncSession | None = None) -> str | None:

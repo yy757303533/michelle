@@ -1,6 +1,12 @@
-# Michelle 内部试点指南
+# Michelle Pilot Guide
 
-## 1. 启动
+The pilot should validate the new thesis:
+
+> Michelle improves test quality by reviewing coverage before cases, then
+> improves regression speed by turning successful agentic runs into replayable
+> assets.
+
+## 1. Pilot Setup
 
 ```bash
 cp .env.example .env
@@ -9,78 +15,101 @@ make postgres
 make dev
 ```
 
-`.env.example` 默认使用 PostgreSQL：
+Use PostgreSQL for any shared pilot. Configure:
 
-```bash
-DATABASE_URL=postgresql+asyncpg://michelle:michelle@127.0.0.1:5432/michelle
+- project base URL;
+- login URL when applicable;
+- test credentials or secret references;
+- LLM provider for design and diagnosis;
+- runner status for Playwright MCP.
+
+## 2. Pilot Scope
+
+Choose one small product area with:
+
+- a real PRD or feature spec;
+- 5-10 meaningful requirements;
+- a browser-accessible staging environment;
+- stable test data;
+- one reviewer who understands expected behavior.
+
+Avoid starting with broad regression. The first pilot should prove the loop:
+
+```text
+PRD -> coverage review -> case review -> agentic run -> asset -> replay -> diagnosis feedback
 ```
 
-启动前需要准备本机或共享 Postgres，并确认库和账号已创建。
+## 3. Acceptance Flow
 
-默认登录：
+1. Upload PRD.
+2. Analyze selected chapters into requirements and coverage.
+3. Reviewer accepts/rejects coverage.
+4. Generate cases only from accepted coverage.
+5. Reviewer approves cases.
+6. Run approved cases agentically.
+7. Extract draft assets from passed runs.
+8. Reviewer approves useful assets.
+9. Replay approved assets.
+10. Diagnose failures and route feedback to pattern, asset, case, or coverage.
 
-- username: `admin`
-- password: 首次启动时查看 `backend/artifacts/bootstrap-admin.txt`
+## 4. Pilot Metrics
 
-如果你显式设置了 `DEFAULT_ADMIN_PASSWORD`，则使用该密码创建首个 admin。密码哈希保存在数据库中，`.env.example` 不放通用默认密码。
+Track these numbers:
 
-生产或共享环境必须修改 `.env`。`APP_ENV=shared/staging/production` 时继续使用历史默认密码会阻止后端启动：
+| Metric | Target question |
+|---|---|
+| Coverage acceptance rate | Did AI propose useful test design? |
+| Case approval rate | Did accepted coverage produce usable cases? |
+| First agentic pass rate | Were reviewed cases executable? |
+| Asset extraction rate | Did successful runs produce replayable assets? |
+| Asset approval rate | Were extracted assets trustworthy? |
+| Replay speedup | Is replay materially faster than agentic execution? |
+| Replay pass rate | Are assets stable enough for regression? |
+| Diagnosis confirmation rate | Are failure explanations useful? |
+| Feedback routing distribution | Are failures improving the right object? |
 
-```bash
-APP_ENV=shared
-DATABASE_URL=postgresql+asyncpg://michelle:<password>@postgres:5432/michelle
-DEFAULT_ADMIN_USERNAME=<admin-user>
-DEFAULT_ADMIN_PASSWORD=<strong-bootstrap-password>
-ADMIN_TOKEN=<break-glass-token>
-```
+## 5. Human Review Rules
 
-SQLite 只建议本机试用。多人试点建议使用 Postgres，并把数据库纳入备份。
+Human review is mandatory for:
 
-Artifacts 会保存在 `backend/artifacts/`。Dashboard → Platform settings 中可以配置
-`artifact_retention_days`，先点 `dry run` 查看将清理多少 run 和空间，再点
-`clean now` 执行；pending/running run 会被跳过。
+- accepting coverage;
+- approving cases;
+- approving regression assets;
+- confirming diagnosis feedback.
 
-## 2. 试点验收流程
+Do not automatically approve durable assets from model output alone.
 
-1. 创建项目，填写 `base_url` 和测试账号。
-2. 上传 PRD，生成用例。
-3. 由 reviewer/admin 审核并 approve 用例。
-4. 批量执行用例，在 Queue 页面观察 pending/running。
-5. 失败后进入 AI diagnosis，确认分类、证据和修复建议。
-6. 对正确诊断点 confirmed；错误诊断选择原因并备注。
-7. 检查 Dashboard 的 pass rate、flaky rate、环境自检。
-8. 导出 cases/report/diagnosis 给项目组复盘。
-9. Dashboard → Environment self-check 中检查 `admin_security`、`database`、`llm_probe`、`playwright_mcp_probe`。
+## 6. Diagnosis Trust Boundaries
 
-## 3. 真实 E2E
+AI diagnosis must be manually reviewed when:
 
-```bash
-DEFAULT_TARGET_URL=http://localhost:5000/ make e2e-smoke
-```
+- confidence is below 0.7;
+- screenshot or trace evidence is missing;
+- failure involves permissions, payments, destructive actions, or production data;
+- replay failed after a recent product change;
+- a pattern match appears after major UI redesign;
+- the suggested fix mutates an approved asset or case.
 
-如果开启了 admin token：
+## 7. Pilot Exit Criteria
 
-```bash
-cd backend
-uv run python ../scripts/day13_e2e_smoke.py \
-  --target-url http://localhost:5000/ \
-  --admin-token "$ADMIN_TOKEN"
-```
+The pilot is successful when:
 
-## 4. 诊断可信度边界
+- reviewers accept a meaningful share of generated coverage;
+- approved coverage produces executable cases;
+- at least one successful agentic run becomes an approved regression asset;
+- replay is faster than agentic execution for the same flow;
+- at least one failure diagnosis is confirmed and routed to the correct target;
+- the team can explain what changed in coverage, case, asset, or pattern because
+  of that feedback.
 
-AI diagnosis 不能替代人工判断。以下情况必须人工复核：
+## 8. What Not To Measure First
 
-- confidence < 0.7
-- screenshot 缺失或页面空白
-- 失败来自环境、账号、网络、弹窗或登录态
-- 涉及权限、支付、生产数据、批量写入或破坏性操作
-- 模型给出的 fix 无法直接执行
-- pattern 命中但产品近期有大改版
+Do not optimize for:
 
-## 5. 常见排查
+- number of generated cases;
+- number of browser runs;
+- fully autonomous approval;
+- 100% pass rate;
+- broad CI integration.
 
-- Executor 不 ready：Dashboard self-check 查看 provider、npx、runner status。
-- Run 卡住：Queue 页面 cancel，然后检查 run detail timeline。
-- 邮件/Webhook 不发：先在 Platform settings 点 test email / test webhook。
-- 登录失败：查看 `backend/artifacts/bootstrap-admin.txt`，或检查 `.env` 中 `DEFAULT_ADMIN_PASSWORD`。
+The first pilot validates quality of the loop, not scale.

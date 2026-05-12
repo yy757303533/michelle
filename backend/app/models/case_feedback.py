@@ -1,4 +1,4 @@
-"""Feedback loop for improving PRD-to-case generation."""
+"""Feedback loop for improving generated case drafts."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class CaseGenerationFeedback(SQLModel, table=True):
-    __tablename__ = "case_generation_feedback"
+class CaseDraftFeedback(SQLModel, table=True):
+    __tablename__ = "case_draft_feedback"
 
     feedback_id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
     case_id: str = Field(index=True)
     project_id: str = Field(index=True)
     generated_from: str | None = Field(default=None, index=True)
-    generation_job_id: str | None = Field(default=None, index=True)
+    design_job_id: str | None = Field(default=None, index=True)
     category: str = Field(index=True)
     note: str = ""
     evidence: str = ""

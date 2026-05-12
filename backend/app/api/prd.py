@@ -1,4 +1,4 @@
-"""PRD upload + diff + case generation endpoints."""
+"""PRD upload, diff, and coverage analysis endpoints."""
 
 from __future__ import annotations
 
@@ -7,25 +7,15 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, require_project_role
 from app.db import get_session
-from app.models import PRD, PRDGenerationJob, Project
+from app.models import PRD, DesignGenerationJob, Project
 from app.obs import EVENTS, get_logger
-from app.runtime_config import (
-    get_case_generation_parallelism,
-    get_case_generation_preflight_timeout,
-    get_case_generation_provider,
-)
 from app.services.prd_diff import diff_prds
-from app.services.prd_generation_worker import (
-    create_or_reuse_job,
-    kick_off,
-    rollback_generated_cases,
-)
 from app.services.prd_parser import parse_prd
 
 router = APIRouter()
@@ -39,17 +29,11 @@ class PRDUploadIn(BaseModel):
     """Either provide markdown directly OR send a multipart upload (TODO Day 5)."""
 
 
-class GenerateRequest(BaseModel):
-    """Body for /api/prd/{prd_id}/generate."""
+class AnalyzeRequest(BaseModel):
+    """Body for /api/prd/{prd_id}/analyze."""
 
     chapter_indices: list[int] | None = None
-    """If null → generate for all NEW + MODIFIED chapters (vs prev version)."""
-
-    max_cases_per_chapter: int = Field(default=5, ge=1, le=50)
-    generation_timeout_seconds: int = Field(default=180, ge=30, le=1800)
-    """Per LLM batch timeout for case generation, not the preflight probe timeout."""
     prefer_provider: str | None = None
-    parallelism: int | None = Field(default=None, ge=1, le=3)
 
 
 @router.get("/")
@@ -229,6 +213,41 @@ async def get_prd(
     }
 
 
+@router.post("/{prd_id}/analyze")
+async def analyze_prd(
+    prd_id: str,
+    body: AnalyzeRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    prd = await session.get(PRD, prd_id)
+    if prd is None:
+        raise HTTPException(status_code=404, detail="PRD not found")
+    await require_project_role(
+        getattr(request.state, "user", None), prd.project_id, "reviewer", session
+    )
+
+    from app.runtime_config import get_test_design_provider
+    from app.services.test_design_planner import analyze_prd_chapters
+
+    result = await analyze_prd_chapters(
+        session=session,
+        prd=prd,
+        chapter_indices=body.chapter_indices,
+        prefer_provider=body.prefer_provider or await get_test_design_provider(session),
+    )
+    return {
+        "data": {
+            "prd_id": prd.prd_id,
+            "project_id": prd.project_id,
+            "requirements_created": len(result.requirements),
+            "coverage_created": len(result.coverage),
+            "requirement_ids": [row.requirement_id for row in result.requirements],
+            "coverage_ids": [row.coverage_id for row in result.coverage],
+        }
+    }
+
+
 @router.delete("/{prd_id}", status_code=204)
 async def delete_prd(
     prd_id: str,
@@ -263,72 +282,6 @@ async def delete_prd(
     )
 
 
-@router.post("/{prd_id}/generate", status_code=202)
-async def generate_cases(
-    prd_id: str,
-    body: GenerateRequest,
-    request: Request,
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Kick off case generation in the background. Returns immediately
-    with a job_id; client polls /api/prd/jobs/<job_id> for progress.
-
-    Generation for a 90-chapter PRD is 7-45 minutes of sequential LLM
-    calls — far past any reasonable HTTP timeout. The job row in
-    `prd_generation_jobs` carries status + per-chapter results so a
-    page reload mid-generation finds everything intact.
-    """
-    prd = await session.get(PRD, prd_id)
-    if prd is None:
-        raise HTTPException(status_code=404, detail="PRD not found")
-    proj = await session.get(Project, prd.project_id)
-    if proj is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    await require_project_role(
-        getattr(request.state, "user", None), prd.project_id, "reviewer", session
-    )
-
-    indices = body.chapter_indices
-    if indices is None:
-        indices = list(range(len(prd.chapters)))
-    indices = sorted({i for i in indices if 0 <= i < len(prd.chapters)})
-    if not indices:
-        raise HTTPException(status_code=400, detail="no valid chapter_indices")
-
-    prefer_provider = body.prefer_provider or await get_case_generation_provider(session)
-    preflight_timeout = await get_case_generation_preflight_timeout(session)
-    parallelism = body.parallelism or await get_case_generation_parallelism(session)
-    job_id, created = await create_or_reuse_job(
-        prd_id=prd_id,
-        project_id=prd.project_id,
-        request_payload={
-            "chapter_indices": indices,
-            "max_cases_per_chapter": body.max_cases_per_chapter,
-            "generation_timeout_seconds": body.generation_timeout_seconds,
-            "prefer_provider": prefer_provider,
-            "preflight_timeout_seconds": preflight_timeout,
-            "parallelism": parallelism,
-        },
-        total_chapters=len(indices),
-    )
-    if created:
-        kick_off(job_id)
-        log.info("prd.generation.job_kicked_off", prd_id=prd_id, job_id=job_id)
-    else:
-        kick_off(job_id)
-        log.info("prd.generation.job_reused", prd_id=prd_id, job_id=job_id)
-    job = await session.get(PRDGenerationJob, job_id)
-    return {
-        "data": {
-            "job_id": job_id,
-            "prd_id": prd_id,
-            "status": job.status if job else "pending",
-            "total_chapters": job.total_chapters if job else len(indices),
-            "reused": not created,
-        }
-    }
-
-
 @router.get("/jobs/{job_id}")
 async def get_generation_job(
     job_id: str,
@@ -337,7 +290,7 @@ async def get_generation_job(
 ) -> dict:
     """Poll a generation job's status. Frontend uses 1-2s interval while
     `pending` / `running`, then stops once `done` / `failed`."""
-    job = await session.get(PRDGenerationJob, job_id)
+    job = await session.get(DesignGenerationJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     await require_project_role(
@@ -352,7 +305,7 @@ async def skip_current_generation_batch(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    job = await session.get(PRDGenerationJob, job_id)
+    job = await session.get(DesignGenerationJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     await require_project_role(
@@ -375,7 +328,7 @@ async def skip_current_generation_batch(
     job.request_payload = payload
     await session.commit()
     await session.refresh(job)
-    log.info("prd.generation.batch_skip_requested", prd_id=job.prd_id, job_id=job.job_id)
+    log.info("design.generation.batch_skip_requested", prd_id=job.prd_id, job_id=job.job_id)
     return {"data": job.model_dump()}
 
 
@@ -385,7 +338,7 @@ async def cancel_generation_job(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    job = await session.get(PRDGenerationJob, job_id)
+    job = await session.get(DesignGenerationJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     await require_project_role(
@@ -397,15 +350,8 @@ async def cancel_generation_job(
     job.error = "cancelled by user"
     job.finished_at = datetime.now(UTC)
     await session.commit()
-    rolled_back = await rollback_generated_cases(session, job.job_id)
-    job = await session.get(PRDGenerationJob, job_id)
-    if job is not None:
-        job.error = f"cancelled by user; rolled back {rolled_back} generated cases"
-        await session.commit()
-        await session.refresh(job)
-    else:
-        raise HTTPException(status_code=404, detail="job not found")
-    log.info("prd.generation.job_cancelled", prd_id=job.prd_id, job_id=job.job_id)
+    await session.refresh(job)
+    log.info("design.generation.job_cancelled", prd_id=job.prd_id, job_id=job.job_id)
     return {"data": job.model_dump()}
 
 
@@ -427,9 +373,9 @@ async def list_jobs_for_prd(
     rows = (
         (
             await session.execute(
-                select(PRDGenerationJob)
-                .where(PRDGenerationJob.prd_id == prd_id)
-                .order_by(desc(PRDGenerationJob.created_at))
+                select(DesignGenerationJob)
+                .where(DesignGenerationJob.prd_id == prd_id)
+                .order_by(desc(DesignGenerationJob.created_at))
                 .limit(20)
             )
         )

@@ -22,8 +22,10 @@ class Run(SQLModel, table=True):
     trace_id: str = Field(index=True)
     project_id: str = Field(index=True)
     case_id: str = Field(index=True)
+    asset_id: str | None = Field(default=None, index=True)
     case_version: int = 1
     env: str = "default"
+    execution_mode: str = Field(default="agentic", index=True)
 
     status: str = "pending"  # pending | running | passed | failed | flaky | aborted
     started_at: datetime | None = Field(default=None, sa_column=Column(TZDateTime(), nullable=True))

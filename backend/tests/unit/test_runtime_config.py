@@ -75,23 +75,31 @@ async def test_get_executor_loop_db_override(session):
 
 
 @pytest.mark.asyncio
-async def test_get_case_generation_provider_default_auto(memory_db):
-    assert await rc.get_case_generation_provider() is None
+async def test_get_test_design_provider_default_auto(memory_db):
+    assert await rc.get_test_design_provider() is None
 
 
 @pytest.mark.asyncio
-async def test_get_case_generation_provider_db_override(session):
-    session.add(RuntimeSetting(key="case_generation_provider", value="codex-cli"))
+async def test_get_test_design_provider_db_override(session):
+    session.add(RuntimeSetting(key="test_design_provider", value="codex-cli"))
     await session.commit()
-    assert await rc.get_case_generation_provider(session) == "codex-cli"
+    assert await rc.get_test_design_provider(session) == "codex-cli"
 
 
 @pytest.mark.asyncio
-async def test_get_case_generation_preflight_timeout_default_and_override(memory_db, session):
-    assert await rc.get_case_generation_preflight_timeout() == 20
-    session.add(RuntimeSetting(key="case_generation_preflight_timeout_seconds", value="45"))
+async def test_get_test_design_preflight_timeout_default_and_override(memory_db, session):
+    assert await rc.get_test_design_preflight_timeout() == 20
+    session.add(RuntimeSetting(key="test_design_preflight_timeout_seconds", value="45"))
     await session.commit()
-    assert await rc.get_case_generation_preflight_timeout(session) == 45
+    assert await rc.get_test_design_preflight_timeout(session) == 45
+
+
+@pytest.mark.asyncio
+async def test_get_case_drafting_provider_default_and_override(memory_db, session):
+    assert await rc.get_case_drafting_provider() is None
+    session.add(RuntimeSetting(key="case_drafting_provider", value="claude-cli"))
+    await session.commit()
+    assert await rc.get_case_drafting_provider(session) == "claude-cli"
 
 
 @pytest.mark.asyncio
@@ -114,8 +122,11 @@ async def test_snapshot_includes_all_known_knobs(session):
     assert "max_concurrent_runs" in snap
     assert "headless" in snap
     assert "executor_loop" in snap
-    assert "case_generation_provider" in snap
-    assert "case_generation_preflight_timeout_seconds" in snap
+    assert "test_design_provider" in snap
+    assert "test_design_preflight_timeout_seconds" in snap
+    assert "case_drafting_provider" in snap
+    assert "case_generation_provider" not in snap
+    assert "case_generation_preflight_timeout_seconds" not in snap
     assert "case_execution_provider" in snap
     assert "diagnosis_provider" in snap
     assert "email_enabled" in snap
@@ -123,10 +134,11 @@ async def test_snapshot_includes_all_known_knobs(session):
     assert snap["artifact_retention_days"]["default"] == 30
     assert "smtp_password" in snap
     assert snap["executor_loop"]["choices"] == ["auto", "generic_openai", "claude_cli"]
-    assert "codex-cli" in snap["case_generation_provider"]["choices"]
-    assert snap["case_generation_preflight_timeout_seconds"]["value"] == 20
-    assert snap["case_generation_preflight_timeout_seconds"]["min"] == 5
-    assert snap["case_generation_preflight_timeout_seconds"]["max"] == 300
+    assert "codex-cli" in snap["test_design_provider"]["choices"]
+    assert "claude-cli" in snap["case_drafting_provider"]["choices"]
+    assert snap["test_design_preflight_timeout_seconds"]["value"] == 20
+    assert snap["test_design_preflight_timeout_seconds"]["min"] == 5
+    assert snap["test_design_preflight_timeout_seconds"]["max"] == 300
     assert snap["case_execution_provider"]["choices"] == [
         "auto",
         "claude-cli",
@@ -149,8 +161,9 @@ async def test_update_many_persists_then_reads_back(session):
             "max_concurrent_runs": 9,
             "headless": False,
             "executor_loop": "claude_cli",
-            "case_generation_provider": "codex-cli",
-            "case_generation_preflight_timeout_seconds": 45,
+            "test_design_provider": "codex-cli",
+            "test_design_preflight_timeout_seconds": 45,
+            "case_drafting_provider": "claude-cli",
             "case_execution_provider": "claude-cli",
             "diagnosis_provider": "codex-cli",
         },
@@ -158,8 +171,9 @@ async def test_update_many_persists_then_reads_back(session):
     assert await rc.get_max_concurrent_runs(session) == 9
     assert await rc.get_headless(session) is False
     assert await rc.get_executor_loop(session) == "claude_cli"
-    assert await rc.get_case_generation_provider(session) == "codex-cli"
-    assert await rc.get_case_generation_preflight_timeout(session) == 45
+    assert await rc.get_test_design_provider(session) == "codex-cli"
+    assert await rc.get_test_design_preflight_timeout(session) == 45
+    assert await rc.get_case_drafting_provider(session) == "claude-cli"
     assert await rc.get_case_execution_provider(session) == "claude-cli"
     assert await rc.get_diagnosis_provider(session) == "codex-cli"
 
@@ -215,8 +229,10 @@ async def test_get_settings_endpoint(app_client):
     assert "max_concurrent_runs" in data
     assert "headless" in data
     assert "executor_loop" in data
-    assert "case_generation_provider" in data
-    assert "case_generation_preflight_timeout_seconds" in data
+    assert "test_design_provider" in data
+    assert "test_design_preflight_timeout_seconds" in data
+    assert "case_drafting_provider" in data
+    assert "case_generation_provider" not in data
     assert "case_execution_provider" in data
     assert "diagnosis_provider" in data
     assert "email_enabled" in data
@@ -245,8 +261,9 @@ async def test_put_settings_endpoint_round_trip(app_client):
             "max_concurrent_runs": 5,
             "headless": False,
             "executor_loop": "generic_openai",
-            "case_generation_provider": "codex-cli",
-            "case_generation_preflight_timeout_seconds": 60,
+            "test_design_provider": "codex-cli",
+            "test_design_preflight_timeout_seconds": 60,
+            "case_drafting_provider": "claude-cli",
             "case_execution_provider": "claude-cli",
             "diagnosis_provider": "codex-cli",
             "email_enabled": True,
@@ -260,8 +277,9 @@ async def test_put_settings_endpoint_round_trip(app_client):
     assert data["max_concurrent_runs"]["value"] == 5
     assert data["headless"]["value"] is False
     assert data["executor_loop"]["value"] == "generic_openai"
-    assert data["case_generation_provider"]["value"] == "codex-cli"
-    assert data["case_generation_preflight_timeout_seconds"]["value"] == 60
+    assert data["test_design_provider"]["value"] == "codex-cli"
+    assert data["test_design_preflight_timeout_seconds"]["value"] == 60
+    assert data["case_drafting_provider"]["value"] == "claude-cli"
     assert data["case_execution_provider"]["value"] == "claude-cli"
     assert data["diagnosis_provider"]["value"] == "codex-cli"
     assert data["email_enabled"]["value"] is True

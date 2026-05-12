@@ -51,11 +51,11 @@ class _Events:
         ("error",),
     )
 
-    # ── Case generation ──
-    CASE_GENERATED = Event(
-        "case.generated",
-        "AI produced a draft case",
-        ("case_id", "prompt_version", "model", "from_chapter"),
+    # ── Case drafting ──
+    CASE_DRAFTED = Event(
+        "case.drafted",
+        "accepted coverage produced a draft case",
+        ("case_id", "prompt_version", "model", "coverage_id"),
     )
 
     # ── Review ──

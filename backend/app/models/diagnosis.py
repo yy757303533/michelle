@@ -20,6 +20,7 @@ class Diagnosis(SQLModel, table=True):
     diag_id: str = Field(primary_key=True)
     run_id: str = Field(index=True)
     case_id: str = Field(index=True)
+    asset_id: str | None = Field(default=None, index=True)
 
     diagnoser_prompt_version: str
     diagnoser_model: str
@@ -31,6 +32,7 @@ class Diagnosis(SQLModel, table=True):
 
     # Human feedback (key for sediment loop)
     human_feedback: str | None = None  # confirmed | wrong | partially_correct
+    feedback_target: str = ""
     feedback_note: str = ""
     feedback_at: datetime | None = Field(
         default=None, sa_column=Column(TZDateTime(), nullable=True)
