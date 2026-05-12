@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -34,6 +34,7 @@ class AnalyzeRequest(BaseModel):
 
     chapter_indices: list[int] | None = None
     prefer_provider: str | None = None
+    output_language: Literal["auto", "zh", "en"] = "auto"
 
 
 @router.get("/")
@@ -235,6 +236,7 @@ async def analyze_prd(
         prd=prd,
         chapter_indices=body.chapter_indices,
         prefer_provider=body.prefer_provider or await get_test_design_provider(session),
+        output_language=body.output_language,
     )
     return {
         "data": {

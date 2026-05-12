@@ -16,9 +16,11 @@ import {
 const PRD_URL_KEY = "prd_id";
 const CHAPTERS_PER_RUN_KEY = "prd_chapters_per_run";
 const GENERATION_TIMEOUT_KEY = "prd_analysis_timeout_seconds";
+const OUTPUT_LANGUAGE_KEY = "prd_analysis_output_language";
 const AUTO_GENERATION_KEY_PREFIX = "prd_auto_generation";
 const RECOMMENDED_CHAPTERS_PER_RUN = 5;
 const DEFAULT_GENERATION_TIMEOUT_SECONDS = 180;
+type OutputLanguage = "zh" | "en" | "auto";
 
 /** Read `?prd_id=` from the URL without going through the router so we
  * don't have to declare a search schema on the file route. */
@@ -46,6 +48,12 @@ function readGenerationTimeout(): string {
     window.localStorage.getItem(GENERATION_TIMEOUT_KEY) ??
     String(DEFAULT_GENERATION_TIMEOUT_SECONDS)
   );
+}
+
+function readOutputLanguage(): OutputLanguage {
+  if (typeof window === "undefined") return "zh";
+  const stored = window.localStorage.getItem(OUTPUT_LANGUAGE_KEY);
+  return stored === "en" || stored === "auto" || stored === "zh" ? stored : "zh";
 }
 
 function autoGenerationStorageKey(prdId: string): string {
@@ -245,6 +253,7 @@ function PrdPage() {
   const [chaptersPerRunInput, setChaptersPerRunInput] = useState(readChaptersPerRun);
   const [generationTimeoutInput, setGenerationTimeoutInput] =
     useState(readGenerationTimeout);
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>(readOutputLanguage);
   const [prdViewTab, setPrdViewTab] = useState<PrdViewTab>("chapters");
 
   const setActivePrdId = (id: string) => {
@@ -419,6 +428,11 @@ function PrdPage() {
     }
   }
 
+  function updateOutputLanguage(value: OutputLanguage) {
+    setOutputLanguage(value);
+    window.localStorage.setItem(OUTPUT_LANGUAGE_KEY, value);
+  }
+
   // Cases for the current project, used to overlay "✓ N cases generated"
   // per chapter so the user can see what was produced even after navigating
   // away mid-generation. Polls every 5s while a PRD is open so background
@@ -523,6 +537,7 @@ function PrdPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chapter_indices: chapterIndices,
+          output_language: outputLanguage,
         }),
       });
       if (!r.ok) throw new Error(await r.text());
@@ -1208,6 +1223,19 @@ function PrdPage() {
                   {selected.size - runChapterCount} queued for auto-run
                 </span>
               ) : null}
+              <label className="inline-flex items-center gap-1 text-xs text-slate-500">
+                Output
+                <select
+                  value={outputLanguage}
+                  disabled={generate.isPending || isGenerating}
+                  onChange={(e) => updateOutputLanguage(e.target.value as OutputLanguage)}
+                  className="border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
+                >
+                  <option value="zh">中文</option>
+                  <option value="en">English</option>
+                  <option value="auto">Auto</option>
+                </select>
+              </label>
               <label className="inline-flex items-center gap-1 text-xs text-slate-500">
                 Probe timeout
                 <input

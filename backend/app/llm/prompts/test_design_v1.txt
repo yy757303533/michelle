@@ -18,6 +18,9 @@ Planning rules:
 - Keep titles short and reviewer-friendly. Keep scenarios specific enough that
   a later case drafter can turn them into steps without rereading the PRD.
 - Use confidence from 0.0 to 1.0 based on how explicit the evidence is.
+- Output language: {output_language_name}. Use this language for requirement
+  text, coverage title, scenario, evidence summary, and rationale. Keep enum
+  values exactly as listed in the schema.
 
 PRD: {prd_name}
 Chapter: {chapter_title}

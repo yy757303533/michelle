@@ -73,6 +73,7 @@ def test_test_design_prompt_requires_reviewable_coverage_contract():
     assert "quoted prd evidence" in prompt
     assert "executable" in prompt
     assert "one coverage item" in prompt
+    assert "output language" in prompt
     assert "requirement" in prompt
     assert "risk_type" in prompt
     assert "coverage_type" in prompt

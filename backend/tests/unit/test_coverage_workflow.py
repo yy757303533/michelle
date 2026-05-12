@@ -65,6 +65,38 @@ async def test_prd_analyze_creates_requirement_and_coverage_items(app_client, me
 
 
 @pytest.mark.asyncio
+async def test_prd_analyze_can_output_chinese_coverage_with_fallback(app_client, memory_db):
+    upload = await app_client.post(
+        "/api/prd/upload",
+        json={
+            "project_id": "demo",
+            "name": "Investment PRD",
+            "markdown": (
+                "# Investment PRD\n\n"
+                "## Investment Flow\n"
+                "Investors can review a project and submit an investment order."
+            ),
+        },
+    )
+    prd_id = upload.json()["data"]["prd_id"]
+
+    analyze = await app_client.post(
+        f"/api/prd/{prd_id}/analyze",
+        json={"chapter_indices": [0], "output_language": "zh"},
+    )
+
+    assert analyze.status_code == 200
+    async with memory_db() as session:
+        requirement = (await session.execute(select(RequirementItem))).scalars().one()
+        coverage = (await session.execute(select(CoverageItem))).scalars().one()
+
+    assert requirement.text.startswith("投资流程：")
+    assert coverage.title.startswith("投资流程：")
+    assert "请验证" in coverage.scenario
+    assert coverage.rationale == "基于 PRD 证据生成，供评审确认。"
+
+
+@pytest.mark.asyncio
 async def test_prd_analyze_uses_requested_design_provider(app_client, memory_db, monkeypatch):
     class FakeGateway:
         def __init__(self):
@@ -99,12 +131,13 @@ async def test_prd_analyze_uses_requested_design_provider(app_client, memory_db,
 
     analyze = await app_client.post(
         f"/api/prd/{prd_id}/analyze",
-        json={"chapter_indices": [0], "prefer_provider": "codex-cli"},
+        json={"chapter_indices": [0], "prefer_provider": "codex-cli", "output_language": "zh"},
     )
 
     assert analyze.status_code == 200
     assert fake.calls[0]["prefer"] == "codex-cli"
     assert fake.calls[0]["prompt_version"] == "test_design_v1"
+    assert "Output language: Chinese" in fake.calls[0]["prompt"]
     async with memory_db() as session:
         coverage = (await session.execute(select(CoverageItem))).scalars().one()
     assert coverage.title == "MFA login"
