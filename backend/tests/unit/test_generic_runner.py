@@ -262,6 +262,94 @@ async def test_run_generic_bootstraps_configured_login_before_model(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_run_generic_bootstraps_registration_entry_from_login_url(
+    tmp_path, monkeypatch
+) -> None:
+    from app.llm.base import LLMResult
+
+    login_snapshot = """
+- textbox "E-mail *" [ref=e28]
+- textbox "Password *" [ref=e38]
+- generic "Do not have an account yet?" [ref=e50] [cursor=pointer]
+"""
+    registration_snapshot = """
+- generic "Create your account" [ref=e101]
+- textbox "First name" [ref=e102]
+- textbox "E-mail" [ref=e103]
+"""
+
+    class FakeMCP:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+            self.snapshot_count = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def list_tools(self):
+            return [
+                MCPTool(name="browser_navigate", description="navigate", input_schema={}),
+                MCPTool(name="browser_snapshot", description="snapshot", input_schema={}),
+                MCPTool(name="browser_click", description="click", input_schema={}),
+            ]
+
+        async def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            if name == "browser_snapshot":
+                self.snapshot_count += 1
+                text = login_snapshot if self.snapshot_count == 1 else registration_snapshot
+                return {"content": [{"type": "text", "text": text}]}
+            return {"content": [{"type": "text", "text": "ok"}]}
+
+    fake_mcp = FakeMCP()
+
+    class FakeGateway:
+        async def chat(self, prompt, *_args, **_kwargs):
+            assert "ACCOUNT ENTRY BOOTSTRAP completed" in prompt
+            assert "Create your account" in prompt
+            return LLMResult(
+                text=(
+                    '{"final":{"case_status":"passed","step_count":3,'
+                    '"assertion_results":[{"description":"registration page visible",'
+                    '"passed":true,"evidence":"Create your account is visible"}],'
+                    '"failure_summary":""}}'
+                ),
+                provider="fake",
+                model="fake-model",
+            )
+
+    monkeypatch.setattr(
+        "app.agent.generic_runner.build_playwright_stdio_client",
+        lambda **_kw: fake_mcp,
+    )
+    monkeypatch.setattr("app.agent.generic_runner.get_gateway", lambda: FakeGateway())
+    monkeypatch.setattr("app.agent.generic_runner.get_case_execution_provider", AsyncProvider())
+
+    outcome = await run_generic_with_playwright(
+        RunRequest(
+            prompt="fresh browser session. Register a new user with email verification.",
+            work_dir=tmp_path,
+            timeout_seconds=60,
+            auth_state="logged-out",
+            login_url="https://example.test/logins",
+        )
+    )
+
+    assert [name for name, _args in fake_mcp.calls[:4]] == [
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_snapshot",
+    ]
+    assert fake_mcp.calls[0][1] == {"url": "https://example.test/logins"}
+    assert fake_mcp.calls[2][1] == {"element": "Do not have an account yet?", "ref": "e50"}
+    assert outcome.parsed.summary.success is True
+
+
+@pytest.mark.asyncio
 async def test_run_generic_enforces_total_timeout_before_turn(tmp_path, monkeypatch) -> None:
     class FakeMCP:
         async def __aenter__(self):

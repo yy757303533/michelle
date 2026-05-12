@@ -39,6 +39,33 @@ _MIN_MODEL_TURN_SECONDS = 15.0
 _REPEATABLE_OBSERVATION_TOOLS = {"browser_snapshot"}
 _INTERNAL_TOOL_NAMES = {"email_create_temp_inbox", "email_wait_for_code"}
 _MAX_ACTION_BATCH_SIZE = 8
+_ACCOUNT_ENTRY_RE = re.compile(
+    r"login|log in|sign in|register|registration|sign up|signup|create account|"
+    r"forgot password|password reset|account entry|登录|注册|忘记密码|找回密码|账号|账户",
+    re.IGNORECASE,
+)
+_REGISTRATION_RE = re.compile(
+    r"register|registration|sign up|signup|create account|new user|注册|创建账号|新用户",
+    re.IGNORECASE,
+)
+_PASSWORD_RESET_RE = re.compile(
+    r"forgot password|password reset|reset password|忘记密码|找回密码|重置密码",
+    re.IGNORECASE,
+)
+_REGISTRATION_ENTRY_LABEL_RE = re.compile(
+    r"sign\s*up|register|create\s*(an?\s*)?account|do\s*not\s*have\s*an?\s*account|"
+    r"don't\s*have\s*an?\s*account|new\s*account|注册|创建账号|没有账号",
+    re.IGNORECASE,
+)
+_PASSWORD_RESET_ENTRY_LABEL_RE = re.compile(
+    r"forgot\s*password|reset\s*password|trouble\s*signing\s*in|忘记密码|找回密码|重置密码",
+    re.IGNORECASE,
+)
+_CLICKABLE_REF_RE = re.compile(
+    r'^\s*-\s*(?:link|button|generic)(?:\s+"(?P<label_q>[^"]+)")?'
+    r"(?P<body>[^\n]*?)\[ref=(?P<ref>[^\]]+)\](?P<tail>[^\n]*)$",
+    re.MULTILINE,
+)
 
 
 class GenericRunnerError(RuntimeError):
@@ -89,6 +116,15 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
             tools.extend(_internal_tools())
             transcript = _initial_transcript(req.prompt, tools)
             runtime_event_index = await _bootstrap_configured_login(
+                req=req,
+                mcp=mcp,
+                tools=tools,
+                transcript=transcript,
+                events=events,
+                steps=steps,
+                runtime_event_index=runtime_event_index,
+            )
+            runtime_event_index = await _bootstrap_account_entry(
                 req=req,
                 mcp=mcp,
                 tools=tools,
@@ -474,6 +510,139 @@ def _should_bootstrap_login(req: RunRequest) -> bool:
         and bool((req.default_username or "").strip())
         and bool(req.default_password)
     )
+
+
+async def _bootstrap_account_entry(
+    *,
+    req: RunRequest,
+    mcp: Any,
+    tools: list[MCPTool],
+    transcript: list[str],
+    events: list[dict[str, Any]],
+    steps: list[StepEvent],
+    runtime_event_index: int,
+) -> int:
+    """Open the configured account entry page before the LLM starts.
+
+    This is intentionally shallow and cross-project: it only opens the
+    configured login/account URL and, for registration/password-reset cases,
+    clicks a visible entry link if one is present. It never assumes project
+    private paths such as `/createAccount`.
+    """
+    if not _should_bootstrap_account_entry(req):
+        return runtime_event_index
+
+    available = {tool.name for tool in tools}
+    if not {"browser_navigate", "browser_snapshot"}.issubset(available):
+        return runtime_event_index
+
+    runtime_event_index = await _emit_runtime_event(
+        req,
+        runtime_event_index,
+        "account_entry_bootstrap",
+        {"login_url": req.login_url},
+        "starting account entry from configured login URL",
+    )
+    await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_navigate",
+        arguments={"url": req.login_url},
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="account-entry",
+    )
+    snapshot_step = await _call_mcp_tool_recording(
+        req=req,
+        mcp=mcp,
+        tool_name="browser_snapshot",
+        arguments={},
+        events=events,
+        steps=steps,
+        transcript=transcript,
+        turn="account-entry",
+    )
+
+    target = _account_entry_target(req.prompt)
+    entry = _find_account_entry_ref(snapshot_step.result_text or "", target=target)
+    if entry and "browser_click" in available:
+        label, ref = entry
+        await _call_mcp_tool_recording(
+            req=req,
+            mcp=mcp,
+            tool_name="browser_click",
+            arguments={"element": label, "ref": ref},
+            events=events,
+            steps=steps,
+            transcript=transcript,
+            turn="account-entry",
+        )
+        await _call_mcp_tool_recording(
+            req=req,
+            mcp=mcp,
+            tool_name="browser_snapshot",
+            arguments={},
+            events=events,
+            steps=steps,
+            transcript=transcript,
+            turn="account-entry",
+        )
+
+    transcript.append(
+        "ACCOUNT ENTRY BOOTSTRAP completed from the configured project login URL. "
+        "Continue from the current observed page instead of re-opening the base URL "
+        "or rediscovering the account entry path."
+    )
+    runtime_event_index = await _emit_runtime_event(
+        req,
+        runtime_event_index,
+        "account_entry_bootstrap",
+        {"login_url": req.login_url, "target": target},
+        "account entry bootstrap completed",
+    )
+    return runtime_event_index
+
+
+def _should_bootstrap_account_entry(req: RunRequest) -> bool:
+    if not (req.login_url or "").strip():
+        return False
+    if (req.auth_state or "").strip().lower() == "logged-in":
+        return False
+    return bool(_ACCOUNT_ENTRY_RE.search(req.prompt or ""))
+
+
+def _account_entry_target(prompt: str) -> str:
+    if _PASSWORD_RESET_RE.search(prompt or ""):
+        return "password_reset"
+    if _REGISTRATION_RE.search(prompt or ""):
+        return "registration"
+    return "login"
+
+
+def _find_account_entry_ref(text: str, *, target: str) -> tuple[str, str] | None:
+    if target == "login":
+        return None
+    label_re = (
+        _PASSWORD_RESET_ENTRY_LABEL_RE if target == "password_reset" else _REGISTRATION_ENTRY_LABEL_RE
+    )
+    for match in _CLICKABLE_REF_RE.finditer(text):
+        label = (match.group("label_q") or _label_from_snapshot_line(match.group(0))).strip()
+        haystack = " ".join(
+            part
+            for part in (label, match.group("body") or "", match.group("tail") or "")
+            if part
+        )
+        if label_re.search(haystack):
+            return label or haystack.strip()[:80], match.group("ref")
+    return None
+
+
+def _label_from_snapshot_line(line: str) -> str:
+    cleaned = re.sub(r"\[ref=[^\]]+\]", "", line)
+    cleaned = re.sub(r"\[[^\]]+\]", "", cleaned)
+    cleaned = re.sub(r"^\s*-\s*(?:link|button|generic)\s*", "", cleaned)
+    return cleaned.strip().strip('"')
 
 
 _REF_RE = re.compile(

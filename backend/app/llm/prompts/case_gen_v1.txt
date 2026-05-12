@@ -123,15 +123,11 @@ one — getting this wrong makes the case fail or test the wrong thing.
 
 E.g. 修改密码 / 查看订单 / 发帖 / 个人资料编辑.
 
-**If Login context above provides project credentials**, prepend these
-steps to the case (do NOT put login in `preconditions` only — the agent
-needs actionable steps):
-
-1. 打开登录页 (e.g. `/login` / `/logins` / `/signin` under base_url)
-2. 在邮箱/用户名输入框输入 `<project default_username>`
-3. 在密码输入框输入 `<project default_password>`
-4. 点击登录按钮 | 期望: 跳转到非登录页（如 /home, /dashboard）
-5. ... 然后才是该 case 真正的测试步骤
+**If Login context above provides project credentials**, **do not prepend login steps**. Set
+`auth_state: "logged-in"` and start the steps at the actual product feature
+being tested. Michelle's deterministic login bootstrap uses the configured
+login URL and credentials before LLM execution, which is faster and avoids
+duplicating login in every case.
 
 If credentials are NOT configured, leave login out of steps and write
 `preconditions: ["user is logged in (manual setup needed)"]`.

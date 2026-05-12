@@ -29,6 +29,8 @@ def test_case_gen_prompt_requires_explicit_verification_milestones():
     assert "do not assert that a backend registration api request must happen" in prompt
     assert "receivable temporary email" in prompt
     assert "random\n  unique email addresses are enough" in prompt
+    assert "do not prepend login steps" in prompt
+    assert "deterministic login bootstrap" in prompt
 
 
 def test_execute_prompt_handles_same_url_spa_state_changes():

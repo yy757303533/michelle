@@ -172,8 +172,9 @@ def _login_context_for_gen(
         return (
             f"This project has default test credentials configured "
             f"(username: {default_username}).{login_line} When a case targets a feature "
-            f"that requires authentication, prepend login steps using these "
-            f"credentials so the case is self-contained and runnable."
+            f"that requires authentication, mark it auth_state=logged-in and do not "
+            f"prepend login steps. Michelle's deterministic login bootstrap will log "
+            f"in before the LLM executes the case."
         )
     return (
         "No default credentials are configured for this project. For cases "
