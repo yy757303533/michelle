@@ -17,6 +17,7 @@ from app.models import PRD, CoverageItem, DesignGenerationJob, Project
 from app.obs import EVENTS, get_logger
 from app.services.prd_diff import diff_prds
 from app.services.prd_parser import parse_prd
+from app.services.prd_sources.service import fetch_prd_source
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -27,6 +28,12 @@ class PRDUploadIn(BaseModel):
     name: str = ""
     markdown: str
     """Either provide markdown directly OR send a multipart upload (TODO Day 5)."""
+
+
+class PRDImportIn(BaseModel):
+    project_id: str
+    name: str = ""
+    source: dict[str, Any]
 
 
 class AnalyzeRequest(BaseModel):
@@ -40,6 +47,106 @@ class AnalyzeRequest(BaseModel):
 
 def _actor_id(request: Request) -> str:
     return str((getattr(request.state, "user", None) or {}).get("sub", ""))
+
+
+def _chapter_response(c) -> dict[str, Any]:
+    return {
+        "position": c.position,
+        "level": c.level,
+        "title": c.title,
+        "normalized_title": c.normalized_title,
+        "hash": c.hash[:12],
+        "body_chars": len(c.body),
+        "body": c.body,
+    }
+
+
+async def _persist_prd(
+    *,
+    project_id: str,
+    name: str,
+    markdown: str,
+    source_ref: dict[str, Any],
+    request: Request,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    proj = await session.get(Project, project_id)
+    if proj is None:
+        proj = Project(project_id=project_id, name=project_id)
+        session.add(proj)
+    await require_project_role(
+        getattr(request.state, "user", None), project_id, "reviewer", session
+    )
+
+    parsed = parse_prd(markdown)
+    prd_name = name or parsed.title
+    prior_stmt = (
+        select(PRD)
+        .where(PRD.project_id == project_id)
+        .where(PRD.name == prd_name)
+        .order_by(desc(PRD.version))
+        .limit(1)
+    )
+    prior = (await session.execute(prior_stmt)).scalars().first()
+
+    diff_summary: dict[str, Any] | None = None
+    if prior:
+        from app.services.prd_parser import Chapter, ParsedPRD
+
+        prior_chapters = [Chapter(**c) for c in prior.chapters]
+        prior_parsed = ParsedPRD(
+            title=prior.name,
+            frontmatter="",
+            preamble="",
+            chapters=prior_chapters,
+            raw_hash=prior.content_hash,
+        )
+        diff = diff_prds(prior_parsed, parsed)
+        diff_summary = diff.summary()
+
+    new_prd = PRD(
+        prd_id=str(uuid4()),
+        project_id=project_id,
+        name=prd_name,
+        raw_markdown=markdown,
+        content_hash=parsed.raw_hash,
+        chapters=[c.to_dict() for c in parsed.chapters],
+        source_ref=source_ref,
+        version=(prior.version + 1) if prior else 1,
+        prev_version_id=prior.prd_id if prior else None,
+    )
+    session.add(new_prd)
+    await session.commit()
+    await session.refresh(new_prd)
+
+    log.info(
+        EVENTS.PRD_UPLOADED.name,
+        prd_id=new_prd.prd_id,
+        project_id=project_id,
+        chapter_count=len(parsed.chapters),
+        hash=parsed.raw_hash[:12],
+        version=new_prd.version,
+        source_type=source_ref.get("source_type", ""),
+    )
+    if diff_summary:
+        log.info(
+            EVENTS.PRD_CHAPTER_DIFF.name,
+            prd_id=new_prd.prd_id,
+            **diff_summary,
+        )
+
+    return {
+        "prd_id": new_prd.prd_id,
+        "project_id": new_prd.project_id,
+        "name": new_prd.name,
+        "version": new_prd.version,
+        "title": parsed.title,
+        "raw_markdown": new_prd.raw_markdown,
+        "chapters": [_chapter_response(c) for c in parsed.chapters],
+        "prior_version_id": prior.prd_id if prior else None,
+        "diff_summary": diff_summary,
+        "source_ref": new_prd.source_ref or {},
+    }
 
 
 @router.get("/")
@@ -77,6 +184,7 @@ async def list_prds(
                 "chapter_count": len(r.chapters),
                 "uploaded_at": r.uploaded_at.isoformat(),
                 "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+                "source_ref": r.source_ref or {},
             }
             for r in rows
         ]
@@ -93,92 +201,37 @@ async def upload_prd(
 
     Auto-creates the Project row if missing.
     """
-    proj = await session.get(Project, body.project_id)
-    if proj is None:
-        proj = Project(project_id=body.project_id, name=body.project_id)
-        session.add(proj)
-    await require_project_role(
-        getattr(request.state, "user", None), body.project_id, "reviewer", session
-    )
-
-    parsed = parse_prd(body.markdown)
-
-    # Find prior version (latest by uploaded_at) within same project + name
-    prior_stmt = (
-        select(PRD)
-        .where(PRD.project_id == body.project_id)
-        .where(PRD.name == (body.name or parsed.title))
-        .order_by(desc(PRD.version))
-        .limit(1)
-    )
-    prior = (await session.execute(prior_stmt)).scalars().first()
-
-    diff_summary: dict[str, Any] | None = None
-    if prior:
-        from app.services.prd_parser import Chapter, ParsedPRD
-
-        prior_chapters = [Chapter(**c) for c in prior.chapters]
-        prior_parsed = ParsedPRD(
-            title=prior.name,
-            frontmatter="",
-            preamble="",
-            chapters=prior_chapters,
-            raw_hash=prior.content_hash,
-        )
-        diff = diff_prds(prior_parsed, parsed)
-        diff_summary = diff.summary()
-
-    new_prd = PRD(
-        prd_id=str(uuid4()),
+    data = await _persist_prd(
         project_id=body.project_id,
-        name=body.name or parsed.title,
-        raw_markdown=body.markdown,
-        content_hash=parsed.raw_hash,
-        chapters=[c.to_dict() for c in parsed.chapters],
-        version=(prior.version + 1) if prior else 1,
-        prev_version_id=prior.prd_id if prior else None,
+        name=body.name,
+        markdown=body.markdown,
+        source_ref={"source_type": "markdown"},
+        request=request,
+        session=session,
     )
-    session.add(new_prd)
-    await session.commit()
-    await session.refresh(new_prd)
+    return {"data": data}
 
-    log.info(
-        EVENTS.PRD_UPLOADED.name,
-        prd_id=new_prd.prd_id,
+
+@router.post("/import")
+async def import_prd(
+    body: PRDImportIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        source_doc = await fetch_prd_source(body.source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    name = body.name or source_doc.suggested_name
+    data = await _persist_prd(
         project_id=body.project_id,
-        chapter_count=len(parsed.chapters),
-        hash=parsed.raw_hash[:12],
-        version=new_prd.version,
+        name=name,
+        markdown=source_doc.markdown,
+        source_ref=source_doc.source_ref,
+        request=request,
+        session=session,
     )
-    if diff_summary:
-        log.info(
-            EVENTS.PRD_CHAPTER_DIFF.name,
-            prd_id=new_prd.prd_id,
-            **diff_summary,
-        )
-
-    return {
-        "data": {
-            "prd_id": new_prd.prd_id,
-            "version": new_prd.version,
-            "title": parsed.title,
-            "raw_markdown": new_prd.raw_markdown,
-            "chapters": [
-                {
-                    "position": c.position,
-                    "level": c.level,
-                    "title": c.title,
-                    "normalized_title": c.normalized_title,
-                    "hash": c.hash[:12],
-                    "body_chars": len(c.body),
-                    "body": c.body,
-                }
-                for c in parsed.chapters
-            ],
-            "prior_version_id": prior.prd_id if prior else None,
-            "diff_summary": diff_summary,
-        }
-    }
+    return {"data": data}
 
 
 @router.get("/{prd_id}")
@@ -222,6 +275,7 @@ async def get_prd(
             "chapters": chapters,
             "prior_version_id": row.prev_version_id,
             "diff_summary": None,
+            "source_ref": row.source_ref or {},
         }
     }
 

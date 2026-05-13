@@ -58,6 +58,9 @@ class PRD(SQLModel, table=True):
     chapters: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     """List of {level, title, normalized_title, body, hash, position}."""
 
+    source_ref: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    """Where this PRD content came from: markdown, workspace, gitlab_mcp, confluence, jira."""
+
     version: int = 1
     prev_version_id: str | None = None
     """Chain of versions; latest is canonical."""

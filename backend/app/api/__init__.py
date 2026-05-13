@@ -7,6 +7,7 @@ from app.api import (
     case_feedback,
     cases,
     coverage,
+    dev_context,
     diagnosis,
     llm,
     prd,
@@ -21,6 +22,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(projects.router, prefix="/projects", tags=["projects"])
 api_router.include_router(prd.router, prefix="/prd", tags=["prd"])
 api_router.include_router(coverage.router, prefix="/coverage", tags=["coverage"])
+api_router.include_router(dev_context.router, prefix="/dev-context", tags=["dev-context"])
 api_router.include_router(cases.router, prefix="/cases", tags=["cases"])
 api_router.include_router(regression_assets.router, prefix="/regression-assets", tags=["regression-assets"])
 api_router.include_router(case_feedback.router, prefix="/case-draft-feedback", tags=["case-draft-feedback"])

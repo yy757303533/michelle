@@ -105,6 +105,7 @@ interface UploadResponse {
     version: number;
     title: string;
     raw_markdown?: string;
+    source_ref?: Record<string, string>;
     chapters: ChapterMeta[];
     prior_version_id: string | null;
     diff_summary: Record<string, number> | null;
@@ -188,6 +189,7 @@ interface GenerationJobsResponse {
 
 type AutoGenerationState = StoredAutoGenerationState;
 type PrdViewTab = "chapters" | "preview" | "raw";
+type PrdSourceMode = "markdown" | "gitlab" | "workspace";
 
 interface GenerateVariables {
   chapterIndices: number[];
@@ -245,6 +247,11 @@ function PrdPage() {
   const { projectId } = useCurrentProject();
   const [name, setName] = useState("");
   const [markdown, setMarkdown] = useState("");
+  const [sourceMode, setSourceMode] = useState<PrdSourceMode>("markdown");
+  const [gitlabUrl, setGitlabUrl] = useState("");
+  const [workspaceRepo, setWorkspaceRepo] = useState("zstack");
+  const [workspaceFilePath, setWorkspaceFilePath] = useState("");
+  const [workspaceRef, setWorkspaceRef] = useState("");
   const [uploaded, setUploaded] = useState<UploadResponse["data"] | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -470,13 +477,24 @@ function PrdPage() {
 
   const upload = useMutation({
     mutationFn: async (): Promise<UploadResponse> => {
-      const r = await apiFetch("/api/prd/upload", {
+      const source =
+        sourceMode === "markdown"
+          ? { type: "markdown", markdown }
+          : sourceMode === "gitlab"
+            ? { type: "gitlab_mcp", url: gitlabUrl.trim() }
+            : {
+                type: "workspace",
+                repo: workspaceRepo.trim(),
+                file_path: workspaceFilePath.trim(),
+                ref: workspaceRef.trim() || undefined,
+              };
+      const r = await apiFetch("/api/prd/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           project_id: projectId,
           name: name || undefined,
-          markdown,
+          source,
         }),
       });
       if (!r.ok) throw new Error(await r.text());
@@ -917,9 +935,16 @@ function PrdPage() {
 
   const loadUploadedIntoEditor = () => {
     if (!uploaded?.raw_markdown) return;
+    setSourceMode("markdown");
     setMarkdown(uploaded.raw_markdown);
     setName(uploaded.title);
   };
+
+  const importDisabled =
+    upload.isPending ||
+    (sourceMode === "markdown" && !markdown.trim()) ||
+    (sourceMode === "gitlab" && !gitlabUrl.trim()) ||
+    (sourceMode === "workspace" && (!workspaceRepo.trim() || !workspaceFilePath.trim()));
 
   return (
     <div className="space-y-6">
@@ -946,10 +971,10 @@ function PrdPage() {
         </div>
       ) : null}
 
-      {/* Upload form */}
+      {/* Import form */}
       <div className={"bg-white border border-slate-200 rounded-lg p-4 space-y-3 " + (projectId ? "" : "opacity-50 pointer-events-none")}>
         <div className="text-xs text-slate-500">
-          uploading to project <code className="font-mono">{projectId || "—"}</code>
+          importing to project <code className="font-mono">{projectId || "—"}</code>
         </div>
         <Field label="name (optional, defaults to first H1)">
           <input
@@ -959,38 +984,97 @@ function PrdPage() {
             placeholder="Michelle PRD v0.5"
           />
         </Field>
-        <Field label="markdown">
-          <div className="flex items-center gap-2 mb-1.5 text-xs text-slate-500">
-            <label className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded cursor-pointer">
-              📄 choose .md file
+        <div className="flex flex-wrap gap-2 text-xs">
+          {(["markdown", "gitlab", "workspace"] as PrdSourceMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setSourceMode(mode)}
+              className={
+                "rounded border px-2 py-1 " +
+                (sourceMode === mode
+                  ? "border-slate-900 bg-slate-900 text-white"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50")
+              }
+            >
+              {mode === "markdown"
+                ? "Markdown"
+                : mode === "gitlab"
+                  ? "GitLab URL"
+                  : "Workspace file"}
+            </button>
+          ))}
+        </div>
+        {sourceMode === "markdown" ? (
+          <Field label="markdown">
+            <div className="flex items-center gap-2 mb-1.5 text-xs text-slate-500">
+              <label className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-0.5 rounded cursor-pointer">
+                choose .md file
+                <input
+                  type="file"
+                  accept=".md,.markdown,.txt,text/markdown,text/plain"
+                  onChange={onFilePicked}
+                  className="hidden"
+                />
+              </label>
+              <span>or paste contents below</span>
+              {markdown && (
+                <span className="ml-auto font-mono">
+                  {markdown.length.toLocaleString()} chars
+                </span>
+              )}
+            </div>
+            <textarea
+              className="border border-slate-200 rounded p-2 w-full text-sm font-mono"
+              rows={10}
+              value={markdown}
+              onChange={(e) => setMarkdown(e.target.value)}
+              placeholder="# My PRD&#10;&#10;## Goals&#10;&#10;..."
+            />
+          </Field>
+        ) : sourceMode === "gitlab" ? (
+          <Field label="gitlab file url">
+            <input
+              className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
+              value={gitlabUrl}
+              onChange={(e) => setGitlabUrl(e.target.value)}
+              placeholder="http://gitlab.zstack.io/zstackio/zstack/-/blob/master/docs/prd/foo.md"
+            />
+          </Field>
+        ) : (
+          <div className="grid md:grid-cols-[180px_1fr_160px] gap-3">
+            <Field label="repo">
               <input
-                type="file"
-                accept=".md,.markdown,.txt,text/markdown,text/plain"
-                onChange={onFilePicked}
-                className="hidden"
+                className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
+                value={workspaceRepo}
+                onChange={(e) => setWorkspaceRepo(e.target.value)}
+                placeholder="zstack"
               />
-            </label>
-            <span>or paste contents below</span>
-            {markdown && (
-              <span className="ml-auto font-mono">
-                {markdown.length.toLocaleString()} chars
-              </span>
-            )}
+            </Field>
+            <Field label="file path">
+              <input
+                className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
+                value={workspaceFilePath}
+                onChange={(e) => setWorkspaceFilePath(e.target.value)}
+                placeholder="docs/prd/foo.md"
+              />
+            </Field>
+            <Field label="ref (optional)">
+              <input
+                className="border border-slate-200 rounded px-2 py-1 w-full text-sm font-mono"
+                value={workspaceRef}
+                onChange={(e) => setWorkspaceRef(e.target.value)}
+                placeholder="master"
+              />
+            </Field>
           </div>
-          <textarea
-            className="border border-slate-200 rounded p-2 w-full text-sm font-mono"
-            rows={10}
-            value={markdown}
-            onChange={(e) => setMarkdown(e.target.value)}
-            placeholder="# My PRD&#10;&#10;## Goals&#10;&#10;..."
-          />
-        </Field>
+        )}
         <button
           className="bg-slate-900 text-white text-sm px-3 py-1.5 rounded hover:bg-slate-700 disabled:opacity-50"
-          disabled={!markdown.trim() || upload.isPending}
+          disabled={importDisabled}
           onClick={() => upload.mutate()}
         >
-          {upload.isPending ? "uploading…" : "Upload + parse"}
+          {upload.isPending ? "importing..." : "Import + parse"}
         </button>
         {upload.error && (
           <pre className="text-xs text-red-600 whitespace-pre-wrap">

@@ -93,6 +93,15 @@ class Settings(BaseSettings):
     temp_email_code_timeout_seconds: int = 120
     temp_email_poll_interval_seconds: int = 5
 
+    # ── External developer context ──
+    michelle_workspace_root: str = ""
+    """Optional external zstack-workspace root used for PRD/code/dev context."""
+    michelle_zdev_mcp_command: str = "node"
+    michelle_zdev_mcp_args: str = ""
+    """Shell-like argument string, e.g. /path/to/zstack-dev-mcp/dist/index.js."""
+    michelle_zdev_mcp_cwd: str = ""
+    michelle_zdev_mcp_timeout_seconds: int = 60
+
     @property
     def artifacts_path(self) -> Path:
         p = Path(self.artifacts_dir).resolve()

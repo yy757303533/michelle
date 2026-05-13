@@ -43,11 +43,13 @@ class StdioMCPClient:
         args: list[str],
         cwd: Path,
         timeout_seconds: int = 30,
+        extra_env: dict[str, str] | None = None,
     ):
         self.command = command
         self.args = args
         self.cwd = cwd
         self.timeout_seconds = timeout_seconds
+        self.extra_env = extra_env or {}
         self._proc: asyncio.subprocess.Process | None = None
         self._next_id = 1
 
@@ -59,7 +61,7 @@ class StdioMCPClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_mcp_subprocess_env(self.cwd),
+            env=_mcp_subprocess_env(self.cwd) | self.extra_env,
             limit=MCP_STDIO_BUFFER_LIMIT,
         )
         try:
