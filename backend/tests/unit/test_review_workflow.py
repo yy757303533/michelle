@@ -533,12 +533,21 @@ async def test_delete_pending_case(session, app_client):
 
     r = await app_client.delete("/api/cases/TC-DEL-1")
     assert r.status_code == 204
-    rows = (await session.execute(select(TestCase))).scalars().all()
-    assert all(c.case_id != "TC-DEL-1" for c in rows)
+    row = await session.get(TestCase, "TC-DEL-1")
+    assert row is not None
+    assert row.deleted_at is not None
+
+    listed = await app_client.get("/api/cases/?project_id=demo")
+    assert listed.status_code == 200
+    assert listed.json()["data"] == []
+
+    deleted = await app_client.get("/api/cases/?project_id=demo&deleted=deleted")
+    assert deleted.status_code == 200
+    assert [c["case_id"] for c in deleted.json()["data"]] == ["TC-DEL-1"]
 
 
 @pytest.mark.asyncio
-async def test_delete_case_removes_its_run_history(session, app_client):
+async def test_delete_case_preserves_its_run_history(session, app_client):
     session.add(Project(project_id="demo", name="demo"))
     session.add(_case("TC-RUN-DEL"))
     session.add(
@@ -566,9 +575,31 @@ async def test_delete_case_removes_its_run_history(session, app_client):
     r = await app_client.delete("/api/cases/TC-RUN-DEL")
 
     assert r.status_code == 204
-    assert (await session.execute(select(Run))).scalars().all() == []
-    assert (await session.execute(select(StepEvent))).scalars().all() == []
-    assert (await session.execute(select(Diagnosis))).scalars().all() == []
+    assert [r.run_id for r in (await session.execute(select(Run))).scalars().all()] == [
+        "run-del"
+    ]
+    assert [e.run_id for e in (await session.execute(select(StepEvent))).scalars().all()] == [
+        "run-del"
+    ]
+    assert [d.run_id for d in (await session.execute(select(Diagnosis))).scalars().all()] == [
+        "run-del"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_case_reactivates_soft_deleted_case(session, app_client):
+    session.add(_case("TC-RESTORE"))
+    await session.commit()
+
+    deleted = await app_client.delete("/api/cases/TC-RESTORE")
+    assert deleted.status_code == 204
+
+    restored = await app_client.post("/api/cases/TC-RESTORE/restore")
+
+    assert restored.status_code == 200
+    assert restored.json()["data"]["deleted_at"] is None
+    listed = await app_client.get("/api/cases/?project_id=demo")
+    assert [c["case_id"] for c in listed.json()["data"]] == ["TC-RESTORE"]
 
 
 @pytest.mark.asyncio
@@ -613,7 +644,7 @@ async def test_bulk_delete_skips_approved_and_reports(session, app_client):
 
 
 @pytest.mark.asyncio
-async def test_bulk_delete_removes_run_history_for_deleted_cases(session, app_client):
+async def test_bulk_delete_preserves_run_history_for_deleted_cases(session, app_client):
     session.add(Project(project_id="demo", name="demo"))
     session.add(_case("TC-BULK-RUN"))
     session.add(
@@ -632,8 +663,12 @@ async def test_bulk_delete_removes_run_history_for_deleted_cases(session, app_cl
 
     assert r.status_code == 200
     assert r.json()["data"]["deleted"] == ["TC-BULK-RUN"]
-    assert (await session.execute(select(Run))).scalars().all() == []
-    assert (await session.execute(select(StepEvent))).scalars().all() == []
+    assert [r.run_id for r in (await session.execute(select(Run))).scalars().all()] == [
+        "run-bulk-del"
+    ]
+    assert [e.run_id for e in (await session.execute(select(StepEvent))).scalars().all()] == [
+        "run-bulk-del"
+    ]
 
 
 # ── POST /api/cases/ (manual create) ───────────────────────────────────────

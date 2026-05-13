@@ -30,6 +30,7 @@ class CoverageItem(SQLModel, table=True):
     rationale: str = ""
     priority: str = "P1"
     review_status: str = Field(default="proposed", index=True)
+    review_note: str = ""
     linked_case_id: str | None = Field(default=None, index=True)
 
     created_at: datetime = Field(
@@ -40,3 +41,9 @@ class CoverageItem(SQLModel, table=True):
         default_factory=_utcnow,
         sa_column=Column(TZDateTime(), nullable=False),
     )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(TZDateTime(), nullable=True),
+    )
+    deleted_by: str = Field(default="", index=True)
+    delete_reason: str = ""

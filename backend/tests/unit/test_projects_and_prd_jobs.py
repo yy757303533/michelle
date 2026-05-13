@@ -219,6 +219,37 @@ async def test_prd_get_returns_raw_markdown_and_chapter_body(app_client, session
 
 
 @pytest.mark.asyncio
+async def test_delete_prd_soft_deletes_and_restore_reactivates(app_client, session):
+    session.add(Project(project_id="demo", name="demo"))
+    session.add(
+        PRD(
+            prd_id="prd-soft",
+            project_id="demo",
+            name="Spec",
+            raw_markdown="# Spec",
+            content_hash="hash",
+        )
+    )
+    await session.commit()
+
+    deleted = await app_client.delete("/api/prd/prd-soft")
+    assert deleted.status_code == 204
+    row = await session.get(PRD, "prd-soft")
+    assert row is not None
+    assert row.deleted_at is not None
+
+    active = await app_client.get("/api/prd/?project_id=demo")
+    assert active.status_code == 200
+    assert active.json()["data"] == []
+
+    restored = await app_client.post("/api/prd/prd-soft/restore")
+    assert restored.status_code == 200
+    assert restored.json()["data"]["deleted_at"] is None
+    active = await app_client.get("/api/prd/?project_id=demo")
+    assert [p["prd_id"] for p in active.json()["data"]] == ["prd-soft"]
+
+
+@pytest.mark.asyncio
 async def test_get_design_job_endpoint_returns_status(app_client, session):
     session.add(
         DesignGenerationJob(

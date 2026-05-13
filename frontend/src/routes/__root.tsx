@@ -75,6 +75,9 @@ function RootLayout() {
               <Link to="/prd" activeProps={{ className: "text-slate-900 font-medium" }} className="text-slate-500 hover:text-slate-900">
                 PRD
               </Link>
+              <Link to="/coverage" activeProps={{ className: "text-slate-900 font-medium" }} className="text-slate-500 hover:text-slate-900">
+                Coverage
+              </Link>
               <Link to="/cases" activeProps={{ className: "text-slate-900 font-medium" }} className="text-slate-500 hover:text-slate-900">
                 Cases
               </Link>

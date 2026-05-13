@@ -29,6 +29,8 @@ interface RunRow {
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
+  deleted_at?: string | null;
+  source_case_deleted_at?: string | null;
 }
 
 interface RunsResponse {
@@ -138,7 +140,7 @@ function RunsListPage() {
   );
 
   const visibleRerunnable = useMemo(
-    () => visible.filter((r) => RERUNNABLE.has(r.status)),
+    () => visible.filter((r) => RERUNNABLE.has(r.status) && !r.source_case_deleted_at),
     [visible],
   );
   const allRerunnableSelected =
@@ -157,7 +159,9 @@ function RunsListPage() {
   };
 
   const selectedRows = visible.filter((r) => selected.has(r.run_id));
-  const selectedRerunnable = selectedRows.filter((r) => RERUNNABLE.has(r.status));
+  const selectedRerunnable = selectedRows.filter(
+    (r) => RERUNNABLE.has(r.status) && !r.source_case_deleted_at,
+  );
   const selectedUniqueCases = new Set(selectedRerunnable.map((r) => r.case_id));
 
   if (!projectId) {
@@ -406,6 +410,14 @@ function RunsListPage() {
                     >
                       {r.case_id}
                     </a>
+                    {r.source_case_deleted_at && (
+                      <span
+                        className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700"
+                        title="source case has been deleted; restore the case before rerunning"
+                      >
+                        case deleted
+                      </span>
+                    )}
                     {(historyCounts.get(r.case_id) ?? 0) > 1 && (
                       <Link
                         to="/runs/$id"
@@ -431,11 +443,13 @@ function RunsListPage() {
                   <td className="p-2 text-right">
                     {RERUNNABLE.has(r.status) && (
                       <button
-                        disabled={rerun.isPending || runnerBlocked}
+                        disabled={rerun.isPending || runnerBlocked || Boolean(r.source_case_deleted_at)}
                         onClick={() => rerun.mutate([r.case_id])}
                         className="text-xs px-2 py-0.5 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
                         title={
-                          runnerBlocked
+                          r.source_case_deleted_at
+                            ? "restore the source case before rerunning"
+                            : runnerBlocked
                             ? `executor ${llmStatus}: ${llmDetail || "not ready"}`
                             : `rerun ${r.case_id} as a fresh run`
                         }

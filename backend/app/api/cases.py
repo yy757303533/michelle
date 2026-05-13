@@ -14,10 +14,9 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import Project, Run, TestCase
+from app.models import CoverageItem, Project, TestCase
 from app.obs import EVENTS, get_logger
 from app.services.case_drafter import CASE_ID_ALLOCATION_LOCK, _mint_case_id, _next_seq
-from app.services.run_orchestrator import rollback_run_scope
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -35,14 +34,8 @@ EDITABLE_FIELDS = {
 }
 
 
-async def _delete_case_run_history(session: AsyncSession, case_id: str) -> int:
-    run_ids = (
-        (await session.execute(select(Run.run_id).where(Run.case_id == case_id))).scalars().all()
-    )
-    deleted = 0
-    for run_id in run_ids:
-        deleted += await rollback_run_scope(session, run_id=run_id, delete_run=True)
-    return deleted
+def _actor_id(request: Request) -> str:
+    return str((getattr(request.state, "user", None) or {}).get("sub", ""))
 
 
 ReviewVerb = Literal["approve", "reject", "reset"]
@@ -126,6 +119,7 @@ async def list_cases(
     status: Literal["pending", "approved", "rejected", "stale"] | None = None,
     project_id: str | None = None,
     q: str = "",
+    deleted: Literal["active", "deleted", "all"] = "active",
     limit: int = Query(default=200, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -164,6 +158,10 @@ async def list_cases(
                 cast(TestCase.tags, String).ilike(needle),
             )
         )
+    if deleted == "active":
+        base_filters.append(TestCase.deleted_at.is_(None))
+    elif deleted == "deleted":
+        base_filters.append(TestCase.deleted_at.is_not(None))
     for f in base_filters:
         stmt = stmt.where(f)
     if status:
@@ -179,6 +177,19 @@ async def list_cases(
         total_stmt = total_stmt.where(TestCase.review_status == status)
     counts_rows = (await session.execute(counts_stmt)).all()
     counts: dict[str, int] = {row[0]: row[1] for row in counts_rows}
+    coverage_ids = {r.coverage_id for r in rows if r.coverage_id}
+    coverages = (
+        (
+            await session.execute(
+                select(CoverageItem).where(CoverageItem.coverage_id.in_(coverage_ids))
+            )
+        )
+        .scalars()
+        .all()
+        if coverage_ids
+        else []
+    )
+    coverage_deleted_at = {coverage.coverage_id: coverage.deleted_at for coverage in coverages}
 
     # `total` is the full-table count for this project (matching what
     # `counts_by_status` sums to) so the UI can detect "we returned 200
@@ -186,7 +197,15 @@ async def list_cases(
     # "all (264) / 200 selected" inconsistency users hit before.
     total = int((await session.execute(total_stmt)).scalar_one())
     return {
-        "data": [r.model_dump() for r in rows],
+        "data": [
+            {
+                **r.model_dump(),
+                "source_coverage_deleted_at": (
+                    coverage_deleted_at.get(r.coverage_id) if r.coverage_id else None
+                ),
+            }
+            for r in rows
+        ],
         "count": len(rows),
         "counts_by_status": counts,
         "total": total,
@@ -203,7 +222,7 @@ async def export_cases(
     format: Literal["json", "csv"] = "json",
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(TestCase).order_by(desc(TestCase.created_at))
+    stmt = select(TestCase).where(TestCase.deleted_at.is_(None)).order_by(desc(TestCase.created_at))
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session
@@ -371,9 +390,11 @@ async def delete_case(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Hard-delete a case. Approved cases are protected — the contract is
+    """Soft-delete a case. Approved cases are protected — the contract is
     that approved == human-confirmed, and one accidental click shouldn't
-    erase that signal. Reject the case first if you really need it gone."""
+    hide that signal. Reject the case first if you really need it gone.
+
+    Run history is preserved for forensic review and diagnosis."""
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
@@ -386,15 +407,62 @@ async def delete_case(
             detail="approved cases cannot be deleted; reject it first if you really mean to remove",
         )
     prior = row.review_status
-    run_history_deleted = await _delete_case_run_history(session, case_id)
-    await session.delete(row)
+    row.deleted_at = datetime.now(UTC)
+    row.deleted_by = _actor_id(request)
+    row.delete_reason = "manual"
+    row.updated_at = datetime.now(UTC)
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="case.soft_deleted",
+        method=request.method,
+        path=request.url.path,
+        status_code=204,
+        target_type="case",
+        target_id=case_id,
+        detail=f"prior_status={prior}",
+        session=session,
+    )
     await session.commit()
     log.info(
-        "case.deleted",
+        "case.soft_deleted",
         case_id=case_id,
         prior_status=prior,
-        run_history_deleted=run_history_deleted,
     )
+
+
+@router.post("/{case_id}/restore")
+async def restore_case(
+    case_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await session.get(TestCase, case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="case not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "reviewer", session
+    )
+    if row.coverage_id:
+        coverage = await session.get(CoverageItem, row.coverage_id)
+        if coverage is not None and coverage.deleted_at is not None:
+            raise HTTPException(status_code=409, detail="restore linked coverage before case")
+    row.deleted_at = None
+    row.deleted_by = ""
+    row.delete_reason = ""
+    row.updated_at = datetime.now(UTC)
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="case.restored",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="case",
+        target_id=case_id,
+        session=session,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return {"data": row.model_dump()}
 
 
 @router.get("/{case_id}")
@@ -422,6 +490,8 @@ async def review_case(
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    if row.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="restore case before review")
     await require_project_role(
         getattr(request.state, "user", None), row.project_id, "reviewer", session
     )
@@ -502,6 +572,9 @@ async def bulk_review(
     skipped_already_at_state: list[str] = []
     skipped_wrong_state: list[str] = []
     for r in rows:
+        if r.deleted_at is not None:
+            skipped_wrong_state.append(r.case_id)
+            continue
         if r.review_status == target:
             skipped_already_at_state.append(r.case_id)
             continue
@@ -572,15 +645,17 @@ async def bulk_delete(
     found_ids = {r.case_id for r in rows}
     missing = [cid for cid in body.case_ids if cid not in found_ids]
 
+    now = datetime.now(UTC)
     deleted: list[str] = []
     skipped_approved: list[str] = []
-    run_history_deleted = 0
     for r in rows:
         if r.review_status == "approved":
             skipped_approved.append(r.case_id)
             continue
-        run_history_deleted += await _delete_case_run_history(session, r.case_id)
-        await session.delete(r)
+        r.deleted_at = now
+        r.deleted_by = _actor_id(request)
+        r.delete_reason = "bulk_manual"
+        r.updated_at = now
         deleted.append(r.case_id)
     await session.commit()
     log.info(
@@ -588,7 +663,6 @@ async def bulk_delete(
         deleted_count=len(deleted),
         skipped_approved_count=len(skipped_approved),
         missing_count=len(missing),
-        run_history_deleted=run_history_deleted,
     )
     return {
         "data": {
@@ -614,6 +688,8 @@ async def edit_case(
     row = await session.get(TestCase, case_id)
     if row is None:
         raise HTTPException(status_code=404, detail="case not found")
+    if row.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="restore case before editing")
     await require_project_role(
         getattr(request.state, "user", None), row.project_id, "reviewer", session
     )

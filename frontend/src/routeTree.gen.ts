@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as RunsRouteImport } from './routes/runs'
 import { Route as QueueRouteImport } from './routes/queue'
 import { Route as PrdRouteImport } from './routes/prd'
+import { Route as CoverageRouteImport } from './routes/coverage'
 import { Route as CasesRouteImport } from './routes/cases'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsIndexRouteImport } from './routes/runs.index'
@@ -31,6 +32,11 @@ const QueueRoute = QueueRouteImport.update({
 const PrdRoute = PrdRouteImport.update({
   id: '/prd',
   path: '/prd',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CoverageRoute = CoverageRouteImport.update({
+  id: '/coverage',
+  path: '/coverage',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CasesRoute = CasesRouteImport.update({
@@ -62,6 +68,7 @@ const DiagnosisIdRoute = DiagnosisIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
+  '/coverage': typeof CoverageRoute
   '/prd': typeof PrdRoute
   '/queue': typeof QueueRoute
   '/runs': typeof RunsRouteWithChildren
@@ -72,6 +79,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
+  '/coverage': typeof CoverageRoute
   '/prd': typeof PrdRoute
   '/queue': typeof QueueRoute
   '/diagnosis/$id': typeof DiagnosisIdRoute
@@ -82,6 +90,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/cases': typeof CasesRoute
+  '/coverage': typeof CoverageRoute
   '/prd': typeof PrdRoute
   '/queue': typeof QueueRoute
   '/runs': typeof RunsRouteWithChildren
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/cases'
+    | '/coverage'
     | '/prd'
     | '/queue'
     | '/runs'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/cases'
+    | '/coverage'
     | '/prd'
     | '/queue'
     | '/diagnosis/$id'
@@ -113,6 +124,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/cases'
+    | '/coverage'
     | '/prd'
     | '/queue'
     | '/runs'
@@ -124,6 +136,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CasesRoute: typeof CasesRoute
+  CoverageRoute: typeof CoverageRoute
   PrdRoute: typeof PrdRoute
   QueueRoute: typeof QueueRoute
   RunsRoute: typeof RunsRouteWithChildren
@@ -151,6 +164,13 @@ declare module '@tanstack/react-router' {
       path: '/prd'
       fullPath: '/prd'
       preLoaderRoute: typeof PrdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/coverage': {
+      id: '/coverage'
+      path: '/coverage'
+      fullPath: '/coverage'
+      preLoaderRoute: typeof CoverageRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/cases': {
@@ -206,6 +226,7 @@ const RunsRouteWithChildren = RunsRoute._addFileChildren(RunsRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CasesRoute: CasesRoute,
+  CoverageRoute: CoverageRoute,
   PrdRoute: PrdRoute,
   QueueRoute: QueueRoute,
   RunsRoute: RunsRouteWithChildren,

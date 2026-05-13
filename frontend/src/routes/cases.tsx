@@ -48,6 +48,8 @@ interface CaseRow {
   preconditions: string[];
   version: number;
   created_at: string;
+  deleted_at?: string | null;
+  source_coverage_deleted_at?: string | null;
 }
 
 interface CasesResponse {
@@ -735,7 +737,7 @@ function CasesPage() {
                     (approvedCount > 0
                       ? `${approvedCount} approved case${approvedCount > 1 ? "s" : ""} in selection will be skipped — reject ${approvedCount > 1 ? "them" : "it"} first if you want ${approvedCount > 1 ? "them" : "it"} gone too.\n`
                       : "") +
-                    `This cannot be undone.`,
+                    `The selected cases will be hidden from active review. Historical runs stay available for audit and diagnosis, and the cases can be restored later.`,
                 )
               ) {
                 bulkDelete.mutate(ids);
@@ -811,7 +813,11 @@ function CasesPage() {
                     createFeedback.mutate({ case_id: c.case_id, ...payload })
                   }
                   onDelete={() => {
-                    if (window.confirm(`Delete ${c.case_id}? This cannot be undone.`)) {
+                    if (
+                      window.confirm(
+                        `Delete ${c.case_id}?\n\nThe case will be hidden from active review. Historical runs stay available for audit and diagnosis, and the case can be restored later.`,
+                      )
+                    ) {
                       deleteMut.mutate(c.case_id);
                     }
                   }}
@@ -1286,6 +1292,14 @@ function CaseRowView({
         <td className="p-2">
           <div className="font-medium">{c.name}</div>
           <div className="text-xs text-slate-500 truncate">{c.intent}</div>
+          {c.source_coverage_deleted_at && (
+            <div
+              className="mt-1 inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700"
+              title="linked coverage has been deleted"
+            >
+              coverage deleted
+            </div>
+          )}
           <QualityBadges quality={c.quality} />
         </td>
         <td className="p-2">

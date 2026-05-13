@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -103,6 +104,7 @@ async def _active_run_for_case(session: AsyncSession, *, case_id: str) -> Run | 
             await session.execute(
                 select(Run)
                 .where(Run.case_id == case_id)
+                .where(Run.deleted_at.is_(None))
                 .where(Run.status.in_(["pending", "running"]))
                 .order_by(desc(Run.created_at))
                 .limit(1)
@@ -136,6 +138,8 @@ async def create_runs(
         case = await session.get(TestCase, cid)
         if case is None:
             raise HTTPException(status_code=404, detail=f"case {cid} not found")
+        if case.deleted_at is not None:
+            raise HTTPException(status_code=409, detail=f"restore case {cid} before it can run")
         if case.review_status != "approved":
             raise HTTPException(
                 status_code=409,
@@ -181,6 +185,7 @@ async def list_runs(
     request: Request,
     project_id: str | None = None,
     case_id: str | None = None,
+    deleted: Literal["active", "deleted", "all"] = "active",
     limit: int = Query(default=50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -198,8 +203,27 @@ async def list_runs(
             stmt = stmt.where(Run.project_id.in_(allowed))
     if case_id:
         stmt = stmt.where(Run.case_id == case_id)
+    if deleted == "active":
+        stmt = stmt.where(Run.deleted_at.is_(None))
+    elif deleted == "deleted":
+        stmt = stmt.where(Run.deleted_at.is_not(None))
     rows = (await session.execute(stmt)).scalars().all()
-    return {"data": [r.model_dump() for r in rows], "count": len(rows)}
+    case_ids = {row.case_id for row in rows}
+    cases = (
+        (await session.execute(select(TestCase).where(TestCase.case_id.in_(case_ids))))
+        .scalars()
+        .all()
+        if case_ids
+        else []
+    )
+    case_deleted_at = {case.case_id: case.deleted_at for case in cases}
+    return {
+        "data": [
+            {**r.model_dump(), "source_case_deleted_at": case_deleted_at.get(r.case_id)}
+            for r in rows
+        ],
+        "count": len(rows),
+    }
 
 
 @router.get("/queue")
@@ -212,6 +236,7 @@ async def get_run_queue(
     stmt = (
         select(Run)
         .where(_has_live_case_filter())
+        .where(Run.deleted_at.is_(None))
         .where(Run.status.in_(["pending", "running"]))
         .order_by(Run.created_at)
         .limit(limit)
@@ -257,7 +282,13 @@ async def get_run_trends(
     limit: int = Query(default=1000, ge=1, le=5000),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    stmt = select(Run).where(_has_live_case_filter()).order_by(desc(Run.created_at)).limit(limit)
+    stmt = (
+        select(Run)
+        .where(_has_live_case_filter())
+        .where(Run.deleted_at.is_(None))
+        .order_by(desc(Run.created_at))
+        .limit(limit)
+    )
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session
@@ -346,6 +377,67 @@ async def cancel_run(
     return {"data": {"run_id": run_id, "status": "cancelled", "rolled_back": True}}
 
 
+@router.delete("/{run_id}", status_code=204)
+async def delete_run(
+    run_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_project_role(
+        getattr(request.state, "user", None), run.project_id, "reviewer", session
+    )
+    if run.status in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="cancel active run before deleting")
+    run.deleted_at = datetime.now(UTC)
+    run.deleted_by = str((getattr(request.state, "user", None) or {}).get("sub", ""))
+    run.delete_reason = "manual"
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="run.soft_deleted",
+        method=request.method,
+        path=request.url.path,
+        status_code=204,
+        target_type="run",
+        target_id=run_id,
+        detail=f"case_id={run.case_id}; status={run.status}",
+        session=session,
+    )
+    await session.commit()
+
+
+@router.post("/{run_id}/restore")
+async def restore_run(
+    run_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_project_role(
+        getattr(request.state, "user", None), run.project_id, "reviewer", session
+    )
+    run.deleted_at = None
+    run.deleted_by = ""
+    run.delete_reason = ""
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="run.restored",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="run",
+        target_id=run_id,
+        session=session,
+    )
+    await session.commit()
+    await session.refresh(run)
+    return {"data": run.model_dump()}
+
+
 @router.get("/{run_id}")
 async def get_run(
     run_id: str,
@@ -363,7 +455,10 @@ async def get_run(
     case = await session.get(TestCase, run.case_id)
     return {
         "data": {
-            "run": run.model_dump(),
+            "run": {
+                **run.model_dump(),
+                "source_case_deleted_at": case.deleted_at if case else None,
+            },
             "steps": [s.model_dump() for s in steps],
             "failure_context": _failure_context(steps),
             "failure_summary": _failure_summary(run, steps, case),

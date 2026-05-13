@@ -13,12 +13,15 @@ import re
 from dataclasses import dataclass
 from uuid import uuid4
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm import get_gateway
+from app.llm import LLMError, get_gateway
 from app.llm.prompts.registry import render
 from app.models import PRD, CoverageItem, RequirementItem
 from app.services.prd_parser import Chapter
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,7 @@ async def analyze_prd_chapters(
     session: AsyncSession,
     prd: PRD,
     chapter_indices: list[int] | None = None,
-    prefer_provider: str | None = None,
+    prefer_provider: str | None = "auto",
     output_language: str = "auto",
 ) -> DesignAnalysisResult:
     chapters = [Chapter(**c) for c in prd.chapters]
@@ -44,16 +47,10 @@ async def analyze_prd_chapters(
     coverage_items: list[CoverageItem] = []
     for index in indices:
         chapter = chapters[index]
+        if _should_skip_chapter(chapter):
+            continue
         language = _resolve_output_language(output_language, chapter)
-        if prefer_provider:
-            chapter_requirements, chapter_coverage = await _llm_design_from_chapter(
-                prd=prd,
-                chapter=chapter,
-                chapter_index=index,
-                prefer_provider=prefer_provider,
-                output_language=language,
-            )
-        else:
+        if prefer_provider == "fallback":
             requirement = _requirement_from_chapter(
                 prd=prd,
                 chapter=chapter,
@@ -69,6 +66,37 @@ async def analyze_prd_chapters(
             )
             chapter_requirements = [requirement]
             chapter_coverage = [coverage]
+        else:
+            try:
+                chapter_requirements, chapter_coverage = await _llm_design_from_chapter(
+                    prd=prd,
+                    chapter=chapter,
+                    chapter_index=index,
+                    prefer_provider=None if prefer_provider == "auto" else prefer_provider,
+                    output_language=language,
+                )
+            except (LLMError, json.JSONDecodeError) as exc:
+                log.warning(
+                    "design.analysis.fallback",
+                    prd_id=prd.prd_id,
+                    chapter_index=index,
+                    reason=type(exc).__name__,
+                )
+                requirement = _requirement_from_chapter(
+                    prd=prd,
+                    chapter=chapter,
+                    chapter_index=index,
+                    output_language=language,
+                )
+                coverage = _coverage_from_requirement(
+                    prd=prd,
+                    chapter=chapter,
+                    chapter_index=index,
+                    requirement=requirement,
+                    output_language=language,
+                )
+                chapter_requirements = [requirement]
+                chapter_coverage = [coverage]
         for requirement in chapter_requirements:
             session.add(requirement)
         for coverage in chapter_coverage:
@@ -85,7 +113,7 @@ async def _llm_design_from_chapter(
     prd: PRD,
     chapter: Chapter,
     chapter_index: int,
-    prefer_provider: str,
+    prefer_provider: str | None,
     output_language: str,
 ) -> tuple[list[RequirementItem], list[CoverageItem]]:
     prompt = render(
@@ -270,6 +298,30 @@ def _resolve_output_language(requested: str, chapter: Chapter) -> str:
     if requested in {"zh", "en"}:
         return requested
     return "zh" if _contains_cjk(f"{chapter.title}\n{chapter.body}") else "en"
+
+
+def _should_skip_chapter(chapter: Chapter) -> bool:
+    title = re.sub(r"^\d+\.?\s*", "", chapter.title).strip().lower()
+    body = _compact_text(chapter.body).lower()
+    metadata_titles = {
+        "table of contents",
+        "document information",
+        "external reference links",
+        "project responsible persons",
+        "responsible persons",
+        "references",
+        "changelog",
+        "revision history",
+    }
+    if title in metadata_titles:
+        return True
+    table_lines = [line for line in chapter.body.splitlines() if line.strip().startswith("|")]
+    if len(table_lines) >= 2 and not re.search(
+        r"\b(user|admin|investor|must|should|can|cannot|required|permission|flow|submit|approve|reject)\b",
+        body,
+    ):
+        return True
+    return False
 
 
 def _contains_cjk(text: str) -> bool:

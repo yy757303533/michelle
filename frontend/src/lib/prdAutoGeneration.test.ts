@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveCoveredChapterIndices,
   deriveHandledChapterIndices,
   parseStoredAutoGeneration,
   selectNextChapterBatch,
@@ -84,12 +85,25 @@ describe("deriveHandledChapterIndices", () => {
   });
 });
 
+describe("deriveCoveredChapterIndices", () => {
+  it("counts selected chapters that already have coverage rows", () => {
+    expect(
+      deriveCoveredChapterIndices({
+        coverage: [{ chapter_index: 0 }, { chapter_index: 2 }, { chapter_index: 9 }],
+        selectedChapterIndices: [0, 1, 2, 3],
+      }),
+    ).toEqual([0, 2]);
+  });
+});
+
 describe("auto generation persistence", () => {
   const state = {
     active: true,
     selectedChapterIndices: [0, 1, 2, 3, 4, 5],
     processedChapterIndices: [0, 1],
     batchSize: 5,
+    inFlightChapterIndices: [2, 3, 4, 5],
+    inFlightStartedAt: 1710000000000,
   };
 
   it("round-trips valid auto generation state", () => {

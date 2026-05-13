@@ -85,6 +85,50 @@ async def test_list_runs_hides_runs_for_deleted_cases(session, app_client):
 
 
 @pytest.mark.asyncio
+async def test_list_runs_keeps_runs_for_soft_deleted_cases_with_source_status(
+    session, app_client
+):
+    session.add(Project(project_id="demo", name="Demo"))
+    case = _case("TC-r1")
+    case.review_status = "pending"
+    session.add(case)
+    session.add(_run("r1", "passed"))
+    await session.commit()
+
+    deleted = await app_client.delete("/api/cases/TC-r1")
+    assert deleted.status_code == 204
+
+    r = await app_client.get("/api/runs/?project_id=demo")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["run_id"] for row in body["data"]] == ["r1"]
+    assert body["data"][0]["source_case_deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_run_soft_deletes_and_restore_reactivates(session, app_client):
+    session.add(Project(project_id="demo", name="Demo"))
+    session.add(_case("TC-r1"))
+    session.add(_run("r1", "passed"))
+    await session.commit()
+
+    deleted = await app_client.delete("/api/runs/r1")
+    assert deleted.status_code == 204
+    row = await session.get(Run, "r1")
+    assert row is not None
+    assert row.deleted_at is not None
+
+    active = await app_client.get("/api/runs/?project_id=demo")
+    assert active.status_code == 200
+    assert active.json()["data"] == []
+
+    restored = await app_client.post("/api/runs/r1/restore")
+    assert restored.status_code == 200
+    assert restored.json()["data"]["deleted_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_queue_lists_pending_and_running(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
     session.add(_case("TC-r1"))

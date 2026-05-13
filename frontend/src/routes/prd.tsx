@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useCurrentProject } from "../lib/useCurrentProject";
@@ -6,6 +6,7 @@ import { ProjectTargetBadge } from "../components/ProjectTargetBadge";
 import { apiFetch } from "../lib/adminAuth";
 import { parseMarkdownPreview, type MarkdownBlock } from "../lib/markdownPreview";
 import {
+  deriveCoveredChapterIndices,
   deriveHandledChapterIndices as deriveHandledChapterIndicesFromState,
   parseStoredAutoGeneration,
   selectNextChapterBatch,
@@ -19,6 +20,7 @@ const GENERATION_TIMEOUT_KEY = "prd_analysis_timeout_seconds";
 const OUTPUT_LANGUAGE_KEY = "prd_analysis_output_language";
 const AUTO_GENERATION_KEY_PREFIX = "prd_auto_generation";
 const RECOMMENDED_CHAPTERS_PER_RUN = 5;
+const MAX_CHAPTERS_PER_RUN = 10;
 const DEFAULT_GENERATION_TIMEOUT_SECONDS = 180;
 type OutputLanguage = "zh" | "en" | "auto";
 
@@ -39,7 +41,9 @@ function writePrdIdToUrl(prdId: string) {
 
 function readChaptersPerRun(): string {
   if (typeof window === "undefined") return String(RECOMMENDED_CHAPTERS_PER_RUN);
-  return window.localStorage.getItem(CHAPTERS_PER_RUN_KEY) ?? String(RECOMMENDED_CHAPTERS_PER_RUN);
+  const stored = Number.parseInt(window.localStorage.getItem(CHAPTERS_PER_RUN_KEY) ?? "", 10);
+  if (!Number.isFinite(stored) || stored < 1) return String(RECOMMENDED_CHAPTERS_PER_RUN);
+  return String(Math.min(MAX_CHAPTERS_PER_RUN, stored));
 }
 
 function readGenerationTimeout(): string {
@@ -151,6 +155,7 @@ interface GenerateAcceptResponse {
     project_id: string;
     requirements_created: number;
     coverage_created: number;
+    coverage_replaced?: number;
     requirement_ids: string[];
     coverage_ids: string[];
   };
@@ -186,6 +191,8 @@ type PrdViewTab = "chapters" | "preview" | "raw";
 
 interface GenerateVariables {
   chapterIndices: number[];
+  selectedChapterIndices?: number[];
+  batchSize?: number;
 }
 
 interface PRDListItem {
@@ -282,46 +289,12 @@ function PrdPage() {
   const coverage = useQuery({
     queryKey: ["coverage", uploaded?.prd_id],
     enabled: Boolean(uploaded?.prd_id),
+    refetchInterval: () => (autoGeneration?.active ? 5000 : false),
     queryFn: async (): Promise<{ data: CoverageRow[]; count: number }> => {
       if (!uploaded) throw new Error("upload first");
       const r = await apiFetch(`/api/coverage/?prd_id=${encodeURIComponent(uploaded.prd_id)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
-    },
-  });
-
-  const reviewCoverage = useMutation({
-    mutationFn: async ({
-      coverageId,
-      action,
-    }: {
-      coverageId: string;
-      action: "accept" | "reject" | "reset";
-    }) => {
-      const r = await apiFetch(`/api/coverage/${coverageId}/review`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["coverage", uploaded?.prd_id] });
-    },
-  });
-
-  const draftCoverageCase = useMutation({
-    mutationFn: async (coverageId: string) => {
-      const r = await apiFetch(`/api/coverage/${coverageId}/draft-case`, { method: "POST" });
-      if (!r.ok) throw new Error(await r.text());
-      return r.json();
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["coverage", uploaded?.prd_id] });
-      qc.invalidateQueries({ queryKey: ["cases"] });
-      qc.invalidateQueries({ queryKey: ["cases-summary"] });
-      qc.invalidateQueries({ queryKey: ["cases-for-prd-overlay"] });
     },
   });
 
@@ -386,8 +359,8 @@ function PrdPage() {
 
   function parseChaptersPerRunInput(): number {
     const raw = Number.parseInt(chaptersPerRunInput, 10);
-    if (!Number.isFinite(raw) || raw < 1 || raw > 90) {
-      throw new Error("chapters per run must be between 1 and 90");
+    if (!Number.isFinite(raw) || raw < 1 || raw > MAX_CHAPTERS_PER_RUN) {
+      throw new Error(`chapters per run must be between 1 and ${MAX_CHAPTERS_PER_RUN}`);
     }
     return raw;
   }
@@ -412,6 +385,14 @@ function PrdPage() {
       throw new Error("batch timeout must be between 30s and 1800s");
     }
     return raw;
+  }
+
+  function generationTimeoutSeconds(): number {
+    try {
+      return parseGenerationTimeoutInput();
+    } catch {
+      return DEFAULT_GENERATION_TIMEOUT_SECONDS;
+    }
   }
 
   function persistGenerationTimeoutFromInput() {
@@ -543,14 +524,48 @@ function PrdPage() {
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
-    onSuccess: (resp) => {
+    onSuccess: (resp, variables) => {
       setActiveJobId(null);
-      setAutoGeneration(null);
-      if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, null);
       qc.invalidateQueries({ queryKey: ["coverage"] });
       qc.invalidateQueries({ queryKey: ["coverage", resp.data.prd_id] });
+      qc.invalidateQueries({ queryKey: ["coverage-workbench"] });
       qc.invalidateQueries({ queryKey: ["cases"] });
       qc.invalidateQueries({ queryKey: ["cases-summary"] });
+
+      const selectedChapterIndices = variables.selectedChapterIndices;
+      const batchSize = variables.batchSize;
+      if (!uploaded || !selectedChapterIndices || !batchSize) {
+        setAutoGeneration(null);
+        if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, null);
+        return;
+      }
+
+      const previousProcessed = autoGeneration?.processedChapterIndices ?? [];
+      const processedChapterIndices = [
+        ...new Set([...previousProcessed, ...variables.chapterIndices]),
+      ].sort((a, b) => a - b);
+      const nextBatch = selectNextChapterBatch({
+        selectedChapterIndices,
+        processedChapterIndices,
+        batchSize,
+      });
+      const nextState = {
+        active: nextBatch.length > 0,
+        selectedChapterIndices,
+        processedChapterIndices,
+        batchSize,
+        inFlightChapterIndices: nextBatch.length > 0 ? nextBatch : undefined,
+        inFlightStartedAt: nextBatch.length > 0 ? Date.now() : undefined,
+      };
+      setAutoGeneration(nextBatch.length > 0 ? nextState : null);
+      writeStoredAutoGeneration(uploaded.prd_id, nextBatch.length > 0 ? nextState : null);
+      if (nextBatch.length > 0) {
+        generate.mutate({ chapterIndices: nextBatch, selectedChapterIndices, batchSize });
+      }
+    },
+    onError: () => {
+      setAutoGeneration(null);
+      if (uploaded) writeStoredAutoGeneration(uploaded.prd_id, null);
     },
   });
 
@@ -597,7 +612,23 @@ function PrdPage() {
     writeStoredAutoGeneration(uploaded.prd_id, null);
     handledTerminalJobIds.current.clear();
     if (selectedChapterIndices.length > 0) {
-      generate.mutate({ chapterIndices: selectedChapterIndices });
+      const batchSize = chaptersPerRun;
+      const nextBatch = selectNextChapterBatch({
+        selectedChapterIndices,
+        processedChapterIndices: [],
+        batchSize,
+      });
+      const nextState = {
+        active: nextBatch.length > 0,
+        selectedChapterIndices,
+        processedChapterIndices: [],
+        batchSize,
+        inFlightChapterIndices: nextBatch,
+        inFlightStartedAt: Date.now(),
+      };
+      setAutoGeneration(nextState);
+      writeStoredAutoGeneration(uploaded.prd_id, nextState);
+      generate.mutate({ chapterIndices: nextBatch, selectedChapterIndices, batchSize });
     }
   }
 
@@ -679,7 +710,78 @@ function PrdPage() {
   });
 
   const effectiveJob = job.data?.data ?? activeServerJob;
-  const isGenerating = generate.isPending;
+  const isAutoGenerationActive =
+    generate.isPending ||
+    Boolean(autoGeneration?.active) ||
+    effectiveJob?.status === "pending" ||
+    effectiveJob?.status === "running";
+
+  useEffect(() => {
+    if (!uploaded || !autoGeneration?.active || !coverage.data || generate.isPending) return;
+    if (effectiveJob?.status === "pending" || effectiveJob?.status === "running") return;
+
+    const coveredChapterIndices = deriveCoveredChapterIndices({
+      coverage: coverage.data.data,
+      selectedChapterIndices: autoGeneration.selectedChapterIndices,
+    });
+    const processedChapterIndices = [
+      ...new Set([
+        ...autoGeneration.processedChapterIndices,
+        ...coveredChapterIndices,
+      ]),
+    ].sort((a, b) => a - b);
+    const processed = new Set(processedChapterIndices);
+    const inFlightChapterIndices = autoGeneration.inFlightChapterIndices ?? [];
+    const inFlightStartedAt = autoGeneration.inFlightStartedAt ?? 0;
+    const inFlightCovered =
+      inFlightChapterIndices.length > 0 &&
+      inFlightChapterIndices.every((index) => processed.has(index));
+    const inFlightExpired =
+      inFlightChapterIndices.length > 0 &&
+      Date.now() - inFlightStartedAt > generationTimeoutSeconds() * 1000 + 5000;
+
+    if (inFlightChapterIndices.length > 0 && !inFlightCovered && !inFlightExpired) {
+      if (
+        processedChapterIndices.join(",") !==
+        autoGeneration.processedChapterIndices.join(",")
+      ) {
+        const nextState = {
+          ...autoGeneration,
+          processedChapterIndices,
+        };
+        setAutoGeneration(nextState);
+        writeStoredAutoGeneration(uploaded.prd_id, nextState);
+      }
+      return;
+    }
+
+    const nextBatch = selectNextChapterBatch({
+      selectedChapterIndices: autoGeneration.selectedChapterIndices,
+      processedChapterIndices,
+      batchSize: autoGeneration.batchSize,
+    });
+    if (nextBatch.length === 0) {
+      setAutoGeneration(null);
+      writeStoredAutoGeneration(uploaded.prd_id, null);
+      return;
+    }
+
+    const nextState = {
+      ...autoGeneration,
+      active: true,
+      processedChapterIndices,
+      inFlightChapterIndices: nextBatch,
+      inFlightStartedAt: Date.now(),
+    };
+    setAutoGeneration(nextState);
+    writeStoredAutoGeneration(uploaded.prd_id, nextState);
+    generate.mutate({
+      chapterIndices: nextBatch,
+      selectedChapterIndices: autoGeneration.selectedChapterIndices,
+      batchSize: autoGeneration.batchSize,
+    });
+  }, [autoGeneration, coverage.data, effectiveJob?.status, generate.isPending, uploaded]);
+
   useEffect(() => {
     if (!autoGeneration?.active || !effectiveJob) return;
     if (
@@ -716,20 +818,26 @@ function PrdPage() {
       ...autoGeneration,
       active: nextBatch.length > 0,
       processedChapterIndices,
+      inFlightChapterIndices: nextBatch.length > 0 ? nextBatch : undefined,
+      inFlightStartedAt: nextBatch.length > 0 ? Date.now() : undefined,
     };
     setAutoGeneration(nextState);
     if (uploaded) {
       writeStoredAutoGeneration(uploaded.prd_id, nextBatch.length > 0 ? nextState : null);
     }
     if (nextBatch.length > 0) {
-      generate.mutate({ chapterIndices: nextBatch });
+      generate.mutate({
+        chapterIndices: nextBatch,
+        selectedChapterIndices: autoGeneration.selectedChapterIndices,
+        batchSize: autoGeneration.batchSize,
+      });
     }
   }, [autoGeneration, effectiveJob, generate, uploaded]);
 
   const chaptersPerRun = (() => {
     const parsed = Number.parseInt(chaptersPerRunInput, 10);
     if (!Number.isFinite(parsed) || parsed < 1) return RECOMMENDED_CHAPTERS_PER_RUN;
-    return Math.min(90, parsed);
+    return Math.min(MAX_CHAPTERS_PER_RUN, parsed);
   })();
   const runChapterCount = Math.min(selected.size, chaptersPerRun);
   const autoProgress = (() => {
@@ -1059,120 +1167,21 @@ function PrdPage() {
           </div>
 
           <div className="border-t border-slate-100 pt-3">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-slate-400">
-                  Coverage review
-                </div>
-                <div className="text-xs text-slate-500">
-                  Accept coverage before drafting executable case reviews.
-                </div>
-              </div>
-              <span className="text-xs text-slate-500">
-                {coverage.data?.count ?? 0} items
+            <div className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-slate-50 p-3 text-sm">
+              <span className="text-slate-600">
+                Coverage review now lives in the dedicated workspace.
               </span>
+              <span className="text-xs text-slate-400">
+                {coverage.data?.count ?? 0} items for this PRD
+              </span>
+              <Link
+                to="/coverage"
+                search={{ prd_id: uploaded.prd_id }}
+                className="ml-auto rounded bg-slate-900 px-3 py-1.5 text-xs text-white hover:bg-slate-700"
+              >
+                Open Coverage
+              </Link>
             </div>
-            {coverage.isLoading ? (
-              <div className="text-sm text-slate-400">Loading coverage…</div>
-            ) : coverage.data?.data.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-left text-slate-400">
-                    <tr>
-                      <th className="pb-1">coverage</th>
-                      <th className="pb-1 w-24">risk</th>
-                      <th className="pb-1 w-24">status</th>
-                      <th className="pb-1 w-48">actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {coverage.data.data.map((row) => (
-                      <tr key={row.coverage_id} className="border-t border-slate-100">
-                        <td className="py-2 pr-3">
-                          <div className="font-medium text-slate-800">{row.title}</div>
-                          <div className="text-xs text-slate-500">{row.scenario}</div>
-                        </td>
-                        <td className="text-xs text-slate-600">
-                          {row.risk_type}
-                          <div className="text-slate-400">{row.coverage_type}</div>
-                        </td>
-                        <td>
-                          <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
-                            {row.review_status}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="flex flex-wrap gap-1">
-                            <button
-                              className="rounded border border-emerald-200 px-2 py-1 text-xs text-emerald-700 disabled:opacity-50"
-                              disabled={
-                                row.review_status === "accepted" || reviewCoverage.isPending
-                              }
-                              onClick={() =>
-                                reviewCoverage.mutate({
-                                  coverageId: row.coverage_id,
-                                  action: "accept",
-                                })
-                              }
-                            >
-                              Accept
-                            </button>
-                            <button
-                              className="rounded border border-red-200 px-2 py-1 text-xs text-red-700 disabled:opacity-50"
-                              disabled={
-                                row.review_status === "rejected" || reviewCoverage.isPending
-                              }
-                              onClick={() =>
-                                reviewCoverage.mutate({
-                                  coverageId: row.coverage_id,
-                                  action: "reject",
-                                })
-                              }
-                            >
-                              Reject
-                            </button>
-                            <button
-                              className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 disabled:opacity-50"
-                              disabled={
-                                row.review_status === "proposed" || reviewCoverage.isPending
-                              }
-                              onClick={() =>
-                                reviewCoverage.mutate({
-                                  coverageId: row.coverage_id,
-                                  action: "reset",
-                                })
-                              }
-                            >
-                              Reset
-                            </button>
-                            <button
-                              className="rounded bg-slate-900 px-2 py-1 text-xs text-white disabled:opacity-50"
-                              disabled={
-                                row.review_status !== "accepted" ||
-                                Boolean(row.linked_case_id) ||
-                                draftCoverageCase.isPending
-                              }
-                              onClick={() => draftCoverageCase.mutate(row.coverage_id)}
-                            >
-                              {row.linked_case_id ? "Drafted" : "Draft case"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="rounded border border-dashed border-slate-200 p-4 text-sm text-slate-500">
-                No coverage yet. Select chapters and analyze coverage.
-              </div>
-            )}
-            {(reviewCoverage.error || draftCoverageCase.error) && (
-              <pre className="mt-2 whitespace-pre-wrap text-xs text-red-600">
-                {((reviewCoverage.error || draftCoverageCase.error) as Error).message}
-              </pre>
-            )}
           </div>
 
           <div>
@@ -1182,7 +1191,7 @@ function PrdPage() {
                 disabled={
                   selected.size === 0 ||
                   jobs.isLoading ||
-                  isGenerating ||
+                  isAutoGenerationActive ||
                   saveTimeout.isPending
                 }
                 onClick={startAutoGeneration}
@@ -1193,6 +1202,8 @@ function PrdPage() {
                     ? autoProgress?.active
                       ? `generating ${autoProgress.processed}/${autoProgress.total} selected…`
                       : `generating ${effectiveJob.completed_chapters}/${effectiveJob.total_chapters}…`
+                    : autoProgress?.active
+                      ? `generating ${autoProgress.processed}/${autoProgress.total} selected…`
                     : `Analyze coverage for ${selected.size} chapter${selected.size === 1 ? "" : "s"}`}
               </button>
               <label className="inline-flex items-center gap-1 text-xs text-slate-500">
@@ -1200,10 +1211,10 @@ function PrdPage() {
                 <input
                   type="number"
                   min={1}
-                  max={90}
+                  max={MAX_CHAPTERS_PER_RUN}
                   step={1}
                   value={chaptersPerRunInput}
-                  disabled={generate.isPending || isGenerating}
+                  disabled={isAutoGenerationActive}
                   onChange={(e) => setChaptersPerRunInput(e.target.value)}
                   onBlur={persistChaptersPerRunFromInput}
                   onKeyDown={(e) => {
@@ -1227,7 +1238,7 @@ function PrdPage() {
                 Output
                 <select
                   value={outputLanguage}
-                  disabled={generate.isPending || isGenerating}
+                  disabled={isAutoGenerationActive}
                   onChange={(e) => updateOutputLanguage(e.target.value as OutputLanguage)}
                   className="border border-slate-200 rounded px-2 py-1 text-xs text-slate-700 disabled:bg-slate-50"
                 >
@@ -1244,7 +1255,7 @@ function PrdPage() {
                   max={runtimeSettings.data?.data.test_design_preflight_timeout_seconds.max ?? 300}
                   step={5}
                   value={preflightTimeoutInput}
-                  disabled={runtimeSettings.isLoading || saveTimeout.isPending || isGenerating}
+                  disabled={runtimeSettings.isLoading || saveTimeout.isPending || isAutoGenerationActive}
                   onChange={(e) => setPreflightTimeoutInput(e.target.value)}
                   onBlur={persistTimeoutFromInput}
                   onKeyDown={(e) => {
@@ -1264,7 +1275,7 @@ function PrdPage() {
                   max={1800}
                   step={30}
                   value={generationTimeoutInput}
-                  disabled={generate.isPending || isGenerating}
+                  disabled={isAutoGenerationActive}
                   onChange={(e) => setGenerationTimeoutInput(e.target.value)}
                   onBlur={persistGenerationTimeoutFromInput}
                   onKeyDown={(e) => {

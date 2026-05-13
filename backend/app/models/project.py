@@ -66,3 +66,9 @@ class PRD(SQLModel, table=True):
         default_factory=_utcnow,
         sa_column=Column(TZDateTime(), nullable=False),
     )
+    deleted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(TZDateTime(), nullable=True),
+    )
+    deleted_by: str = Field(default="", index=True)
+    delete_reason: str = ""

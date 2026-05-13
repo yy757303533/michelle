@@ -11,9 +11,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import desc, select
 
-from app.auth import accessible_project_ids, require_project_role
+from app.auth import accessible_project_ids, audit, require_project_role
 from app.db import get_session
-from app.models import PRD, DesignGenerationJob, Project
+from app.models import PRD, CoverageItem, DesignGenerationJob, Project
 from app.obs import EVENTS, get_logger
 from app.services.prd_diff import diff_prds
 from app.services.prd_parser import parse_prd
@@ -35,12 +35,18 @@ class AnalyzeRequest(BaseModel):
     chapter_indices: list[int] | None = None
     prefer_provider: str | None = None
     output_language: Literal["auto", "zh", "en"] = "auto"
+    replace_unreviewed: bool = False
+
+
+def _actor_id(request: Request) -> str:
+    return str((getattr(request.state, "user", None) or {}).get("sub", ""))
 
 
 @router.get("/")
 async def list_prds(
     request: Request,
     project_id: str | None = None,
+    deleted: Literal["active", "deleted", "all"] = "active",
     limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -56,6 +62,10 @@ async def list_prds(
             if not allowed:
                 return {"data": []}
             stmt = stmt.where(PRD.project_id.in_(allowed))
+    if deleted == "active":
+        stmt = stmt.where(PRD.deleted_at.is_(None))
+    elif deleted == "deleted":
+        stmt = stmt.where(PRD.deleted_at.is_not(None))
     rows = (await session.execute(stmt)).scalars().all()
     return {
         "data": [
@@ -66,6 +76,7 @@ async def list_prds(
                 "version": r.version,
                 "chapter_count": len(r.chapters),
                 "uploaded_at": r.uploaded_at.isoformat(),
+                "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
             }
             for r in rows
         ]
@@ -206,6 +217,7 @@ async def get_prd(
             "title": row.name,
             "version": row.version,
             "uploaded_at": row.uploaded_at.isoformat(),
+            "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
             "raw_markdown": row.raw_markdown,
             "chapters": chapters,
             "prior_version_id": row.prev_version_id,
@@ -224,6 +236,8 @@ async def analyze_prd(
     prd = await session.get(PRD, prd_id)
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD not found")
+    if prd.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="restore PRD before analyzing coverage")
     await require_project_role(
         getattr(request.state, "user", None), prd.project_id, "reviewer", session
     )
@@ -231,11 +245,31 @@ async def analyze_prd(
     from app.runtime_config import get_test_design_provider
     from app.services.test_design_planner import analyze_prd_chapters
 
+    replaced_count = 0
+    if body.replace_unreviewed:
+        now = datetime.now(UTC)
+        replace_stmt = (
+            select(CoverageItem)
+            .where(CoverageItem.prd_id == prd_id)
+            .where(CoverageItem.deleted_at.is_(None))
+            .where(CoverageItem.linked_case_id.is_(None))
+            .where(CoverageItem.review_status.in_(["proposed", "rejected", "stale"]))
+        )
+        if body.chapter_indices is not None:
+            replace_stmt = replace_stmt.where(CoverageItem.chapter_index.in_(body.chapter_indices))
+        replace_rows = (await session.execute(replace_stmt)).scalars().all()
+        for row in replace_rows:
+            row.deleted_at = now
+            row.deleted_by = _actor_id(request)
+            row.delete_reason = "regenerate_coverage"
+            row.updated_at = now
+        replaced_count = len(replace_rows)
+
     result = await analyze_prd_chapters(
         session=session,
         prd=prd,
         chapter_indices=body.chapter_indices,
-        prefer_provider=body.prefer_provider or await get_test_design_provider(session),
+        prefer_provider=body.prefer_provider or await get_test_design_provider(session) or "auto",
         output_language=body.output_language,
     )
     return {
@@ -244,6 +278,7 @@ async def analyze_prd(
             "project_id": prd.project_id,
             "requirements_created": len(result.requirements),
             "coverage_created": len(result.coverage),
+            "coverage_replaced": replaced_count,
             "requirement_ids": [row.requirement_id for row in result.requirements],
             "coverage_ids": [row.coverage_id for row in result.coverage],
         }
@@ -256,32 +291,64 @@ async def delete_prd(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    """Hard-delete a PRD record. Generated TestCases keep living — their
-    `generated_from` is just a string label, not a FK, so cases survive
-    on purpose: the user often wants to keep approved cases even after
-    pruning duplicate uploads.
-
-    Children that referenced this row via `prev_version_id` get the
-    pointer cleared so the version chain doesn't dangle."""
+    """Soft-delete a PRD record. Generated coverage/cases/runs stay available
+    as downstream evidence; lists hide the PRD by default until restored."""
     row = await session.get(PRD, prd_id)
     if row is None:
         raise HTTPException(status_code=404, detail="PRD not found")
     await require_project_role(
         getattr(request.state, "user", None), row.project_id, "reviewer", session
     )
-    children = (
-        (await session.execute(select(PRD).where(PRD.prev_version_id == prd_id))).scalars().all()
+    row.deleted_at = datetime.now(UTC)
+    row.deleted_by = _actor_id(request)
+    row.delete_reason = "manual"
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="prd.soft_deleted",
+        method=request.method,
+        path=request.url.path,
+        status_code=204,
+        target_type="prd",
+        target_id=prd_id,
+        detail=f"project_id={row.project_id}",
+        session=session,
     )
-    for c in children:
-        c.prev_version_id = None
-    await session.delete(row)
     await session.commit()
     log.info(
-        "prd.deleted",
+        "prd.soft_deleted",
         prd_id=prd_id,
         project_id=row.project_id,
-        children_unchained=len(children),
     )
+
+
+@router.post("/{prd_id}/restore")
+async def restore_prd(
+    prd_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await session.get(PRD, prd_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="PRD not found")
+    await require_project_role(
+        getattr(request.state, "user", None), row.project_id, "reviewer", session
+    )
+    row.deleted_at = None
+    row.deleted_by = ""
+    row.delete_reason = ""
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="prd.restored",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="prd",
+        target_id=prd_id,
+        session=session,
+    )
+    await session.commit()
+    await session.refresh(row)
+    return {"data": row.model_dump()}
 
 
 @router.get("/jobs/{job_id}")

@@ -3,6 +3,8 @@ export interface StoredAutoGenerationState {
   selectedChapterIndices: number[];
   processedChapterIndices: number[];
   batchSize: number;
+  inFlightChapterIndices?: number[];
+  inFlightStartedAt?: number;
 }
 
 export interface AutoGenerationChapter {
@@ -27,6 +29,10 @@ export interface AutoGenerationJobResult {
 export interface AutoGenerationJob {
   status: string;
   results: AutoGenerationJobResult[];
+}
+
+export interface AutoGenerationCoverage {
+  chapter_index: number;
 }
 
 export function selectNextChapterBatch({
@@ -89,6 +95,21 @@ export function deriveHandledChapterIndices({
   return selectedChapterIndices.filter((index) => handled.has(index));
 }
 
+export function deriveCoveredChapterIndices({
+  coverage,
+  selectedChapterIndices,
+}: {
+  coverage: AutoGenerationCoverage[];
+  selectedChapterIndices: number[];
+}): number[] {
+  const selected = new Set(selectedChapterIndices);
+  const covered = new Set<number>();
+  for (const row of coverage) {
+    if (selected.has(row.chapter_index)) covered.add(row.chapter_index);
+  }
+  return selectedChapterIndices.filter((index) => covered.has(index));
+}
+
 function isNumberArray(value: unknown): value is number[] {
   return Array.isArray(value) && value.every((item) => Number.isInteger(item));
 }
@@ -117,6 +138,14 @@ export function parseStoredAutoGeneration(raw: string | null): StoredAutoGenerat
       selectedChapterIndices: parsed.selectedChapterIndices,
       processedChapterIndices: parsed.processedChapterIndices,
       batchSize,
+      inFlightChapterIndices: isNumberArray(parsed.inFlightChapterIndices)
+        ? parsed.inFlightChapterIndices
+        : undefined,
+      inFlightStartedAt:
+        typeof parsed.inFlightStartedAt === "number" &&
+        Number.isFinite(parsed.inFlightStartedAt)
+          ? parsed.inFlightStartedAt
+          : undefined,
     };
   } catch {
     return null;
