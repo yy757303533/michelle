@@ -143,6 +143,36 @@ async def test_diagnose_run_persists_diagnosis(db):
 
 
 @pytest.mark.asyncio
+async def test_diagnose_run_with_dev_context_persists_evidence_pack(db, monkeypatch, tmp_path):
+    from app.config import settings
+
+    workspace = tmp_path / "workspace"
+    source_dir = workspace / "zstack" / "plugin" / "iam"
+    source_dir.mkdir(parents=True)
+    (source_dir / "LanguagePreferenceService.java").write_text(
+        "class LanguagePreferenceService { void save(){ /* element timeout */ } }",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "michelle_workspace_root", str(workspace))
+    monkeypatch.setattr(settings, "michelle_dev_context_repos", "zstack")
+    _seed_failed_run(db)
+    await db.commit()
+
+    fake = LLMResult(
+        text='{"category":"real_bug","confidence":0.7,"reasoning":"code context points to service",'
+        '"fix_suggestion":"inspect LanguagePreferenceService"}',
+        provider="mock",
+        model="mock-1",
+    )
+    with patch("app.services.diagnoser.get_gateway") as gw_mock:
+        gw_mock.return_value.chat = AsyncMock(return_value=fake)
+        diag = await diagnose_run(run_id="R1", session=db, include_dev_context=True)
+
+    assert diag.evidence_pack["code_context"]["candidate_files"]
+    assert diag.candidate_files[0]["path"].endswith("LanguagePreferenceService.java")
+
+
+@pytest.mark.asyncio
 async def test_diagnose_run_idempotent_unless_overwrite(db):
     _seed_failed_run(db)
     await db.commit()

@@ -57,6 +57,7 @@ async def diagnose_run(
     session: AsyncSession,
     prefer_provider: str | None = None,
     overwrite_existing: bool = False,
+    include_dev_context: bool = False,
 ) -> Diagnosis:
     """Generate a Diagnosis for a finished failed Run.
 
@@ -104,7 +105,19 @@ async def diagnose_run(
         steps[-1] if steps else None
     )
 
-    prompt = _render_prompt(run=run, case=case, steps=list(steps), failed_step=failed_step)
+    evidence_pack: dict[str, Any] = {}
+    if include_dev_context:
+        from app.services.dev_context.evidence import collect_run_dev_context
+
+        evidence_pack = await collect_run_dev_context(run_id=run_id, session=session)
+
+    prompt = _render_prompt(
+        run=run,
+        case=case,
+        steps=list(steps),
+        failed_step=failed_step,
+        evidence_pack=evidence_pack,
+    )
 
     # Pick screenshot bytes around the failed step (if any) for vision input.
     image_bytes = _read_screenshot_for_step(run=run, failed_step=failed_step)
@@ -180,6 +193,8 @@ async def diagnose_run(
         confidence=float(parsed.get("confidence") or 0.0),
         reasoning=parsed.get("reasoning", "")[:4000],
         fix_suggestion=parsed.get("fix_suggestion", "")[:2000],
+        evidence_pack=evidence_pack,
+        candidate_files=(evidence_pack.get("code_context") or {}).get("candidate_files") or [],
     )
     # Capture log fields before commit() in case the session is configured
     # with expire_on_commit=True (default). Without this, downstream lazy
@@ -300,6 +315,7 @@ def _render_prompt(
     case: TestCase | None,
     steps: list[StepEvent],
     failed_step: StepEvent | None,
+    evidence_pack: dict[str, Any] | None = None,
 ) -> str:
     case_summary = ""
     if case:
@@ -335,7 +351,7 @@ def _render_prompt(
             f" err={(s.error_message or '-')[:100]}"
         )
 
-    return render(
+    base = render(
         "diagnose",
         "v1",
         case_name=getattr(case, "name", run.case_id) or run.case_id,
@@ -345,6 +361,28 @@ def _render_prompt(
         trace_tail_lines=len(tail_lines),
         trace_tail="\n".join(tail_lines) or "(trace empty)",
     )
+    if not evidence_pack:
+        return base
+    return base + "\n\nDEV CONTEXT EVIDENCE:\n" + _format_dev_context(evidence_pack)
+
+
+def _format_dev_context(evidence_pack: dict[str, Any]) -> str:
+    code = evidence_pack.get("code_context") or {}
+    files = code.get("candidate_files") or []
+    lines = [
+        f"keywords: {', '.join(evidence_pack.get('keywords') or [])}",
+        f"workspace_root: {code.get('workspace_root') or ''}",
+    ]
+    for file in files[:8]:
+        lines.append(f"- {file.get('repo')}/{file.get('path')}")
+        for match in (file.get("matches") or [])[:3]:
+            lines.append(
+                f"  line {match.get('line_number')}: [{match.get('keyword')}] {match.get('line')}"
+            )
+    server_logs = evidence_pack.get("server_logs") or {}
+    if server_logs.get("configured"):
+        lines.append(f"server_logs_configured: {len(server_logs.get('servers') or [])}")
+    return "\n".join(lines)[:6000]
 
 
 def _read_screenshot_for_step(*, run: Run, failed_step: StepEvent | None) -> bytes | None:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import Column
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
 from app.models._types import TZDateTime
@@ -29,6 +30,8 @@ class Diagnosis(SQLModel, table=True):
     confidence: float = 0.0
     reasoning: str = ""
     fix_suggestion: str = ""
+    evidence_pack: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    candidate_files: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
 
     # Human feedback (key for sediment loop)
     human_feedback: str | None = None  # confirmed | wrong | partially_correct

@@ -26,6 +26,7 @@ router = APIRouter()
 class GenerateRequest(BaseModel):
     overwrite_existing: bool = False
     prefer_provider: str | None = None
+    include_dev_context: bool = False
 
 
 class FeedbackRequest(BaseModel):
@@ -168,6 +169,33 @@ async def trigger_diagnosis_for_run(
             session=session,
             prefer_provider=body.prefer_provider,
             overwrite_existing=body.overwrite_existing,
+            include_dev_context=body.include_dev_context,
+        )
+    except DiagnoserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"data": diag.model_dump()}
+
+
+@router.post("/by-run/{run_id}/generate-dev-context")
+async def trigger_dev_context_diagnosis_for_run(
+    run_id: str,
+    request: Request,
+    body: GenerateRequest = Body(default_factory=GenerateRequest),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    await require_project_role(
+        getattr(request.state, "user", None), run.project_id, "reviewer", session
+    )
+    try:
+        diag = await diagnose_run(
+            run_id=run_id,
+            session=session,
+            prefer_provider=body.prefer_provider,
+            overwrite_existing=body.overwrite_existing,
+            include_dev_context=True,
         )
     except DiagnoserError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

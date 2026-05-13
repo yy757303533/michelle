@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     """Shell-like argument string, e.g. /path/to/zstack-dev-mcp/dist/index.js."""
     michelle_zdev_mcp_cwd: str = ""
     michelle_zdev_mcp_timeout_seconds: int = 60
+    michelle_dev_context_repos: str = "zstack,zstack-ui-next,premium"
+    """Comma-separated workspace repos used by code-aware diagnosis."""
+    michelle_dev_context_max_files: int = 8
+    michelle_dev_context_max_matches_per_file: int = 3
+    michelle_server_logs_json: str = ""
+    """Optional JSON server log config for future SSH-controlled log collection."""
 
     @property
     def artifacts_path(self) -> Path:

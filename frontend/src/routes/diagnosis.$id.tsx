@@ -17,6 +17,28 @@ interface DiagnosisRow {
   confidence: number;
   reasoning: string;
   fix_suggestion: string;
+  evidence_pack?: {
+    keywords?: string[];
+    code_context?: {
+      candidate_files?: Array<{
+        repo: string;
+        path: string;
+        matches?: Array<{ keyword: string; line_number: number; line: string }>;
+      }>;
+    };
+    external_context?: {
+      jira?: Array<{ key: string; ok: boolean; text?: string; error?: string }>;
+      ci?: Array<{ job_id: number; ok: boolean; text?: string; error?: string }>;
+    };
+    server_logs?: {
+      snippets?: Array<{ server: string; path: string; ok: boolean; text?: string; error?: string }>;
+    };
+  };
+  candidate_files?: Array<{
+    repo: string;
+    path: string;
+    matches?: Array<{ keyword: string; line_number: number; line: string }>;
+  }>;
   human_feedback: string | null;
   feedback_note: string;
   feedback_target: string;
@@ -69,12 +91,17 @@ function DiagnosisDetailPage() {
   });
 
   const generate = useMutation({
-    mutationFn: async () => {
-      const r = await apiFetch(`/api/diagnosis/by-run/${id}/generate`, {
+    mutationFn: async (withDevContext: boolean = false) => {
+      const r = await apiFetch(
+        withDevContext
+          ? `/api/diagnosis/by-run/${id}/generate-dev-context`
+          : `/api/diagnosis/by-run/${id}/generate`,
+        {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ overwrite_existing: true }),
-      });
+        },
+      );
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -135,10 +162,17 @@ function DiagnosisDetailPage() {
           </div>
           <button
             disabled={generate.isPending}
-            onClick={() => generate.mutate()}
+            onClick={() => generate.mutate(false)}
             className="bg-slate-900 text-white text-sm px-3 py-1.5 rounded hover:bg-slate-700 disabled:opacity-50"
           >
             {generate.isPending ? "diagnosing… (may take 30s)" : "Run diagnosis"}
+          </button>
+          <button
+            disabled={generate.isPending}
+            onClick={() => generate.mutate(true)}
+            className="ml-2 bg-indigo-700 text-white text-sm px-3 py-1.5 rounded hover:bg-indigo-800 disabled:opacity-50"
+          >
+            Analyze with workspace context
           </button>
           {generate.error && (
             <pre className="text-xs text-red-600 whitespace-pre-wrap">
@@ -181,6 +215,51 @@ function DiagnosisDetailPage() {
               {diag.fix_suggestion || "(none)"}
             </p>
           </Section>
+
+          {((diag.candidate_files?.length ?? 0) > 0 ||
+            (diag.evidence_pack?.external_context?.jira?.length ?? 0) > 0 ||
+            (diag.evidence_pack?.external_context?.ci?.length ?? 0) > 0 ||
+            (diag.evidence_pack?.server_logs?.snippets?.length ?? 0) > 0) && (
+            <Section title="dev context evidence">
+              {diag.candidate_files && diag.candidate_files.length > 0 && (
+                <div className="space-y-2">
+                  {diag.candidate_files.slice(0, 6).map((file) => (
+                    <div key={`${file.repo}/${file.path}`} className="rounded border border-slate-200 p-2">
+                      <div className="font-mono text-xs text-slate-800">
+                        {file.repo}/{file.path}
+                      </div>
+                      {(file.matches ?? []).slice(0, 2).map((match) => (
+                        <div key={`${file.path}:${match.line_number}:${match.keyword}`} className="mt-1 text-xs text-slate-500 font-mono">
+                          {match.line_number}: {match.line}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(diag.evidence_pack?.external_context?.jira ?? []).length > 0 && (
+                <div className="mt-3 text-xs text-slate-600">
+                  Jira: {(diag.evidence_pack?.external_context?.jira ?? []).map((j) => j.key).join(", ")}
+                </div>
+              )}
+              {(diag.evidence_pack?.external_context?.ci ?? []).length > 0 && (
+                <div className="mt-1 text-xs text-slate-600">
+                  CI jobs: {(diag.evidence_pack?.external_context?.ci ?? []).map((j) => j.job_id).join(", ")}
+                </div>
+              )}
+              {(diag.evidence_pack?.server_logs?.snippets ?? []).length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {(diag.evidence_pack?.server_logs?.snippets ?? []).slice(0, 3).map((snippet) => (
+                    <pre key={`${snippet.server}:${snippet.path}`} className="rounded bg-slate-950 p-2 text-xs text-slate-100 overflow-auto">
+                      {snippet.server} {snippet.path}
+                      {"\n"}
+                      {snippet.text || snippet.error || "(empty)"}
+                    </pre>
+                  ))}
+                </div>
+              )}
+            </Section>
+          )}
 
           {/* Human feedback */}
           <Section title="human feedback">
@@ -274,10 +353,17 @@ function DiagnosisDetailPage() {
             </span>
             <button
               disabled={generate.isPending}
-              onClick={() => generate.mutate()}
+              onClick={() => generate.mutate(false)}
               className="text-xs px-2 py-0.5 rounded border border-slate-200 hover:border-slate-400"
             >
               {generate.isPending ? "regenerating…" : "↻ regenerate"}
+            </button>
+            <button
+              disabled={generate.isPending}
+              onClick={() => generate.mutate(true)}
+              className="ml-2 text-xs px-2 py-0.5 rounded border border-indigo-200 text-indigo-700 hover:border-indigo-400"
+            >
+              workspace context
             </button>
           </div>
         </div>

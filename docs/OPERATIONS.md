@@ -57,6 +57,7 @@ MICHELLE_ZDEV_MCP_COMMAND=node
 MICHELLE_ZDEV_MCP_ARGS=/Users/yy/code/zstack-workspace/zstack-dev-mcp/dist/index.js
 MICHELLE_ZDEV_MCP_CWD=/Users/yy/code/zstack-workspace/zstack-dev-mcp
 MICHELLE_ZDEV_MCP_TIMEOUT_SECONDS=60
+MICHELLE_DEV_CONTEXT_REPOS=zstack,zstack-ui-next,premium
 ```
 
 Deployment requirements:
@@ -76,6 +77,20 @@ curl http://localhost:8000/api/dev-context/status
 
 This endpoint is protected by the normal Michelle auth middleware outside test
 mode.
+
+Optional server log collection is configured as JSON. Michelle only tails paths
+listed here; it does not expose an arbitrary SSH shell.
+
+```bash
+MICHELLE_SERVER_LOGS_JSON='{"servers":[{"name":"staging-api","host":"10.0.0.1","user":"readonly","env":"staging","roles":["api"],"log_paths":["/var/log/zstack/management-server.log","/var/log/nginx/error.log"]}]}'
+```
+
+When a failed run is diagnosed with workspace context, Michelle collects:
+
+- browser/test evidence from the run;
+- workspace code candidates using `rg`;
+- Jira keys and CI job logs through `zstack-dev-mcp` when present in failure text;
+- configured SSH log tails.
 
 ## 4. Main Workflow
 
@@ -300,6 +315,8 @@ Retention should distinguish:
 | Agentic run is slow | Max turns, timeout, repeated observations, missing login config |
 | Replay fails | Locator drift, page state, stale asset, changed case version |
 | Diagnosis is unhelpful | Trace completeness, screenshot availability, prompt version |
+| Workspace diagnosis has no code files | `MICHELLE_DEV_CONTEXT_REPOS`, workspace checkout, failure keywords |
+| Server logs are missing | `MICHELLE_SERVER_LOGS_JSON`, SSH key access, whitelisted log paths |
 
 ## 9. Migration Rule
 
