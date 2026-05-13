@@ -36,11 +36,58 @@ Each project needs:
 The execution layer uses these fields for agentic first runs and replay runs.
 Do not put production credentials into demo projects.
 
-## 3. Main Workflow
+## 3. Configure Dev Context
 
-### Step 1. Upload PRD
+Dev Context is optional but recommended for ZStack internal use. It lets
+Michelle import PRDs from workspace files or GitLab through `zstack-dev-mcp`
+without moving the Michelle repository into `zstack-workspace`.
 
-Upload or paste markdown. Michelle stores the full PRD and splits it into
+Recommended local layout:
+
+```text
+/Users/yy/code/yal/michelle
+/Users/yy/code/zstack-workspace
+```
+
+Configure Michelle with external paths:
+
+```bash
+MICHELLE_WORKSPACE_ROOT=/Users/yy/code/zstack-workspace
+MICHELLE_ZDEV_MCP_COMMAND=node
+MICHELLE_ZDEV_MCP_ARGS=/Users/yy/code/zstack-workspace/zstack-dev-mcp/dist/index.js
+MICHELLE_ZDEV_MCP_CWD=/Users/yy/code/zstack-workspace/zstack-dev-mcp
+MICHELLE_ZDEV_MCP_TIMEOUT_SECONDS=60
+```
+
+Deployment requirements:
+
+- `MICHELLE_WORKSPACE_ROOT` must point to a real workspace directory.
+- `zstack-dev-mcp` must be installed and built before GitLab URL import is used.
+- Credentials for GitLab/Jira/Confluence/Jenkins stay in the MCP/workspace
+  environment, not in the browser UI.
+- Do not copy or commit `zstack-workspace` or `zstack-dev-mcp` into the Michelle
+  repository.
+
+Check the configured integration:
+
+```bash
+curl http://localhost:8000/api/dev-context/status
+```
+
+This endpoint is protected by the normal Michelle auth middleware outside test
+mode.
+
+## 4. Main Workflow
+
+### Step 1. Import PRD
+
+Import or paste PRD content. Supported sources:
+
+- Markdown paste or local `.md` file;
+- workspace file under `MICHELLE_WORKSPACE_ROOT`;
+- GitLab file URL through `zstack-dev-mcp`.
+
+Michelle stores the full PRD, records `source_ref`, and splits the document into
 chapters.
 
 Expected result:
@@ -149,13 +196,23 @@ Human feedback decides where the learning lands:
 | Coverage | The failure reveals a missing risk or untested scenario. |
 | Wrong | The diagnosis should not be trusted. |
 
-## 4. Recommended REST Flow
+## 5. Recommended REST Flow
 
 ```bash
-# Upload PRD
-curl -X POST http://localhost:8000/api/prd/upload \
+# Import pasted markdown PRD
+curl -X POST http://localhost:8000/api/prd/import \
   -H 'Content-Type: application/json' \
-  -d '{"project_id":"demo","name":"Demo PRD","markdown":"# Demo\n\n## Login\nUsers can log in."}'
+  -d '{"project_id":"demo","name":"Demo PRD","source":{"type":"markdown","markdown":"# Demo\n\n## Login\nUsers can log in."}}'
+
+# Import PRD from workspace file
+curl -X POST http://localhost:8000/api/prd/import \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo","source":{"type":"workspace","repo":"zstack","file_path":"docs/prd/demo.md","ref":"master"}}'
+
+# Import PRD from GitLab through zstack-dev-mcp
+curl -X POST http://localhost:8000/api/prd/import \
+  -H 'Content-Type: application/json' \
+  -d '{"project_id":"demo","source":{"type":"gitlab_mcp","url":"http://gitlab.zstack.io/zstackio/zstack/-/blob/master/docs/prd/demo.md"}}'
 
 # Analyze PRD into requirements and coverage
 curl -X POST http://localhost:8000/api/prd/<prd_id>/analyze \
@@ -198,12 +255,13 @@ curl -X POST http://localhost:8000/api/regression-assets/<asset_id>/replay \
   -d '{}'
 ```
 
-## 5. Operational Checks
+## 6. Operational Checks
 
 Before a pilot run, verify:
 
 - backend health;
 - database connection;
+- Dev Context status when workspace/GitLab import is used;
 - selected LLM providers;
 - Playwright MCP availability;
 - runner status;
@@ -211,7 +269,7 @@ Before a pilot run, verify:
 - retention policy;
 - project base URL and credentials.
 
-## 6. Artifact Policy
+## 7. Artifact Policy
 
 Artifacts are evidence. Do not delete them casually.
 
@@ -230,10 +288,12 @@ Retention should distinguish:
 - failed runs: longer retention;
 - runs used as asset sources: retain while the asset is active.
 
-## 7. Failure Handling
+## 8. Failure Handling
 
 | Symptom | First check |
 |---|---|
+| GitLab PRD import fails | `MICHELLE_ZDEV_MCP_*` config, zstack-dev-mcp build, GitLab token |
+| Workspace PRD import fails | `MICHELLE_WORKSPACE_ROOT`, repo path, file path, branch/ref |
 | PRD analysis fails | LLM provider status, prompt output schema, chapter size |
 | Coverage is low quality | Prompt version, PRD evidence, requirement extraction |
 | Case draft is vague | Coverage item scenario and rationale |
@@ -241,7 +301,7 @@ Retention should distinguish:
 | Replay fails | Locator drift, page state, stale asset, changed case version |
 | Diagnosis is unhelpful | Trace completeness, screenshot availability, prompt version |
 
-## 8. Migration Rule
+## 9. Migration Rule
 
 The old PRD-direct-to-case flow should not remain a first-class product path.
 During refactor, legacy endpoints may exist for compatibility, but new UI and
