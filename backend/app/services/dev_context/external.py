@@ -13,6 +13,7 @@ from app.services.prd_sources.gitlab_mcp import extract_mcp_text
 ToolCaller = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 _JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b", re.IGNORECASE)
 _GITLAB_JOB_RE = re.compile(r"/-/jobs/(\d+)")
+_CONFLUENCE_PAGE_RE = re.compile(r"(?:pageId=|/pages/)(\d+)")
 
 
 def extract_jira_keys(text_parts: list[str], *, limit: int = 5) -> list[str]:
@@ -45,6 +46,20 @@ def extract_gitlab_job_ids(text_parts: list[str], *, limit: int = 3) -> list[int
     return out
 
 
+def extract_confluence_page_ids(text_parts: list[str], *, limit: int = 3) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for text in text_parts:
+        for page_id in _CONFLUENCE_PAGE_RE.findall(text or ""):
+            if page_id in seen:
+                continue
+            seen.add(page_id)
+            out.append(page_id)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 async def collect_external_context(
     *,
     text_parts: list[str],
@@ -66,9 +81,18 @@ async def collect_external_context(
             ci.append({"job_id": job_id, "ok": True, "text": extract_mcp_text(result)[:6000]})
         except Exception as exc:  # noqa: BLE001
             ci.append({"job_id": job_id, "ok": False, "error": str(exc)[:300]})
+    confluence = []
+    for page_id in extract_confluence_page_ids(text_parts):
+        try:
+            result = await call_tool("confluence_get_page", {"pageId": page_id})
+            confluence.append(
+                {"page_id": page_id, "ok": True, "text": extract_mcp_text(result)[:4000]}
+            )
+        except Exception as exc:  # noqa: BLE001
+            confluence.append({"page_id": page_id, "ok": False, "error": str(exc)[:300]})
     return {
         "jira": jira,
-        "confluence": [],
+        "confluence": confluence,
         "ci": ci,
         "gitlab": [],
     }
