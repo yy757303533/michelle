@@ -209,6 +209,18 @@ async def upload_prd(
         request=request,
         session=session,
     )
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="prd.uploaded",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="prd",
+        target_id=str(data.get("prd_id", "")),
+        detail=f"project_id={body.project_id}; source_type=markdown",
+        session=session,
+    )
+    await session.commit()
     return {"data": data}
 
 
@@ -231,6 +243,19 @@ async def import_prd(
         request=request,
         session=session,
     )
+    source_type = str((source_doc.source_ref or {}).get("source_type") or "")
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="prd.imported",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="prd",
+        target_id=str(data.get("prd_id", "")),
+        detail=f"project_id={body.project_id}; source_type={source_type}",
+        session=session,
+    )
+    await session.commit()
     return {"data": data}
 
 

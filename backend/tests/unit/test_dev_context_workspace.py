@@ -61,3 +61,24 @@ async def test_dev_context_status_reports_configured_paths(monkeypatch, tmp_path
     assert data["zdev_mcp"]["configured"] is True
     assert data["zdev_mcp"]["command"] == "node"
     assert data["zdev_mcp"]["cwd"] == str(mcp_dir)
+    assert data["zdev_mcp"]["cwd_exists"] is True
+    assert data["security"]["boundary"]
+
+
+@pytest.mark.asyncio
+async def test_dev_context_status_reports_security_findings(monkeypatch, tmp_path: Path) -> None:
+    from app.main import app
+
+    monkeypatch.setattr(settings, "michelle_workspace_root", str(tmp_path / "missing"))
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_args", "")
+    monkeypatch.setattr(settings, "michelle_server_logs_json", "")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/dev-context/status")
+
+    assert response.status_code == 200
+    security = response.json()["data"]["security"]
+    assert security["ok"] is False
+    assert "workspace root is configured but not healthy" in security["findings"]
+    assert "MICHELLE_ZDEV_MCP_ARGS is not configured" in security["findings"]

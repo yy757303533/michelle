@@ -86,6 +86,8 @@ class AdminTokenMiddleware(BaseHTTPMiddleware):
                 required_rank = ROLE_RANK["admin"]
             elif request.url.path.startswith("/api/settings"):
                 required_rank = ROLE_RANK["admin"]
+            elif request.url.path.startswith("/api/dev-context"):
+                required_rank = ROLE_RANK["admin"]
             else:
                 required_rank = (
                     ROLE_RANK["viewer"]

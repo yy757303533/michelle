@@ -83,7 +83,7 @@ DevContext 主要解决四类上下文断裂问题。
 
 ## 3. 当前功能总览
 
-当前已接入两类能力：
+当前已接入三类能力：
 
 1. PRD 来源导入
    - 粘贴 Markdown 或选择本地 `.md` 文件；
@@ -97,6 +97,13 @@ DevContext 主要解决四类上下文断裂问题。
    - 识别 Confluence pageId 或页面链接并拉页面内容；
    - 识别 GitLab CI job URL 并拉 job log；
    - 按白名单通过 SSH 读取服务器日志片段。
+
+3. 产品化运维能力
+   - Dashboard 展示 DevContext status；
+   - Settings 区域展示 workspace、MCP、代码搜索、服务器日志状态；
+   - 安全边界和配置问题会显示为 security findings；
+   - PRD 导入、诊断生成、DevContext 诊断生成、人工反馈会进入 audit log；
+   - 服务器日志进入 evidence 前会做敏感信息脱敏。
 
 Michelle 仍然是独立项目，不需要放进 `zstack-workspace` 目录。推荐保持：
 
@@ -219,7 +226,18 @@ GET /api/dev-context/status
 - 代码搜索 repo 列表；
 - 服务器日志配置是否存在。
 
-未登录访问会返回 `401`，这是正常的。
+未登录访问会返回 `401`，非 admin 用户访问会返回 `403`。DevContext 状态会暴露本地 workspace、MCP 和服务器日志路径，所以只给管理员看。
+
+也可以直接在 Dashboard 查看 `DevContext status` 面板。面板会展示：
+
+- workspace 是否存在；
+- `.gitmodules` 中 repo 是否 checkout；
+- `zstack-dev-mcp` 命令、cwd、entrypoint 是否存在；
+- 代码搜索 repo 和返回上限；
+- SSH server log 是否配置；
+- security boundary 是否健康。
+
+如果 security 显示 `needs attention`，优先修复 findings 中列出的配置项。
 
 ## 8. 导入 PRD
 
@@ -427,6 +445,7 @@ MICHELLE_SERVER_LOGS_JSON='{"servers":[{"name":"staging-api","host":"10.0.0.1","
 - 只读取 `log_paths` 中配置的绝对路径；
 - 禁止 `../`、换行、空字节路径；
 - SSH 命令使用 `BatchMode=yes`，不会交互式输入密码。
+- 日志输出会脱敏 `Authorization: Bearer ...`、`password=...`、`token=...`、`secret=...`、`api_key=...`、`Cookie: ...` 等常见敏感字段。
 
 如果日志拉不到，检查：
 
@@ -470,8 +489,32 @@ QA 不需要关心底层 MCP 工具名，也不需要手动打开多个系统复
 - `MICHELLE_DEV_CONTEXT_REPOS` 的 repo 列表；
 - `MICHELLE_SERVER_LOGS_JSON` 的服务器日志白名单；
 - `/api/dev-context/status` 的健康状态。
+- Dashboard 中的 `DevContext status` 和 `Admin ops / Audit log`。
 
-## 15. 常见排查
+## 15. 诊断闭环和审计
+
+诊断页里的 `human feedback` 不只是评论，它决定诊断结果沉淀到哪里。
+
+| Feedback target | 作用 |
+|---|---|
+| `pattern` | 将确认后的失败模式沉淀到 Pattern，后续类似失败会命中历史经验 |
+| `asset` | 如果诊断关联 regression asset，会把 asset 标为 `needs_repair` |
+| `case` | 将用例标记为需要 review，并把诊断写入 case quality notes |
+| `coverage` | 将来源 coverage 标记为 `stale`，提示重新评审需求覆盖 |
+
+目前已写入 audit log 的关键动作：
+
+| 动作 | Audit action |
+|---|---|
+| 上传 PRD | `prd.uploaded` |
+| 从 workspace / GitLab / Markdown 导入 PRD | `prd.imported` |
+| 普通诊断生成 | `diagnosis.generated` |
+| Workspace-aware 诊断生成 | `diagnosis.dev_context_generated` |
+| 人工反馈诊断结果 | `diagnosis.feedback` |
+
+管理员可以在 Dashboard 的 `Admin ops / Audit log` 查看最近操作。后续如果接 Jira/MR/Confluence 回写，也应该继续沿用这套 audit 机制。
+
+## 16. 常见排查
 
 | 问题 | 检查点 |
 |---|---|
@@ -483,7 +526,7 @@ QA 不需要关心底层 MCP 工具名，也不需要手动打开多个系统复
 | CI 日志拉不到 | 失败文本是否包含 GitLab job URL，CI MCP 配置是否可用 |
 | SSH 日志为空 | `MICHELLE_SERVER_LOGS_JSON`、SSH key、日志权限 |
 
-## 16. 当前边界
+## 17. 当前边界
 
 已经完成的是 PRD 导入和失败诊断证据接入。
 

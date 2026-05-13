@@ -7,6 +7,7 @@ import subprocess
 from typing import Any
 
 from app.config import settings
+from app.services.dev_context.redaction import redact_sensitive_text
 
 Runner = Any
 
@@ -25,6 +26,24 @@ def configured_server_groups() -> list[dict[str, Any]]:
     else:
         servers = []
     return [server for server in servers if isinstance(server, dict)]
+
+
+def server_log_security_findings() -> list[str]:
+    findings: list[str] = []
+    for server in configured_server_groups():
+        name = str(server.get("name") or server.get("host") or "server")
+        if not str(server.get("host") or ""):
+            findings.append(f"{name}: missing host")
+        if not str(server.get("user") or ""):
+            findings.append(f"{name}: missing SSH user")
+        paths = list(server.get("log_paths") or [])
+        if not paths:
+            findings.append(f"{name}: no log_paths configured")
+        for path in paths:
+            path_s = str(path)
+            if not _safe_log_path(path_s):
+                findings.append(f"{name}: unsafe log path {path_s!r}")
+    return findings
 
 
 def collect_server_log_placeholders() -> dict[str, Any]:
@@ -89,8 +108,8 @@ def collect_server_logs(
                     "server": name,
                     "path": path_s,
                     "ok": result.returncode == 0,
-                    "text": (result.stdout or "")[-8000:],
-                    "error": (result.stderr or "")[-1000:],
+                    "text": redact_sensitive_text(result.stdout or "", max_chars=8000),
+                    "error": redact_sensitive_text(result.stderr or "", max_chars=1000),
                 }
             )
     return {

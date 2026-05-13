@@ -5,7 +5,7 @@ import { LLMRunnerStatusLight } from "../components/LLMRunnerStatusLight";
 import { useCurrentProject } from "../lib/useCurrentProject";
 import { useLLMRunnerStatus } from "../lib/useLLMRunnerStatus";
 import { fmtMs } from "../lib/datetime";
-import { apiFetch } from "../lib/adminAuth";
+import { apiFetch, getCurrentUser } from "../lib/adminAuth";
 
 export const Route = createFileRoute("/")({
   component: Dashboard,
@@ -89,6 +89,41 @@ interface SelfCheckResponse {
   };
 }
 
+interface DevContextStatusResponse {
+  data: {
+    workspace: {
+      enabled: boolean;
+      ok: boolean;
+      root: string;
+      detail: string;
+      repos: Array<{ name: string; path: string; exists: boolean; detail: string }>;
+    };
+    zdev_mcp: {
+      configured: boolean;
+      command: string;
+      command_available: boolean;
+      cwd: string;
+      cwd_exists: boolean;
+      entrypoint: string;
+      entrypoint_exists: boolean;
+    };
+    code_search: {
+      repos: string[];
+      max_files: number;
+      max_matches_per_file: number;
+    };
+    server_logs: {
+      configured: boolean;
+      servers: Array<{ name: string; env: string; roles: string[]; log_paths: string[] }>;
+    };
+    security: {
+      ok: boolean;
+      findings: string[];
+      boundary: string[];
+    };
+  };
+}
+
 interface ProbeResult {
   ok: boolean;
   provider?: string;
@@ -133,6 +168,8 @@ interface LLMMetricsResponse {
 
 function Dashboard() {
   const { projectId } = useCurrentProject();
+  const user = getCurrentUser<{ username: string; role: string }>();
+  const isAdmin = user?.role === "admin";
   return (
     <div className="space-y-6">
       <div>
@@ -149,6 +186,7 @@ function Dashboard() {
 
       <BackendHealth />
       <SelfCheckPanel />
+      {isAdmin && <DevContextPanel />}
       <TrendsPanel projectId={projectId} />
 
       {projectId && <CurrentProjectPanel projectId={projectId} />}
@@ -330,6 +368,102 @@ function SelfCheckPanel() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function DevContextPanel() {
+  const status = useQuery({
+    queryKey: ["dev-context-status"],
+    queryFn: async (): Promise<DevContextStatusResponse> => {
+      const r = await apiFetch("/api/dev-context/status");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 30000,
+  });
+  const d = status.data?.data;
+  const repoCount = d?.workspace.repos.filter((repo) => repo.exists).length ?? 0;
+  const missingRepos = d?.workspace.repos.filter((repo) => !repo.exists) ?? [];
+  return (
+    <Panel title="DevContext status">
+      {status.isLoading ? (
+        <span className="text-slate-400 text-sm">checking…</span>
+      ) : status.error ? (
+        <span className="text-red-600 text-sm">{(status.error as Error).message}</span>
+      ) : !d ? (
+        <span className="text-slate-400 text-sm">not configured</span>
+      ) : (
+        <div className="space-y-3 text-sm">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+            <div className="rounded border border-slate-200 px-2 py-1">
+              <Pill ok={d.workspace.ok} small>
+                {d.workspace.ok ? "ok" : "check"}
+              </Pill>{" "}
+              <code>workspace</code>
+              <div className="mt-1 truncate text-slate-500">{d.workspace.root || d.workspace.detail}</div>
+              <div className="text-slate-400">
+                repos: {repoCount}/{d.workspace.repos.length}
+              </div>
+            </div>
+            <div className="rounded border border-slate-200 px-2 py-1">
+              <Pill ok={d.zdev_mcp.configured && d.zdev_mcp.cwd_exists} small>
+                {d.zdev_mcp.configured ? "set" : "off"}
+              </Pill>{" "}
+              <code>zstack-dev-mcp</code>
+              <div className="mt-1 truncate text-slate-500">
+                {d.zdev_mcp.command} {d.zdev_mcp.entrypoint || ""}
+              </div>
+              <div className="text-slate-400">
+                command {d.zdev_mcp.command_available ? "available" : "missing"} · cwd{" "}
+                {d.zdev_mcp.cwd_exists ? "ok" : "missing"}
+              </div>
+            </div>
+            <div className="rounded border border-slate-200 px-2 py-1">
+              <Pill ok={d.code_search.repos.length > 0} small>
+                {d.code_search.repos.length > 0 ? "on" : "off"}
+              </Pill>{" "}
+              <code>code_search</code>
+              <div className="mt-1 truncate text-slate-500">
+                {d.code_search.repos.join(", ") || "no repos"}
+              </div>
+              <div className="text-slate-400">
+                max {d.code_search.max_files} files · {d.code_search.max_matches_per_file} matches
+              </div>
+            </div>
+            <div className="rounded border border-slate-200 px-2 py-1">
+              <Pill ok={d.server_logs.configured} small>
+                {d.server_logs.configured ? "on" : "off"}
+              </Pill>{" "}
+              <code>server_logs</code>
+              <div className="mt-1 truncate text-slate-500">
+                {d.server_logs.servers.map((s) => s.name).join(", ") || "not configured"}
+              </div>
+              <div className="text-slate-400">read-only SSH log paths</div>
+            </div>
+          </div>
+          {missingRepos.length > 0 && (
+            <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Missing workspace repos: {missingRepos.map((repo) => repo.name || repo.path).join(", ")}
+            </div>
+          )}
+          <div
+            className={
+              "rounded border px-3 py-2 text-xs " +
+              (d.security.ok
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-amber-200 bg-amber-50 text-amber-800")
+            }
+          >
+            <div className="mb-1 font-medium">
+              Security boundary: {d.security.ok ? "healthy" : "needs attention"}
+            </div>
+            {(d.security.ok ? d.security.boundary : d.security.findings).slice(0, 5).map((item) => (
+              <div key={item}>- {item}</div>
+            ))}
+          </div>
         </div>
       )}
     </Panel>

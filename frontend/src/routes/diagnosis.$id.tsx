@@ -29,6 +29,7 @@ interface DiagnosisRow {
     external_context?: {
       jira?: Array<{ key: string; ok: boolean; text?: string; error?: string }>;
       ci?: Array<{ job_id: number; ok: boolean; text?: string; error?: string }>;
+      confluence?: Array<{ page_id: string; ok: boolean; text?: string; error?: string }>;
     };
     server_logs?: {
       snippets?: Array<{ server: string; path: string; ok: boolean; text?: string; error?: string }>;
@@ -97,9 +98,9 @@ function DiagnosisDetailPage() {
           ? `/api/diagnosis/by-run/${id}/generate-dev-context`
           : `/api/diagnosis/by-run/${id}/generate`,
         {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overwrite_existing: true }),
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overwrite_existing: true }),
         },
       );
       if (!r.ok) throw new Error(await r.text());
@@ -219,6 +220,7 @@ function DiagnosisDetailPage() {
           {((diag.candidate_files?.length ?? 0) > 0 ||
             (diag.evidence_pack?.external_context?.jira?.length ?? 0) > 0 ||
             (diag.evidence_pack?.external_context?.ci?.length ?? 0) > 0 ||
+            (diag.evidence_pack?.external_context?.confluence?.length ?? 0) > 0 ||
             (diag.evidence_pack?.server_logs?.snippets?.length ?? 0) > 0) && (
             <Section title="dev context evidence">
               {diag.candidate_files && diag.candidate_files.length > 0 && (
@@ -245,6 +247,14 @@ function DiagnosisDetailPage() {
               {(diag.evidence_pack?.external_context?.ci ?? []).length > 0 && (
                 <div className="mt-1 text-xs text-slate-600">
                   CI jobs: {(diag.evidence_pack?.external_context?.ci ?? []).map((j) => j.job_id).join(", ")}
+                </div>
+              )}
+              {(diag.evidence_pack?.external_context?.confluence ?? []).length > 0 && (
+                <div className="mt-1 text-xs text-slate-600">
+                  Confluence pages:{" "}
+                  {(diag.evidence_pack?.external_context?.confluence ?? [])
+                    .map((p) => p.page_id)
+                    .join(", ")}
                 </div>
               )}
               {(diag.evidence_pack?.server_logs?.snippets ?? []).length > 0 && (
@@ -312,6 +322,12 @@ function DiagnosisDetailPage() {
                     <option value="case">case</option>
                     <option value="coverage">coverage</option>
                   </select>
+                  <div className="basis-full rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                    Feedback target controls where a confirmed diagnosis is routed: pattern
+                    learns a reusable failure signature, asset marks the regression asset for
+                    repair, case sends the case back to review, and coverage marks the source
+                    coverage stale.
+                  </div>
                   <button
                     disabled={feedback.isPending}
                     onClick={() =>

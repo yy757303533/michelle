@@ -173,6 +173,18 @@ async def trigger_diagnosis_for_run(
         )
     except DiagnoserError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="diagnosis.generated",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="diagnosis",
+        target_id=diag.diag_id,
+        detail=f"run_id={run_id}; include_dev_context={body.include_dev_context}",
+        session=session,
+    )
+    await session.commit()
     return {"data": diag.model_dump()}
 
 
@@ -199,6 +211,21 @@ async def trigger_dev_context_diagnosis_for_run(
         )
     except DiagnoserError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    evidence_pack = diag.evidence_pack or {}
+    code_files = len((evidence_pack.get("code_context") or {}).get("candidate_files") or [])
+    log_snippets = len((evidence_pack.get("server_logs") or {}).get("snippets") or [])
+    await audit(
+        actor=getattr(request.state, "user", None),
+        action="diagnosis.dev_context_generated",
+        method=request.method,
+        path=request.url.path,
+        status_code=200,
+        target_type="diagnosis",
+        target_id=diag.diag_id,
+        detail=f"run_id={run_id}; candidate_files={code_files}; server_log_snippets={log_snippets}",
+        session=session,
+    )
+    await session.commit()
     return {"data": diag.model_dump()}
 
 
