@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlmodel import SQLModel, select
 
 import app.db as db_mod
-from app.models import PRD
+from app.models import PRD, RuntimeSetting
 
 
 @pytest.fixture
@@ -65,3 +65,28 @@ async def test_upload_prd_keeps_markdown_source_ref(app_client) -> None:
 
     assert response.status_code == 200
     assert response.json()["data"]["source_ref"]["source_type"] == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_import_workspace_prd_uses_runtime_workspace_root(app_client, tmp_path) -> None:
+    client, maker = app_client
+    workspace = tmp_path / "workspace"
+    repo = workspace / "zstack"
+    repo.mkdir(parents=True)
+    (repo / "prd.md").write_text("# Runtime Workspace PRD\n\n## Flow\n\nWorks.", encoding="utf-8")
+    async with maker() as session:
+        session.add(RuntimeSetting(key="michelle_workspace_root", value=str(workspace)))
+        await session.commit()
+
+    response = await client.post(
+        "/api/prd/import",
+        json={
+            "project_id": "demo",
+            "source": {"type": "workspace", "repo": "zstack", "file_path": "prd.md"},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["title"] == "Runtime Workspace PRD"
+    assert data["source_ref"]["repo"] == "zstack"

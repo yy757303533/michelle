@@ -67,9 +67,7 @@ async def extract_asset_from_passed_run(*, run_id: str, session: AsyncSession) -
     steps = (
         (
             await session.execute(
-                select(StepEvent)
-                .where(StepEvent.run_id == run_id)
-                .order_by(StepEvent.step_index)
+                select(StepEvent).where(StepEvent.run_id == run_id).order_by(StepEvent.step_index)
             )
         )
         .scalars()

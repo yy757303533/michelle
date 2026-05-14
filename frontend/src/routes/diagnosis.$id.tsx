@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { apiFetch } from "../lib/adminAuth";
 
 export const Route = createFileRoute("/diagnosis/$id")({
@@ -29,6 +29,7 @@ interface DiagnosisRow {
     external_context?: {
       jira?: Array<{ key: string; ok: boolean; text?: string; error?: string }>;
       ci?: Array<{ job_id: number; ok: boolean; text?: string; error?: string }>;
+      jenkins?: Array<{ url: string; ok: boolean; text?: string; error?: string }>;
       confluence?: Array<{ page_id: string; ok: boolean; text?: string; error?: string }>;
     };
     server_logs?: {
@@ -60,6 +61,16 @@ interface ByRunResponse {
   data: { diagnoses: DiagnosisRow[]; pattern_matches: PatternMatch[] };
 }
 
+interface DiagnosisJobResponse {
+  data: {
+    job_id: string;
+    status: "pending" | "running" | "done" | "failed";
+    diag_id: string;
+    error: string;
+    include_dev_context: boolean;
+  };
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   real_bug: "bg-red-100 text-red-800",
   flaky: "bg-amber-100 text-amber-800",
@@ -77,6 +88,12 @@ function DiagnosisDetailPage() {
   const [note, setNote] = useState("");
   const [reason, setReason] = useState("");
   const [feedbackTarget, setFeedbackTarget] = useState("pattern");
+  const [jobId, setJobId] = useState("");
+  const [publishType, setPublishType] = useState("jira");
+  const [publishTarget, setPublishTarget] = useState("");
+  const [publishProject, setPublishProject] = useState("");
+  const [publishMrIid, setPublishMrIid] = useState("");
+  const [publishDiscussionId, setPublishDiscussionId] = useState("");
 
   const byRun = useQuery({
     queryKey: ["diagnosis-by-run", id],
@@ -91,22 +108,38 @@ function DiagnosisDetailPage() {
     },
   });
 
-  const generate = useMutation({
-    mutationFn: async (withDevContext: boolean = false) => {
-      const r = await apiFetch(
-        withDevContext
-          ? `/api/diagnosis/by-run/${id}/generate-dev-context`
-          : `/api/diagnosis/by-run/${id}/generate`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ overwrite_existing: true }),
-        },
-      );
+  const job = useQuery({
+    queryKey: ["diagnosis-job", jobId],
+    enabled: Boolean(jobId),
+    queryFn: async (): Promise<DiagnosisJobResponse> => {
+      const r = await apiFetch(`/api/diagnosis/jobs/${jobId}`);
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["diagnosis-by-run", id] }),
+    refetchInterval: (q) => {
+      const status = (q.state.data as DiagnosisJobResponse | undefined)?.data?.status;
+      return status === "done" || status === "failed" ? false : 2000;
+    },
+  });
+
+  useEffect(() => {
+    if (job.data?.data.status === "done" && jobId) {
+      setJobId("");
+      qc.invalidateQueries({ queryKey: ["diagnosis-by-run", id] });
+    }
+  }, [id, job.data?.data.status, jobId, qc]);
+
+  const generate = useMutation({
+    mutationFn: async (withDevContext: boolean = false) => {
+      const r = await apiFetch(`/api/diagnosis/by-run/${id}/jobs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overwrite_existing: true, include_dev_context: withDevContext }),
+        });
+      if (!r.ok) throw new Error(await r.text());
+      return (await r.json()) as DiagnosisJobResponse;
+    },
+    onSuccess: (data) => setJobId(data.data.job_id),
   });
 
   const feedback = useMutation({
@@ -129,6 +162,28 @@ function DiagnosisDetailPage() {
       setReason("");
       setFeedbackTarget("pattern");
       qc.invalidateQueries({ queryKey: ["diagnosis-by-run", id] });
+    },
+  });
+  const publish = useMutation({
+    mutationFn: async (diagId: string) => {
+      const target =
+        publishType === "jira"
+          ? { type: "jira", issue_key: publishTarget.trim() }
+          : publishType === "confluence"
+            ? { type: "confluence", page_id: publishTarget.trim() }
+            : {
+                type: "gitlab_discussion",
+                project: publishProject.trim(),
+                mr_iid: Number(publishMrIid),
+                discussion_id: publishDiscussionId.trim(),
+              };
+      const r = await apiFetch(`/api/diagnosis/${diagId}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
     },
   });
 
@@ -166,7 +221,7 @@ function DiagnosisDetailPage() {
             onClick={() => generate.mutate(false)}
             className="bg-slate-900 text-white text-sm px-3 py-1.5 rounded hover:bg-slate-700 disabled:opacity-50"
           >
-            {generate.isPending ? "diagnosing… (may take 30s)" : "Run diagnosis"}
+            {generate.isPending || jobId ? "diagnosing…" : "Run diagnosis"}
           </button>
           <button
             disabled={generate.isPending}
@@ -175,6 +230,16 @@ function DiagnosisDetailPage() {
           >
             Analyze with workspace context
           </button>
+          {jobId && (
+            <div className="text-xs text-slate-600">
+              job {jobId}: {job.data?.data.status ?? "pending"}
+            </div>
+          )}
+          {job.data?.data.status === "failed" && (
+            <pre className="text-xs text-red-600 whitespace-pre-wrap">
+              {job.data.data.error}
+            </pre>
+          )}
           {generate.error && (
             <pre className="text-xs text-red-600 whitespace-pre-wrap">
               {(generate.error as Error).message}
@@ -220,6 +285,7 @@ function DiagnosisDetailPage() {
           {((diag.candidate_files?.length ?? 0) > 0 ||
             (diag.evidence_pack?.external_context?.jira?.length ?? 0) > 0 ||
             (diag.evidence_pack?.external_context?.ci?.length ?? 0) > 0 ||
+            (diag.evidence_pack?.external_context?.jenkins?.length ?? 0) > 0 ||
             (diag.evidence_pack?.external_context?.confluence?.length ?? 0) > 0 ||
             (diag.evidence_pack?.server_logs?.snippets?.length ?? 0) > 0) && (
             <Section title="dev context evidence">
@@ -247,6 +313,14 @@ function DiagnosisDetailPage() {
               {(diag.evidence_pack?.external_context?.ci ?? []).length > 0 && (
                 <div className="mt-1 text-xs text-slate-600">
                   CI jobs: {(diag.evidence_pack?.external_context?.ci ?? []).map((j) => j.job_id).join(", ")}
+                </div>
+              )}
+              {(diag.evidence_pack?.external_context?.jenkins ?? []).length > 0 && (
+                <div className="mt-1 text-xs text-slate-600">
+                  Jenkins builds:{" "}
+                  {(diag.evidence_pack?.external_context?.jenkins ?? [])
+                    .map((j) => j.url)
+                    .join(", ")}
                 </div>
               )}
               {(diag.evidence_pack?.external_context?.confluence ?? []).length > 0 && (
@@ -363,24 +437,96 @@ function DiagnosisDetailPage() {
             )}
           </Section>
 
+          <Section title="publish back">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <select
+                value={publishType}
+                onChange={(e) => {
+                  setPublishType(e.target.value);
+                  setPublishTarget("");
+                  setPublishProject("");
+                  setPublishMrIid("");
+                  setPublishDiscussionId("");
+                }}
+                className="border border-slate-200 rounded px-2 py-1 text-sm"
+              >
+                <option value="jira">Jira comment</option>
+                <option value="confluence">Confluence comment</option>
+                <option value="gitlab_discussion">GitLab discussion</option>
+              </select>
+              {publishType === "gitlab_discussion" ? (
+                <>
+                  <input
+                    value={publishProject}
+                    onChange={(e) => setPublishProject(e.target.value)}
+                    placeholder="group/project"
+                    className="min-w-44 border border-slate-200 rounded px-2 py-1 text-sm"
+                  />
+                  <input
+                    value={publishMrIid}
+                    onChange={(e) => setPublishMrIid(e.target.value)}
+                    placeholder="MR IID"
+                    className="w-24 border border-slate-200 rounded px-2 py-1 text-sm"
+                  />
+                  <input
+                    value={publishDiscussionId}
+                    onChange={(e) => setPublishDiscussionId(e.target.value)}
+                    placeholder="discussion id"
+                    className="min-w-44 border border-slate-200 rounded px-2 py-1 text-sm"
+                  />
+                </>
+              ) : (
+                <input
+                  value={publishTarget}
+                  onChange={(e) => setPublishTarget(e.target.value)}
+                  placeholder={publishType === "jira" ? "ZSTAC-12345" : "Confluence pageId"}
+                  className="min-w-56 border border-slate-200 rounded px-2 py-1 text-sm"
+                />
+              )}
+              <button
+                disabled={
+                  publish.isPending ||
+                  (publishType === "gitlab_discussion"
+                    ? !publishProject.trim() ||
+                      !publishMrIid.trim() ||
+                      !publishDiscussionId.trim()
+                    : !publishTarget.trim())
+                }
+                onClick={() => publish.mutate(diag.diag_id)}
+                className="bg-slate-900 text-white text-sm px-3 py-1 rounded hover:bg-slate-700 disabled:opacity-50"
+              >
+                {publish.isPending ? "publishing…" : "publish"}
+              </button>
+              {publish.data && <span className="text-xs text-emerald-700">published</span>}
+              {publish.error && (
+                <span className="text-xs text-red-600">{(publish.error as Error).message}</span>
+              )}
+            </div>
+          </Section>
+
           <div className="flex items-center justify-between pt-2 border-t border-slate-100">
             <span className="text-xs text-slate-400">
               created {new Date(diag.created_at).toLocaleString()}
             </span>
             <button
-              disabled={generate.isPending}
+              disabled={generate.isPending || Boolean(jobId)}
               onClick={() => generate.mutate(false)}
               className="text-xs px-2 py-0.5 rounded border border-slate-200 hover:border-slate-400"
             >
               {generate.isPending ? "regenerating…" : "↻ regenerate"}
             </button>
             <button
-              disabled={generate.isPending}
+              disabled={generate.isPending || Boolean(jobId)}
               onClick={() => generate.mutate(true)}
               className="ml-2 text-xs px-2 py-0.5 rounded border border-indigo-200 text-indigo-700 hover:border-indigo-400"
             >
               workspace context
             </button>
+            {jobId && (
+              <span className="ml-2 text-xs text-slate-500">
+                job {jobId}: {job.data?.data.status ?? "pending"}
+              </span>
+            )}
           </div>
         </div>
       )}

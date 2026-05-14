@@ -310,9 +310,7 @@ async def test_prd_analyze_falls_back_when_llm_returns_invalid_json(
 
 
 @pytest.mark.asyncio
-async def test_prd_analyze_replace_unreviewed_preserves_reviewed_and_drafted(
-    app_client, memory_db
-):
+async def test_prd_analyze_replace_unreviewed_preserves_reviewed_and_drafted(app_client, memory_db):
     upload = await app_client.post(
         "/api/prd/upload",
         json={
@@ -391,11 +389,7 @@ async def test_prd_analyze_replace_unreviewed_preserves_reviewed_and_drafted(
         accepted = await session.get(CoverageItem, "cov_keep_accepted")
         drafted = await session.get(CoverageItem, "cov_keep_drafted")
         active = (
-            (
-                await session.execute(
-                    select(CoverageItem).where(CoverageItem.deleted_at.is_(None))
-                )
-            )
+            (await session.execute(select(CoverageItem).where(CoverageItem.deleted_at.is_(None))))
             .scalars()
             .all()
         )
@@ -504,7 +498,10 @@ async def test_coverage_review_persists_reviewer_note(app_client, memory_db):
 
     reviewed = await app_client.post(
         "/api/coverage/cov_review_note/review",
-        json={"action": "reject", "note": "Scenario should follow PRD language, not hard-code French."},
+        json={
+            "action": "reject",
+            "note": "Scenario should follow PRD language, not hard-code French.",
+        },
     )
 
     assert reviewed.status_code == 200
@@ -852,9 +849,7 @@ async def test_delete_coverage_allows_soft_deleted_linked_case(app_client, memor
 
 
 @pytest.mark.asyncio
-async def test_bulk_delete_coverage_soft_deletes_unlinked_and_skips_linked(
-    app_client, memory_db
-):
+async def test_bulk_delete_coverage_soft_deletes_unlinked_and_skips_linked(app_client, memory_db):
     async with memory_db() as session:
         session.add(Project(project_id="demo", name="Demo"))
         req = RequirementItem(

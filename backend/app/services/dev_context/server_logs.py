@@ -12,11 +12,12 @@ from app.services.dev_context.redaction import redact_sensitive_text
 Runner = Any
 
 
-def configured_server_groups() -> list[dict[str, Any]]:
-    if not settings.michelle_server_logs_json.strip():
+def configured_server_groups(config_json: str | None = None) -> list[dict[str, Any]]:
+    raw = settings.michelle_server_logs_json if config_json is None else config_json
+    if not raw.strip():
         return []
     try:
-        data = json.loads(settings.michelle_server_logs_json)
+        data = json.loads(raw)
     except json.JSONDecodeError:
         return []
     if isinstance(data, dict):
@@ -28,9 +29,9 @@ def configured_server_groups() -> list[dict[str, Any]]:
     return [server for server in servers if isinstance(server, dict)]
 
 
-def server_log_security_findings() -> list[str]:
+def server_log_security_findings(config_json: str | None = None) -> list[str]:
     findings: list[str] = []
-    for server in configured_server_groups():
+    for server in configured_server_groups(config_json):
         name = str(server.get("name") or server.get("host") or "server")
         if not str(server.get("host") or ""):
             findings.append(f"{name}: missing host")
@@ -65,11 +66,12 @@ def collect_server_log_placeholders() -> dict[str, Any]:
 
 def collect_server_logs(
     *,
+    config_json: str | None = None,
     runner: Runner = subprocess.run,
     max_lines: int = 200,
     timeout_seconds: int = 15,
 ) -> dict[str, Any]:
-    servers = configured_server_groups()
+    servers = configured_server_groups(config_json)
     snippets: list[dict[str, Any]] = []
     for server in servers:
         host = str(server.get("host") or "")
@@ -128,4 +130,6 @@ def collect_server_logs(
 
 
 def _safe_log_path(path: str) -> bool:
-    return bool(path.startswith("/") and "\x00" not in path and "\n" not in path and ".." not in path)
+    return bool(
+        path.startswith("/") and "\x00" not in path and "\n" not in path and ".." not in path
+    )

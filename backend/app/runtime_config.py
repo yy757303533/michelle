@@ -231,6 +231,48 @@ KNOBS: dict[str, dict[str, Any]] = {
             "Pending/running runs are always skipped."
         ),
     },
+    "michelle_workspace_root": {
+        "type": _coerce_str,
+        "describe": "External zstack-workspace root used for PRD imports and code search.",
+    },
+    "michelle_zdev_mcp_command": {
+        "type": _coerce_str,
+        "describe": "Command used to start zstack-dev-mcp, usually node.",
+    },
+    "michelle_zdev_mcp_args": {
+        "type": _coerce_str,
+        "describe": "Arguments for zstack-dev-mcp, usually the dist/index.js entrypoint.",
+    },
+    "michelle_zdev_mcp_cwd": {
+        "type": _coerce_str,
+        "describe": "Working directory for zstack-dev-mcp.",
+    },
+    "michelle_zdev_mcp_timeout_seconds": {
+        "type": _coerce_int,
+        "min": 5,
+        "max": 300,
+        "describe": "Timeout for zstack-dev-mcp tool calls.",
+    },
+    "michelle_dev_context_repos": {
+        "type": _coerce_str,
+        "describe": "Comma-separated workspace repos to search during failed-run diagnosis.",
+    },
+    "michelle_dev_context_max_files": {
+        "type": _coerce_int,
+        "min": 1,
+        "max": 50,
+        "describe": "Maximum candidate files returned by workspace code search.",
+    },
+    "michelle_dev_context_max_matches_per_file": {
+        "type": _coerce_int,
+        "min": 1,
+        "max": 20,
+        "describe": "Maximum code matches retained per candidate file.",
+    },
+    "michelle_server_logs_json": {
+        "type": _coerce_str,
+        "describe": "JSON whitelist of SSH server log sources for diagnosis evidence.",
+    },
 }
 
 
@@ -263,6 +305,17 @@ _BOOTSTRAP_DEFAULTS: dict[str, Any] = {
     "webhook_url": lambda: "",
     "webhook_kind": lambda: "generic",
     "artifact_retention_days": lambda: 30,
+    "michelle_workspace_root": lambda: settings.michelle_workspace_root,
+    "michelle_zdev_mcp_command": lambda: settings.michelle_zdev_mcp_command,
+    "michelle_zdev_mcp_args": lambda: settings.michelle_zdev_mcp_args,
+    "michelle_zdev_mcp_cwd": lambda: settings.michelle_zdev_mcp_cwd,
+    "michelle_zdev_mcp_timeout_seconds": lambda: settings.michelle_zdev_mcp_timeout_seconds,
+    "michelle_dev_context_repos": lambda: settings.michelle_dev_context_repos,
+    "michelle_dev_context_max_files": lambda: settings.michelle_dev_context_max_files,
+    "michelle_dev_context_max_matches_per_file": lambda: (
+        settings.michelle_dev_context_max_matches_per_file
+    ),
+    "michelle_server_logs_json": lambda: settings.michelle_server_logs_json,
 }
 
 
@@ -384,6 +437,30 @@ async def get_email_config(session: AsyncSession | None = None) -> dict[str, Any
             "webhook_enabled": bool(await _read_raw(s, "webhook_enabled")),
             "webhook_url": str(await _read_raw(s, "webhook_url")),
             "webhook_kind": str(await _read_raw(s, "webhook_kind")),
+        }
+
+    if session is not None:
+        return await _build(session)
+    async with _db.async_session_maker() as s:
+        return await _build(s)
+
+
+async def get_dev_context_config(session: AsyncSession | None = None) -> dict[str, Any]:
+    async def _build(s: AsyncSession) -> dict[str, Any]:
+        return {
+            "workspace_root": str(await _read_raw(s, "michelle_workspace_root")),
+            "zdev_mcp_command": str(await _read_raw(s, "michelle_zdev_mcp_command")),
+            "zdev_mcp_args": str(await _read_raw(s, "michelle_zdev_mcp_args")),
+            "zdev_mcp_cwd": str(await _read_raw(s, "michelle_zdev_mcp_cwd")),
+            "zdev_mcp_timeout_seconds": int(
+                await _read_raw(s, "michelle_zdev_mcp_timeout_seconds")
+            ),
+            "code_repos": str(await _read_raw(s, "michelle_dev_context_repos")),
+            "max_files": int(await _read_raw(s, "michelle_dev_context_max_files")),
+            "max_matches_per_file": int(
+                await _read_raw(s, "michelle_dev_context_max_matches_per_file")
+            ),
+            "server_logs_json": str(await _read_raw(s, "michelle_server_logs_json")),
         }
 
     if session is not None:

@@ -7,8 +7,8 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.config import settings
 from app.models import Run, StepEvent, TestCase
+from app.runtime_config import get_dev_context_config
 from app.services.dev_context.code_search import (
     configured_code_repos,
     extract_failure_keywords,
@@ -50,22 +50,35 @@ async def collect_run_dev_context(*, run_id: str, session: AsyncSession) -> dict
         ]
     )
     keywords = extract_failure_keywords(keyword_parts)
-    repos = configured_code_repos()
+    cfg = await get_dev_context_config(session)
+    repos = configured_code_repos(str(cfg["code_repos"]))
     candidate_files = search_workspace_code(
-        workspace_root=settings.michelle_workspace_root,
+        workspace_root=str(cfg["workspace_root"]),
         repos=repos,
         keywords=keywords,
+        max_files=int(cfg["max_files"]),
+        max_matches_per_file=int(cfg["max_matches_per_file"]),
     )
-    external_context = await collect_external_context(text_parts=keyword_parts)
+
+    async def _call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        from app.services.dev_context.zdev_mcp import call_zdev_tool
+
+        return await call_zdev_tool(name, args, config=cfg)
+
+    external_context = await collect_external_context(
+        text_parts=keyword_parts,
+        call_tool=_call_tool,
+        config=cfg,
+    )
     return {
         "run_id": run.run_id,
         "project_id": run.project_id,
         "keywords": keywords,
         "code_context": {
-            "workspace_root": settings.michelle_workspace_root,
+            "workspace_root": str(cfg["workspace_root"]),
             "repos": repos,
             "candidate_files": candidate_files,
         },
         "external_context": external_context,
-        "server_logs": collect_server_logs(),
+        "server_logs": collect_server_logs(config_json=str(cfg["server_logs_json"])),
     }

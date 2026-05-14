@@ -582,11 +582,7 @@ async def _persist_runtime_event(
     next_index = await _next_step_offset(session, run_id)
     case_step_index = _runtime_case_step_index(parsed)
     seen = await _existing_case_step_indexes(session, run_id)
-    case_step = (
-        _case_step_context(case, case_step_index)
-        if case_step_index not in seen
-        else None
-    )
+    case_step = _case_step_context(case, case_step_index) if case_step_index not in seen else None
     tool_result = {
         "result_text": (parsed.result_text or "")[:8000],
         "is_error": bool(parsed.result_is_error),

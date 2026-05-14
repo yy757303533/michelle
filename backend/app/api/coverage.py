@@ -52,17 +52,11 @@ def _actor_id(request: Request) -> str:
     return str((getattr(request.state, "user", None) or {}).get("sub", ""))
 
 
-async def _active_linked_case_ids(
-    session: AsyncSession, linked_case_ids: set[str]
-) -> set[str]:
+async def _active_linked_case_ids(session: AsyncSession, linked_case_ids: set[str]) -> set[str]:
     if not linked_case_ids:
         return set()
     cases = (
-        (
-            await session.execute(
-                select(TestCase).where(TestCase.case_id.in_(linked_case_ids))
-            )
-        )
+        (await session.execute(select(TestCase).where(TestCase.case_id.in_(linked_case_ids))))
         .scalars()
         .all()
     )

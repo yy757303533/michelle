@@ -87,7 +87,9 @@ class CodexCLIClient(BaseChatClient):
         # Codex CLI prompt format: `codex exec "<prompt>"` (non-interactive).
         # If a system prompt is supplied, we prepend it as a separate paragraph.
         full = f"{system}\n\n{prompt}" if system else prompt
-        out_file = tempfile.NamedTemporaryFile(prefix="michelle-codex-", suffix=".txt", delete=False)
+        out_file = tempfile.NamedTemporaryFile(
+            prefix="michelle-codex-", suffix=".txt", delete=False
+        )
         out_path = out_file.name
         out_file.close()
         cmd: list[str] = [
@@ -130,7 +132,9 @@ class CodexCLIClient(BaseChatClient):
             ) from exc
         except FileNotFoundError as exc:
             Path(out_path).unlink(missing_ok=True)
-            raise LLMAuthError(f"codex CLI not found at {self.binary!r}", provider=self.name) from exc
+            raise LLMAuthError(
+                f"codex CLI not found at {self.binary!r}", provider=self.name
+            ) from exc
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")

@@ -131,11 +131,15 @@ def upgrade() -> None:
         )
 
     with op.batch_alter_table("test_cases", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("coverage_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(
+            sa.Column("coverage_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True)
+        )
         batch_op.create_index(batch_op.f("ix_test_cases_coverage_id"), ["coverage_id"])
 
     with op.batch_alter_table("runs", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("asset_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(
+            sa.Column("asset_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True)
+        )
         batch_op.add_column(
             sa.Column(
                 "execution_mode",
@@ -148,7 +152,9 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f("ix_runs_execution_mode"), ["execution_mode"])
 
     with op.batch_alter_table("diagnoses", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("asset_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True))
+        batch_op.add_column(
+            sa.Column("asset_id", sqlmodel.sql.sqltypes.AutoString(), nullable=True)
+        )
         batch_op.add_column(
             sa.Column(
                 "feedback_target",

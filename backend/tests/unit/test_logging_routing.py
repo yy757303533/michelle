@@ -29,7 +29,13 @@ def test_setup_logging_writes_total_and_domain_logs(tmp_path, monkeypatch):
     log.info(EVENTS.PRD_UPLOADED.name, prd_id="p1", chapter_count=2, hash="abc")
     log.info("case.draft.started", coverage_id="cov1")
     log.info(EVENTS.RUN_COMPLETED.name, run_id="r1", status="passed", duration_ms=12)
-    log.info(EVENTS.DIAGNOSIS_GENERATED.name, diag_id="d1", run_id="r1", category="case_issue", confidence=0.8)
+    log.info(
+        EVENTS.DIAGNOSIS_GENERATED.name,
+        diag_id="d1",
+        run_id="r1",
+        category="case_issue",
+        confidence=0.8,
+    )
     log.info("settings.runtime_updated", keys=["smtp_password"], smtp_password="plain-secret")
     _flush_handlers()
 

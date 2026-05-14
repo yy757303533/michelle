@@ -32,7 +32,14 @@ def extract_failure_keywords(parts: list[str], *, limit: int = 12) -> list[str]:
     return out
 
 
-def search_workspace_code(*, workspace_root: str, repos: list[str], keywords: list[str]) -> list[dict[str, Any]]:
+def search_workspace_code(
+    *,
+    workspace_root: str,
+    repos: list[str],
+    keywords: list[str],
+    max_files: int | None = None,
+    max_matches_per_file: int | None = None,
+) -> list[dict[str, Any]]:
     if not workspace_root or not keywords:
         return []
     root = Path(workspace_root).expanduser().resolve()
@@ -50,7 +57,9 @@ def search_workspace_code(*, workspace_root: str, repos: list[str], keywords: li
                     key,
                     {"repo": repo, "path": match["path"], "matches": []},
                 )
-                if len(entry["matches"]) < settings.michelle_dev_context_max_matches_per_file:
+                if len(entry["matches"]) < (
+                    max_matches_per_file or settings.michelle_dev_context_max_matches_per_file
+                ):
                     entry["matches"].append(
                         {
                             "keyword": keyword,
@@ -58,15 +67,15 @@ def search_workspace_code(*, workspace_root: str, repos: list[str], keywords: li
                             "line": match["line"],
                         }
                     )
-                if len(candidates) >= settings.michelle_dev_context_max_files:
+                if len(candidates) >= (max_files or settings.michelle_dev_context_max_files):
                     return list(candidates.values())
     return list(candidates.values())
 
 
-def configured_code_repos() -> list[str]:
+def configured_code_repos(value: str | None = None) -> list[str]:
     return [
         repo.strip()
-        for repo in settings.michelle_dev_context_repos.split(",")
+        for repo in (value if value is not None else settings.michelle_dev_context_repos).split(",")
         if repo.strip()
     ]
 

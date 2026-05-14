@@ -25,8 +25,12 @@ TABLES = ("prds", "coverage_items", "test_cases", "runs")
 def upgrade() -> None:
     for table in TABLES:
         op.add_column(table, sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
-        op.add_column(table, sa.Column("deleted_by", sa.String(), nullable=False, server_default=""))
-        op.add_column(table, sa.Column("delete_reason", sa.String(), nullable=False, server_default=""))
+        op.add_column(
+            table, sa.Column("deleted_by", sa.String(), nullable=False, server_default="")
+        )
+        op.add_column(
+            table, sa.Column("delete_reason", sa.String(), nullable=False, server_default="")
+        )
         op.create_index(f"ix_{table}_deleted_at", table, ["deleted_at"])
         op.create_index(f"ix_{table}_deleted_by", table, ["deleted_by"])
 

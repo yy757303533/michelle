@@ -24,8 +24,12 @@ api_router.include_router(prd.router, prefix="/prd", tags=["prd"])
 api_router.include_router(coverage.router, prefix="/coverage", tags=["coverage"])
 api_router.include_router(dev_context.router, prefix="/dev-context", tags=["dev-context"])
 api_router.include_router(cases.router, prefix="/cases", tags=["cases"])
-api_router.include_router(regression_assets.router, prefix="/regression-assets", tags=["regression-assets"])
-api_router.include_router(case_feedback.router, prefix="/case-draft-feedback", tags=["case-draft-feedback"])
+api_router.include_router(
+    regression_assets.router, prefix="/regression-assets", tags=["regression-assets"]
+)
+api_router.include_router(
+    case_feedback.router, prefix="/case-draft-feedback", tags=["case-draft-feedback"]
+)
 api_router.include_router(runs.router, prefix="/runs", tags=["runs"])
 api_router.include_router(diagnosis.router, prefix="/diagnosis", tags=["diagnosis"])
 api_router.include_router(llm.router, prefix="/llm", tags=["llm"])

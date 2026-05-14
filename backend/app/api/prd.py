@@ -231,7 +231,7 @@ async def import_prd(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     try:
-        source_doc = await fetch_prd_source(body.source)
+        source_doc = await fetch_prd_source(body.source, session=session)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     name = body.name or source_doc.suggested_name
@@ -463,9 +463,7 @@ async def skip_current_generation_batch(
         return {"data": job.model_dump()}
     payload = dict(job.request_payload or {})
     progress = dict(payload.get("progress") or {})
-    active_batches = [
-        b for b in progress.get("active_batches") or [] if isinstance(b, dict)
-    ]
+    active_batches = [b for b in progress.get("active_batches") or [] if isinstance(b, dict)]
     skip_ids = set(payload.get("skip_batch_ids") or [])
     for batch in active_batches:
         if batch.get("batch_id"):

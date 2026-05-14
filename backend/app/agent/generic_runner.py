@@ -290,10 +290,7 @@ async def run_generic_with_playwright(req: RunRequest) -> RunOutcome:
                     else:
                         last_action_key = action_key
                         repeated_action_count = 1
-                    if (
-                        repeated_action_count > 2
-                        and tool_name not in _REPEATABLE_OBSERVATION_TOOLS
-                    ):
+                    if repeated_action_count > 2 and tool_name not in _REPEATABLE_OBSERVATION_TOOLS:
                         transcript.append(
                             f"Rejected repeated action: `{tool_name}` with the same arguments "
                             "has already been attempted twice. Choose a different tool/action, "
@@ -662,14 +659,14 @@ def _find_account_entry_ref(text: str, *, target: str) -> tuple[str, str] | None
     if target == "login":
         return None
     label_re = (
-        _PASSWORD_RESET_ENTRY_LABEL_RE if target == "password_reset" else _REGISTRATION_ENTRY_LABEL_RE
+        _PASSWORD_RESET_ENTRY_LABEL_RE
+        if target == "password_reset"
+        else _REGISTRATION_ENTRY_LABEL_RE
     )
     for match in _CLICKABLE_REF_RE.finditer(text):
         label = (match.group("label_q") or _label_from_snapshot_line(match.group(0))).strip()
         haystack = " ".join(
-            part
-            for part in (label, match.group("body") or "", match.group("tail") or "")
-            if part
+            part for part in (label, match.group("body") or "", match.group("tail") or "") if part
         )
         if label_re.search(haystack):
             return label or haystack.strip()[:80], match.group("ref")
@@ -795,8 +792,7 @@ async def _call_mcp_tool_recording(
         is_error = False
         result_text = (
             f"[tool warning: {decision.reason}; continue with browser_snapshot "
-            "or page state evidence]\n"
-            + _truncate_text(result_text, 600)
+            "or page state evidence]\n" + _truncate_text(result_text, 600)
         )
     step.result_text = result_text
     step.result_is_error = is_error

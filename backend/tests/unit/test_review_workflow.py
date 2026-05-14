@@ -575,9 +575,7 @@ async def test_delete_case_preserves_its_run_history(session, app_client):
     r = await app_client.delete("/api/cases/TC-RUN-DEL")
 
     assert r.status_code == 204
-    assert [r.run_id for r in (await session.execute(select(Run))).scalars().all()] == [
-        "run-del"
-    ]
+    assert [r.run_id for r in (await session.execute(select(Run))).scalars().all()] == ["run-del"]
     assert [e.run_id for e in (await session.execute(select(StepEvent))).scalars().all()] == [
         "run-del"
     ]

@@ -5,9 +5,11 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.db import get_session
+from app.runtime_config import get_dev_context_config
 from app.services.dev_context.code_search import configured_code_repos
 from app.services.dev_context.server_logs import (
     configured_server_groups,
@@ -19,15 +21,18 @@ router = APIRouter()
 
 
 @router.get("/status")
-async def get_dev_context_status() -> dict:
-    workspace = inspect_workspace(settings.michelle_workspace_root)
-    mcp_args = settings.michelle_zdev_mcp_args.strip()
-    mcp_cwd = settings.michelle_zdev_mcp_cwd.strip()
+async def get_dev_context_status(session: AsyncSession = Depends(get_session)) -> dict:
+    cfg = await get_dev_context_config(session)
+    workspace = inspect_workspace(cfg["workspace_root"])
+    mcp_args = str(cfg["zdev_mcp_args"]).strip()
+    mcp_cwd = str(cfg["zdev_mcp_cwd"]).strip()
     mcp_entry = _first_existing_arg_path(mcp_args, cwd=mcp_cwd)
     findings = _dev_context_security_findings(
         workspace_ok=workspace.ok,
         mcp_args=mcp_args,
         mcp_cwd=mcp_cwd,
+        workspace_root=str(cfg["workspace_root"]),
+        server_logs_json=str(cfg["server_logs_json"]),
     )
     return {
         "data": {
@@ -39,21 +44,21 @@ async def get_dev_context_status() -> dict:
                 "repos": [repo.__dict__ for repo in workspace.repos],
             },
             "zdev_mcp": {
-                "configured": bool(settings.michelle_zdev_mcp_args),
-                "command": settings.michelle_zdev_mcp_command,
-                "command_available": shutil.which(settings.michelle_zdev_mcp_command) is not None,
-                "cwd": settings.michelle_zdev_mcp_cwd,
+                "configured": bool(mcp_args),
+                "command": cfg["zdev_mcp_command"],
+                "command_available": shutil.which(str(cfg["zdev_mcp_command"])) is not None,
+                "cwd": mcp_cwd,
                 "cwd_exists": bool(mcp_cwd and Path(mcp_cwd).exists()),
                 "entrypoint": str(mcp_entry) if mcp_entry else "",
                 "entrypoint_exists": bool(mcp_entry and mcp_entry.exists()),
             },
             "code_search": {
-                "repos": configured_code_repos(),
-                "max_files": settings.michelle_dev_context_max_files,
-                "max_matches_per_file": settings.michelle_dev_context_max_matches_per_file,
+                "repos": configured_code_repos(str(cfg["code_repos"])),
+                "max_files": cfg["max_files"],
+                "max_matches_per_file": cfg["max_matches_per_file"],
             },
             "server_logs": {
-                "configured": bool(configured_server_groups()),
+                "configured": bool(configured_server_groups(str(cfg["server_logs_json"]))),
                 "servers": [
                     {
                         "name": str(s.get("name") or s.get("host") or ""),
@@ -61,7 +66,7 @@ async def get_dev_context_status() -> dict:
                         "roles": list(s.get("roles") or []),
                         "log_paths": list(s.get("log_paths") or []),
                     }
-                    for s in configured_server_groups()
+                    for s in configured_server_groups(str(cfg["server_logs_json"]))
                 ],
             },
             "security": {
@@ -91,11 +96,13 @@ def _first_existing_arg_path(args: str, *, cwd: str = "") -> Path | None:
 def _dev_context_security_findings(
     *,
     workspace_ok: bool,
+    workspace_root: str,
     mcp_args: str,
     mcp_cwd: str,
+    server_logs_json: str,
 ) -> list[str]:
     findings: list[str] = []
-    if not settings.michelle_workspace_root:
+    if not workspace_root:
         findings.append("MICHELLE_WORKSPACE_ROOT is not configured")
     elif not workspace_ok:
         findings.append("workspace root is configured but not healthy")
@@ -106,5 +113,5 @@ def _dev_context_security_findings(
         findings.append(f"zstack-dev-mcp entrypoint does not exist: {entrypoint}")
     if mcp_cwd and not Path(mcp_cwd).exists():
         findings.append(f"zstack-dev-mcp cwd does not exist: {mcp_cwd}")
-    findings.extend(server_log_security_findings())
+    findings.extend(server_log_security_findings(server_logs_json))
     return findings

@@ -50,10 +50,9 @@ async def list_case_draft_feedback(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     stmt = select(CaseDraftFeedback).order_by(desc(CaseDraftFeedback.created_at))
-    summary_stmt = (
-        select(CaseDraftFeedback.category, CaseDraftFeedback.status, func.count())
-        .group_by(CaseDraftFeedback.category, CaseDraftFeedback.status)
-    )
+    summary_stmt = select(
+        CaseDraftFeedback.category, CaseDraftFeedback.status, func.count()
+    ).group_by(CaseDraftFeedback.category, CaseDraftFeedback.status)
     if project_id:
         await require_project_role(
             getattr(request.state, "user", None), project_id, "viewer", session

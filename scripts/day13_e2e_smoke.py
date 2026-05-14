@@ -254,9 +254,23 @@ async def _wait_for_runs(
 
 
 async def _diagnose(client: httpx.AsyncClient, backend: str, run_id: str) -> dict[str, Any]:
-    r = await client.post(f"{backend}/api/diagnosis/by-run/{run_id}/generate", json={})
+    r = await client.post(
+        f"{backend}/api/diagnosis/by-run/{run_id}/jobs",
+        json={"include_dev_context": True, "overwrite_existing": True},
+    )
     r.raise_for_status()
-    return r.json()
+    job_id = r.json()["data"]["job_id"]
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        status = await client.get(f"{backend}/api/diagnosis/jobs/{job_id}")
+        status.raise_for_status()
+        data = status.json()["data"]
+        if data["status"] == "done":
+            return data
+        if data["status"] == "failed":
+            raise RuntimeError(f"diagnosis job failed: {data.get('error')}")
+        await asyncio.sleep(2)
+    raise TimeoutError(f"diagnosis job {job_id} did not finish")
 
 
 async def _delete_project(client: httpx.AsyncClient, backend: str, project_id: str) -> None:

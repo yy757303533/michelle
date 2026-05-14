@@ -76,6 +76,15 @@ class SettingsUpdate(BaseModel):
     webhook_url: str | None = None
     webhook_kind: Literal["generic", "feishu", "wecom"] | None = None
     artifact_retention_days: int | None = Field(default=None, ge=1, le=365)
+    michelle_workspace_root: str | None = None
+    michelle_zdev_mcp_command: str | None = None
+    michelle_zdev_mcp_args: str | None = None
+    michelle_zdev_mcp_cwd: str | None = None
+    michelle_zdev_mcp_timeout_seconds: int | None = Field(default=None, ge=5, le=300)
+    michelle_dev_context_repos: str | None = None
+    michelle_dev_context_max_files: int | None = Field(default=None, ge=1, le=50)
+    michelle_dev_context_max_matches_per_file: int | None = Field(default=None, ge=1, le=20)
+    michelle_server_logs_json: str | None = None
 
 
 class ArtifactCleanupRequest(BaseModel):

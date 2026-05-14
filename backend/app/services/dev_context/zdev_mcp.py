@@ -10,23 +10,34 @@ from app.agent.mcp_stdio import StdioMCPClient
 from app.config import settings
 
 
-def build_zdev_mcp_client() -> StdioMCPClient:
+def build_zdev_mcp_client(config: dict[str, Any] | None = None) -> StdioMCPClient:
     """Build a stdio MCP client for the configured zstack-dev-mcp server."""
-    if not settings.michelle_zdev_mcp_args:
+    mcp_args = str((config or {}).get("zdev_mcp_args") or settings.michelle_zdev_mcp_args)
+    if not mcp_args:
         raise RuntimeError("MICHELLE_ZDEV_MCP_ARGS is not configured")
-    cwd = Path(settings.michelle_zdev_mcp_cwd or settings.michelle_workspace_root or ".").resolve()
+    workspace_root = str((config or {}).get("workspace_root") or settings.michelle_workspace_root)
+    mcp_cwd = str((config or {}).get("zdev_mcp_cwd") or settings.michelle_zdev_mcp_cwd)
+    cwd = Path(mcp_cwd or workspace_root or ".").resolve()
     extra_env: dict[str, str] = {}
-    if settings.michelle_workspace_root:
-        extra_env["WORKSPACE_DIR"] = str(Path(settings.michelle_workspace_root).resolve())
+    if workspace_root:
+        extra_env["WORKSPACE_DIR"] = str(Path(workspace_root).resolve())
     return StdioMCPClient(
-        command=settings.michelle_zdev_mcp_command,
-        args=shlex.split(settings.michelle_zdev_mcp_args),
+        command=str((config or {}).get("zdev_mcp_command") or settings.michelle_zdev_mcp_command),
+        args=shlex.split(mcp_args),
         cwd=cwd,
-        timeout_seconds=settings.michelle_zdev_mcp_timeout_seconds,
+        timeout_seconds=int(
+            (config or {}).get("zdev_mcp_timeout_seconds")
+            or settings.michelle_zdev_mcp_timeout_seconds
+        ),
         extra_env=extra_env,
     )
 
 
-async def call_zdev_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    async with build_zdev_mcp_client() as client:
+async def call_zdev_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with build_zdev_mcp_client(config) as client:
         return await client.call_tool(name, arguments)

@@ -190,6 +190,8 @@ MICHELLE_DEV_CONTEXT_MAX_MATCHES_PER_FILE=3
 | `MICHELLE_DEV_CONTEXT_MAX_FILES` | 最多返回多少个候选文件 |
 | `MICHELLE_DEV_CONTEXT_MAX_MATCHES_PER_FILE` | 每个文件最多返回多少条命中 |
 
+这些配置也可以由 admin 在 Dashboard 的 `Platform settings / dev_context` 区域修改。运行时配置会写入 `runtime_settings` 表，优先级高于 `.env`，保存后不需要重启后端。
+
 ## 6. zstack-dev-mcp 准备
 
 在 workspace 中确认 MCP 已安装并编译：
@@ -408,6 +410,7 @@ MICHELLE_DEV_CONTEXT_REPOS=zstack,zstack-ui-next,premium
 | Jira | `ZSTAC-82099`、`QA-12` 这类 key | `jira_get_issue` |
 | Confluence | URL 中的 `pageId=12345` 或 `/pages/12345` | `confluence_get_page` |
 | CI job | GitLab job URL 中的 `/-/jobs/<id>` | `ci_get_job_logs` |
+| Jenkins build | Jenkins URL 中的 `/job/.../<build>` | `jenkins_get_build_log` |
 
 这些调用是 best-effort：
 
@@ -415,7 +418,7 @@ MICHELLE_DEV_CONTEXT_REPOS=zstack,zstack-ui-next,premium
 - 失败不会阻塞诊断；
 - 错误信息会作为 evidence 的 `error` 字段保存。
 
-说明：当前 Confluence 已用于失败诊断证据收集，PRD 直接从 Confluence 页面导入还没有开放 UI/API；Jenkins 专用构建查询也还没有接入，目前已接入的是 GitLab CI job log。
+说明：当前 Confluence 已用于失败诊断证据收集，PRD 直接从 Confluence 页面导入还没有开放 UI/API；Jenkins build log 是 best-effort，如果当前 `zstack-dev-mcp` 没有提供 `jenkins_get_build_log` 工具，诊断会记录错误但不会阻塞。
 
 ## 13. SSH 服务器日志配置
 
@@ -510,7 +513,27 @@ QA 不需要关心底层 MCP 工具名，也不需要手动打开多个系统复
 | 从 workspace / GitLab / Markdown 导入 PRD | `prd.imported` |
 | 普通诊断生成 | `diagnosis.generated` |
 | Workspace-aware 诊断生成 | `diagnosis.dev_context_generated` |
+| 外部证据收集 | `dev_context.external_evidence_collected` |
+| 服务器日志读取 | `dev_context.server_logs_read` |
 | 人工反馈诊断结果 | `diagnosis.feedback` |
+| 发布诊断结果到外部系统 | `diagnosis.published` |
+
+诊断页也提供 `publish back`：
+
+- Jira comment：填写 Jira issue key，例如 `ZSTAC-12345`；
+- Confluence comment：填写 Confluence `pageId`；
+- GitLab discussion 回写已有后端能力，API 使用 `gitlab_discussion` target，需要提供 `project`、`mr_iid`、`discussion_id`。
+
+回写通过 `zstack-dev-mcp` 执行，成功后会写入 `diagnosis.published` audit log。
+
+Workspace-aware diagnosis 现在也支持异步 Job：
+
+```text
+POST /api/diagnosis/by-run/<run_id>/jobs
+GET  /api/diagnosis/jobs/<job_id>
+```
+
+前端诊断页会创建 job 并轮询状态，避免 Jira/Confluence/Jenkins/SSH/LLM 调用时间过长时卡住页面请求。
 
 管理员可以在 Dashboard 的 `Admin ops / Audit log` 查看最近操作。后续如果接 Jira/MR/Confluence 回写，也应该继续沿用这套 audit 机制。
 
@@ -524,12 +547,13 @@ QA 不需要关心底层 MCP 工具名，也不需要手动打开多个系统复
 | 诊断没有候选代码 | `MICHELLE_DEV_CONTEXT_REPOS`、失败关键词、workspace checkout |
 | Jira/Confluence 拉不到 | zstack-dev-mcp 凭据和对应工具是否启用 |
 | CI 日志拉不到 | 失败文本是否包含 GitLab job URL，CI MCP 配置是否可用 |
+| Jenkins 日志拉不到 | 失败文本是否包含 Jenkins build URL，zstack-dev-mcp 是否提供 `jenkins_get_build_log` |
 | SSH 日志为空 | `MICHELLE_SERVER_LOGS_JSON`、SSH key、日志权限 |
 
 ## 17. 当前边界
 
 已经完成的是 PRD 导入和失败诊断证据接入。
 
-暂未做 Confluence PRD 直接导入、Jenkins 专用构建查询、自动修复业务代码、自动创建 MR、自动回写 Jira/MR/Confluence 评论。这些可以作为下一阶段能力继续做。
+暂未做 Confluence PRD 直接导入、自动修复业务代码、自动创建 MR、自动回写 Jira/MR/Confluence 评论。这些可以作为下一阶段能力继续做。
 
 当前版本的目标是先把上下文链路打通，让 Michelle 能稳定地“拿到需求、看到代码、读取证据、生成诊断”。在这个基础上，再做自动回写和修复建议闭环会更稳。

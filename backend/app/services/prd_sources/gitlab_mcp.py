@@ -52,7 +52,9 @@ def extract_mcp_text(result: dict[str, Any]) -> str:
         texts = [
             str(item.get("text"))
             for item in content
-            if isinstance(item, dict) and item.get("type") == "text" and item.get("text") is not None
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and item.get("text") is not None
         ]
         if texts:
             return "\n".join(texts)

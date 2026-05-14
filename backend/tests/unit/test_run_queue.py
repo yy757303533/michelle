@@ -85,9 +85,7 @@ async def test_list_runs_hides_runs_for_deleted_cases(session, app_client):
 
 
 @pytest.mark.asyncio
-async def test_list_runs_keeps_runs_for_soft_deleted_cases_with_source_status(
-    session, app_client
-):
+async def test_list_runs_keeps_runs_for_soft_deleted_cases_with_source_status(session, app_client):
     session.add(Project(project_id="demo", name="Demo"))
     case = _case("TC-r1")
     case.review_status = "pending"

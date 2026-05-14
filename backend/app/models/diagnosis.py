@@ -45,3 +45,26 @@ class Diagnosis(SQLModel, table=True):
         default_factory=_utcnow,
         sa_column=Column(TZDateTime(), nullable=False),
     )
+
+
+class DiagnosisJob(SQLModel, table=True):
+    __tablename__ = "diagnosis_jobs"
+
+    job_id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    project_id: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    include_dev_context: bool = False
+    overwrite_existing: bool = False
+    prefer_provider: str = ""
+    diag_id: str = ""
+    error: str = ""
+    created_by: str = ""
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(TZDateTime(), nullable=False),
+    )

@@ -60,6 +60,10 @@ MICHELLE_ZDEV_MCP_TIMEOUT_SECONDS=60
 MICHELLE_DEV_CONTEXT_REPOS=zstack,zstack-ui-next,premium
 ```
 
+Admins can also edit these values from Dashboard → Platform settings →
+`dev_context`. Runtime values are stored in `runtime_settings` and override the
+`.env` defaults without a backend restart.
+
 Deployment requirements:
 
 - `MICHELLE_WORKSPACE_ROOT` must point to a real workspace directory.
@@ -89,8 +93,13 @@ When a failed run is diagnosed with workspace context, Michelle collects:
 
 - browser/test evidence from the run;
 - workspace code candidates using `rg`;
-- Jira keys and CI job logs through `zstack-dev-mcp` when present in failure text;
+- Jira keys, Confluence pages, GitLab CI job logs, and Jenkins build logs
+  through `zstack-dev-mcp` when present in failure text;
 - configured SSH log tails.
+
+Workspace-aware diagnosis runs through a background DiagnosisJob. The UI starts
+the job and polls `/api/diagnosis/jobs/{job_id}` until it reaches `done` or
+`failed`.
 
 ## 4. Main Workflow
 

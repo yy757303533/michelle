@@ -1417,6 +1417,15 @@ interface RuntimeSettingsResponse {
     webhook_url: RuntimeKnob<string>;
     webhook_kind: RuntimeKnob<"generic" | "feishu" | "wecom">;
     artifact_retention_days: RuntimeKnob<number>;
+    michelle_workspace_root: RuntimeKnob<string>;
+    michelle_zdev_mcp_command: RuntimeKnob<string>;
+    michelle_zdev_mcp_args: RuntimeKnob<string>;
+    michelle_zdev_mcp_cwd: RuntimeKnob<string>;
+    michelle_zdev_mcp_timeout_seconds: RuntimeKnob<number>;
+    michelle_dev_context_repos: RuntimeKnob<string>;
+    michelle_dev_context_max_files: RuntimeKnob<number>;
+    michelle_dev_context_max_matches_per_file: RuntimeKnob<number>;
+    michelle_server_logs_json: RuntimeKnob<string>;
   };
 }
 
@@ -1463,9 +1472,11 @@ function RuntimeSettingsPanel() {
   const diagnosisProviderKnob = settings.data?.data.diagnosis_provider;
   const emailKnobs = settings.data?.data;
   const artifactKnob = settings.data?.data.artifact_retention_days;
+  const devContextKnobs = settings.data?.data;
   const [draft, setDraft] = useState<number | null>(null);
   const [artifactDraft, setArtifactDraft] = useState<number | null>(null);
   const [emailDraft, setEmailDraft] = useState<Record<string, string | number | boolean>>({});
+  const [devContextDraft, setDevContextDraft] = useState<Record<string, string | number>>({});
   const value = draft ?? concurrencyKnob?.value ?? 2;
   const artifactRetention = artifactDraft ?? artifactKnob?.value ?? 30;
 
@@ -1499,6 +1510,10 @@ function RuntimeSettingsPanel() {
 
   const setEmailValue = (key: string, value: string | number | boolean) =>
     setEmailDraft((prev) => ({ ...prev, [key]: value }));
+  const devContextValue = <T extends string | number>(key: string, fallback: T): T =>
+    (devContextDraft[key] as T | undefined) ?? fallback;
+  const setDevContextValue = (key: string, value: string | number) =>
+    setDevContextDraft((prev) => ({ ...prev, [key]: value }));
 
   const saveEmail = () => {
     if (!emailKnobs) return;
@@ -1550,6 +1565,55 @@ function RuntimeSettingsPanel() {
       return r.json();
     },
   });
+  const saveDevContext = () => {
+    if (!devContextKnobs) return;
+    save.mutate(
+      {
+        michelle_workspace_root: devContextValue(
+          "michelle_workspace_root",
+          devContextKnobs.michelle_workspace_root.value,
+        ),
+        michelle_zdev_mcp_command: devContextValue(
+          "michelle_zdev_mcp_command",
+          devContextKnobs.michelle_zdev_mcp_command.value,
+        ),
+        michelle_zdev_mcp_args: devContextValue(
+          "michelle_zdev_mcp_args",
+          devContextKnobs.michelle_zdev_mcp_args.value,
+        ),
+        michelle_zdev_mcp_cwd: devContextValue(
+          "michelle_zdev_mcp_cwd",
+          devContextKnobs.michelle_zdev_mcp_cwd.value,
+        ),
+        michelle_zdev_mcp_timeout_seconds: devContextValue(
+          "michelle_zdev_mcp_timeout_seconds",
+          devContextKnobs.michelle_zdev_mcp_timeout_seconds.value,
+        ),
+        michelle_dev_context_repos: devContextValue(
+          "michelle_dev_context_repos",
+          devContextKnobs.michelle_dev_context_repos.value,
+        ),
+        michelle_dev_context_max_files: devContextValue(
+          "michelle_dev_context_max_files",
+          devContextKnobs.michelle_dev_context_max_files.value,
+        ),
+        michelle_dev_context_max_matches_per_file: devContextValue(
+          "michelle_dev_context_max_matches_per_file",
+          devContextKnobs.michelle_dev_context_max_matches_per_file.value,
+        ),
+        michelle_server_logs_json: devContextValue(
+          "michelle_server_logs_json",
+          devContextKnobs.michelle_server_logs_json.value,
+        ),
+      },
+      {
+        onSuccess: () => {
+          setDevContextDraft({});
+          qc.invalidateQueries({ queryKey: ["dev-context-status"] });
+        },
+      },
+    );
+  };
 
   return (
     <Panel title="Platform settings">
@@ -1914,6 +1978,135 @@ function RuntimeSettingsPanel() {
               </span>
             )}
           </div>
+          {devContextKnobs && (
+            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <code className="text-xs text-slate-500">dev_context</code>
+                <span className="text-xs text-slate-400">
+                  workspace / zstack-dev-mcp / code search / server logs
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <EmailInput
+                  label="Workspace root"
+                  value={devContextValue(
+                    "michelle_workspace_root",
+                    devContextKnobs.michelle_workspace_root.value,
+                  )}
+                  onChange={(v) => setDevContextValue("michelle_workspace_root", v)}
+                />
+                <EmailInput
+                  label="MCP command"
+                  value={devContextValue(
+                    "michelle_zdev_mcp_command",
+                    devContextKnobs.michelle_zdev_mcp_command.value,
+                  )}
+                  onChange={(v) => setDevContextValue("michelle_zdev_mcp_command", v)}
+                />
+                <EmailInput
+                  label="MCP args"
+                  value={devContextValue(
+                    "michelle_zdev_mcp_args",
+                    devContextKnobs.michelle_zdev_mcp_args.value,
+                  )}
+                  onChange={(v) => setDevContextValue("michelle_zdev_mcp_args", v)}
+                />
+                <EmailInput
+                  label="MCP cwd"
+                  value={devContextValue(
+                    "michelle_zdev_mcp_cwd",
+                    devContextKnobs.michelle_zdev_mcp_cwd.value,
+                  )}
+                  onChange={(v) => setDevContextValue("michelle_zdev_mcp_cwd", v)}
+                />
+                <EmailInput
+                  label="Code repos"
+                  value={devContextValue(
+                    "michelle_dev_context_repos",
+                    devContextKnobs.michelle_dev_context_repos.value,
+                  )}
+                  onChange={(v) => setDevContextValue("michelle_dev_context_repos", v)}
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <EmailInput
+                    label="MCP timeout"
+                    type="number"
+                    value={String(
+                      devContextValue(
+                        "michelle_zdev_mcp_timeout_seconds",
+                        devContextKnobs.michelle_zdev_mcp_timeout_seconds.value,
+                      ),
+                    )}
+                    onChange={(v) =>
+                      setDevContextValue(
+                        "michelle_zdev_mcp_timeout_seconds",
+                        parseInt(v, 10) || 60,
+                      )
+                    }
+                  />
+                  <EmailInput
+                    label="Max files"
+                    type="number"
+                    value={String(
+                      devContextValue(
+                        "michelle_dev_context_max_files",
+                        devContextKnobs.michelle_dev_context_max_files.value,
+                      ),
+                    )}
+                    onChange={(v) =>
+                      setDevContextValue("michelle_dev_context_max_files", parseInt(v, 10) || 8)
+                    }
+                  />
+                  <EmailInput
+                    label="Matches/file"
+                    type="number"
+                    value={String(
+                      devContextValue(
+                        "michelle_dev_context_max_matches_per_file",
+                        devContextKnobs.michelle_dev_context_max_matches_per_file.value,
+                      ),
+                    )}
+                    onChange={(v) =>
+                      setDevContextValue(
+                        "michelle_dev_context_max_matches_per_file",
+                        parseInt(v, 10) || 3,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+              <label className="mt-2 block text-xs text-slate-600">
+                Server logs JSON
+                <textarea
+                  rows={4}
+                  value={devContextValue(
+                    "michelle_server_logs_json",
+                    devContextKnobs.michelle_server_logs_json.value,
+                  )}
+                  onChange={(e) =>
+                    setDevContextValue("michelle_server_logs_json", e.target.value)
+                  }
+                  className="mt-1 w-full border border-slate-200 rounded px-2 py-1 text-xs font-mono bg-white"
+                />
+              </label>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={saveDevContext}
+                  disabled={save.isPending}
+                  className="text-xs bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {save.isPending ? "saving…" : "save DevContext"}
+                </button>
+                <button
+                  onClick={() => setDevContextDraft({})}
+                  disabled={Object.keys(devContextDraft).length === 0}
+                  className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+                >
+                  reset
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </Panel>

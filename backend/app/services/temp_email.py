@@ -33,7 +33,9 @@ async def create_temp_inbox() -> TempInbox:
     if provider in {"", "none", "disabled"}:
         raise TempEmailError("temporary email provider is disabled")
     if provider != "mail_tm":
-        raise TempEmailError(f"unsupported temporary email provider: {settings.temp_email_provider}")
+        raise TempEmailError(
+            f"unsupported temporary email provider: {settings.temp_email_provider}"
+        )
     return await _create_mail_tm_inbox()
 
 
@@ -62,7 +64,9 @@ async def _create_mail_tm_inbox() -> TempInbox:
             raise TempEmailError("temporary email provider returned no domains")
 
         address = f"michelle-{secrets.token_hex(8)}@{domain}"
-        account_resp = await client.post("/accounts", json={"address": address, "password": password})
+        account_resp = await client.post(
+            "/accounts", json={"address": address, "password": password}
+        )
         account_resp.raise_for_status()
         token_resp = await client.post("/token", json={"address": address, "password": password})
         token_resp.raise_for_status()

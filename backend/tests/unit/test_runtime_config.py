@@ -147,6 +147,9 @@ async def test_snapshot_includes_all_known_knobs(session):
     assert snap["diagnosis_provider"]["choices"] == ["auto", "claude-cli", "codex-cli"]
     assert snap["smtp_password"]["value"] == ""
     assert snap["smtp_password"]["is_set"] is False
+    assert "michelle_workspace_root" in snap
+    assert "michelle_zdev_mcp_args" in snap
+    assert "michelle_server_logs_json" in snap
     for entry in snap.values():
         assert "value" in entry
         assert "default" in entry
@@ -176,6 +179,41 @@ async def test_update_many_persists_then_reads_back(session):
     assert await rc.get_case_drafting_provider(session) == "claude-cli"
     assert await rc.get_case_execution_provider(session) == "claude-cli"
     assert await rc.get_diagnosis_provider(session) == "codex-cli"
+
+
+@pytest.mark.asyncio
+async def test_dev_context_config_defaults_and_overrides(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "michelle_workspace_root", "/env/workspace")
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_command", "node")
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_args", "/env/mcp/dist/index.js")
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_cwd", "/env/mcp")
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_timeout_seconds", 60)
+    monkeypatch.setattr(settings, "michelle_dev_context_repos", "zstack")
+    monkeypatch.setattr(settings, "michelle_dev_context_max_files", 8)
+    monkeypatch.setattr(settings, "michelle_dev_context_max_matches_per_file", 3)
+    monkeypatch.setattr(settings, "michelle_server_logs_json", "")
+
+    cfg = await rc.get_dev_context_config(session)
+    assert cfg["workspace_root"] == "/env/workspace"
+    assert cfg["zdev_mcp_args"] == "/env/mcp/dist/index.js"
+    assert cfg["code_repos"] == "zstack"
+
+    await rc.update_many(
+        session,
+        {
+            "michelle_workspace_root": "/runtime/workspace",
+            "michelle_zdev_mcp_args": "/runtime/mcp/dist/index.js",
+            "michelle_dev_context_repos": "zstack,premium",
+            "michelle_server_logs_json": '{"servers":[]}',
+        },
+    )
+    cfg = await rc.get_dev_context_config(session)
+    assert cfg["workspace_root"] == "/runtime/workspace"
+    assert cfg["zdev_mcp_args"] == "/runtime/mcp/dist/index.js"
+    assert cfg["code_repos"] == "zstack,premium"
+    assert cfg["server_logs_json"] == '{"servers":[]}'
 
 
 @pytest.mark.asyncio
@@ -270,6 +308,9 @@ async def test_put_settings_endpoint_round_trip(app_client):
             "artifact_retention_days": 14,
             "smtp_host": "smtp.example.com",
             "smtp_password": "secret",
+            "michelle_workspace_root": "/runtime/workspace",
+            "michelle_zdev_mcp_args": "/runtime/mcp/dist/index.js",
+            "michelle_server_logs_json": '{"servers":[]}',
         },
     )
     assert r.status_code == 200
@@ -287,3 +328,6 @@ async def test_put_settings_endpoint_round_trip(app_client):
     assert data["smtp_host"]["value"] == "smtp.example.com"
     assert data["smtp_password"]["value"] == ""
     assert data["smtp_password"]["is_set"] is True
+    assert data["michelle_workspace_root"]["value"] == "/runtime/workspace"
+    assert data["michelle_zdev_mcp_args"]["value"] == "/runtime/mcp/dist/index.js"
+    assert data["michelle_server_logs_json"]["value"] == '{"servers":[]}'
