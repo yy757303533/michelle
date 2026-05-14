@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.runtime_config import get_dev_context_config
 from app.services.dev_context.code_search import configured_code_repos
+from app.services.dev_context.probes import probe_server_logs, probe_zdev_mcp
 from app.services.dev_context.server_logs import (
     configured_server_groups,
     server_log_security_findings,
@@ -81,6 +82,18 @@ async def get_dev_context_status(session: AsyncSession = Depends(get_session)) -
             },
         }
     }
+
+
+@router.post("/probe/mcp")
+async def probe_dev_context_mcp(session: AsyncSession = Depends(get_session)) -> dict:
+    cfg = await get_dev_context_config(session)
+    return {"data": await probe_zdev_mcp(cfg)}
+
+
+@router.post("/probe/server-logs")
+async def probe_dev_context_server_logs(session: AsyncSession = Depends(get_session)) -> dict:
+    cfg = await get_dev_context_config(session)
+    return {"data": probe_server_logs(str(cfg["server_logs_json"]))}
 
 
 def _first_existing_arg_path(args: str, *, cwd: str = "") -> Path | None:

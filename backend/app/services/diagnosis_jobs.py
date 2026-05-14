@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import desc, select
 
 from app import db as db_mod
 from app.auth import audit
-from app.models import DiagnosisJob, Run
+from app.models import Diagnosis, DiagnosisJob, Run
 from app.services.diagnoser import diagnose_run
 
 
@@ -22,6 +23,38 @@ async def create_diagnosis_job(
     prefer_provider: str | None,
     session: AsyncSession,
 ) -> DiagnosisJob:
+    if not overwrite_existing:
+        existing = (
+            (
+                await session.execute(
+                    select(Diagnosis)
+                    .where(Diagnosis.run_id == run.run_id)
+                    .order_by(desc(Diagnosis.created_at))
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            job = DiagnosisJob(
+                job_id="diagjob_" + uuid4().hex[:12],
+                run_id=run.run_id,
+                project_id=run.project_id,
+                status="done",
+                include_dev_context=include_dev_context,
+                overwrite_existing=overwrite_existing,
+                prefer_provider=prefer_provider or "",
+                diag_id=existing.diag_id,
+                error="reused existing diagnosis",
+                created_by=str((actor or {}).get("username") or ""),
+                updated_at=datetime.now(UTC),
+            )
+            session.add(job)
+            await session.commit()
+            await session.refresh(job)
+            return job
+
     job = DiagnosisJob(
         job_id="diagjob_" + uuid4().hex[:12],
         run_id=run.run_id,

@@ -20,7 +20,7 @@ from app.services.diagnoser import (
 )
 from app.services.diagnosis_jobs import create_diagnosis_job, run_diagnosis_job
 from app.services.pattern_store import find_matches_for_run
-from app.services.report_publish import publish_diagnosis
+from app.services.report_publish import build_publish_suggestions, publish_diagnosis
 
 router = APIRouter()
 
@@ -138,9 +138,14 @@ async def get_diagnoses_by_run(
         .all()
     )
     matches = await find_matches_for_run(run_id=run_id, session=session)
+    diag_rows = []
+    for diag in diags:
+        row = diag.model_dump()
+        row["publish_suggestions"] = build_publish_suggestions(diag)
+        diag_rows.append(row)
     return {
         "data": {
-            "diagnoses": [d.model_dump() for d in diags],
+            "diagnoses": diag_rows,
             "pattern_matches": [
                 {
                     "pattern_id": p.pattern_id,
@@ -298,11 +303,12 @@ async def create_diagnosis_job_for_run(
         session=session,
     )
     await session.commit()
-    background_tasks.add_task(
-        run_diagnosis_job,
-        job_id=job.job_id,
-        actor=getattr(request.state, "user", None),
-    )
+    if job.status not in {"done", "failed", "cancelled"}:
+        background_tasks.add_task(
+            run_diagnosis_job,
+            job_id=job.job_id,
+            actor=getattr(request.state, "user", None),
+        )
     return {"data": job.model_dump()}
 
 
@@ -335,7 +341,9 @@ async def get_diagnosis(
         await require_project_role(
             getattr(request.state, "user", None), run.project_id, "viewer", session
         )
-    return {"data": row.model_dump()}
+    data = row.model_dump()
+    data["publish_suggestions"] = build_publish_suggestions(row)
+    return {"data": data}
 
 
 @router.post("/{diag_id}/feedback")

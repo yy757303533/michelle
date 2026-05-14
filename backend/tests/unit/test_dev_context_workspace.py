@@ -133,3 +133,52 @@ async def test_dev_context_status_uses_runtime_overrides(
     assert data["zdev_mcp"]["entrypoint"] == str(mcp_dist / "index.js")
     assert data["zdev_mcp"]["entrypoint_exists"] is True
     assert data["code_search"]["repos"] == ["zstack", "premium"]
+
+
+@pytest.mark.asyncio
+async def test_dev_context_probe_mcp_reports_listed_tools(memory_db, monkeypatch) -> None:
+    import app.api.dev_context as dev_context_api
+    from app.main import app
+
+    async def fake_probe_zdev_mcp(config):
+        assert config["zdev_mcp_args"]
+        return {"ok": True, "detail": "2 tools", "tools": ["jira_search", "confluence_get_page"]}
+
+    monkeypatch.setattr(dev_context_api, "probe_zdev_mcp", fake_probe_zdev_mcp)
+    monkeypatch.setattr(settings, "michelle_zdev_mcp_args", "dist/index.js")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/dev-context/probe/mcp")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ok"] is True
+    assert data["tools"] == ["jira_search", "confluence_get_page"]
+
+
+@pytest.mark.asyncio
+async def test_dev_context_probe_server_logs_reports_snippet_counts(memory_db, monkeypatch) -> None:
+    import app.api.dev_context as dev_context_api
+    from app.main import app
+
+    def fake_probe_server_logs(config_json):
+        assert "servers" in config_json
+        return {"ok": False, "detail": "1/2 snippets ok", "configured": True, "snippets": 2}
+
+    monkeypatch.setattr(dev_context_api, "probe_server_logs", fake_probe_server_logs)
+    monkeypatch.setattr(
+        settings,
+        "michelle_server_logs_json",
+        '{"servers":[{"name":"api","host":"h","user":"u","log_paths":["/var/log/app.log"]}]}',
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/dev-context/probe/server-logs")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ok"] is False
+    assert data["configured"] is True
+    assert data["snippets"] == 2

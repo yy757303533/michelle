@@ -85,3 +85,41 @@ async def test_diagnosis_job_runs_in_background(app_client, monkeypatch) -> None
     data = fetched.json()["data"]
     assert data["status"] == "done"
     assert data["diag_id"] == "DIAG-JOB"
+
+
+@pytest.mark.asyncio
+async def test_diagnosis_job_reuses_existing_diagnosis_without_background_work(
+    app_client, monkeypatch
+) -> None:
+    import app.api.diagnosis as diagnosis_api
+
+    client, maker = app_client
+    async with maker() as session:
+        session.add(
+            Diagnosis(
+                diag_id="DIAG-EXISTING",
+                run_id="RUN-JOB",
+                case_id="CASE-JOB",
+                diagnoser_prompt_version="test",
+                diagnoser_model="test",
+                category="real_bug",
+                confidence=0.7,
+            )
+        )
+        await session.commit()
+
+    async def fail_if_scheduled(**_kwargs):
+        raise AssertionError("diagnosis background task should not be scheduled")
+
+    monkeypatch.setattr(diagnosis_api, "run_diagnosis_job", fail_if_scheduled)
+
+    created = await client.post(
+        "/api/diagnosis/by-run/RUN-JOB/jobs",
+        json={"overwrite_existing": False, "include_dev_context": True},
+    )
+
+    assert created.status_code == 200
+    data = created.json()["data"]
+    assert data["status"] == "done"
+    assert data["diag_id"] == "DIAG-EXISTING"
+    assert data["error"] == "reused existing diagnosis"

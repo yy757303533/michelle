@@ -524,6 +524,8 @@ QA 不需要关心底层 MCP 工具名，也不需要手动打开多个系统复
 - Confluence comment：填写 Confluence `pageId`；
 - GitLab discussion 回写已有后端能力，API 使用 `gitlab_discussion` target，需要提供 `project`、`mr_iid`、`discussion_id`。
 
+如果诊断证据里已经包含 Jira / Confluence / GitLab discussion 信息，诊断页会在 `suggested targets` 下拉框里预填可回写目标；识别不到时仍然可以手动填写。
+
 回写通过 `zstack-dev-mcp` 执行，成功后会写入 `diagnosis.published` audit log。
 
 Workspace-aware diagnosis 现在也支持异步 Job：
@@ -534,6 +536,12 @@ GET  /api/diagnosis/jobs/<job_id>
 ```
 
 前端诊断页会创建 job 并轮询状态，避免 Jira/Confluence/Jenkins/SSH/LLM 调用时间过长时卡住页面请求。
+如果 run 已经有诊断且请求没有设置 `overwrite_existing=true`，后端会创建一个已完成 job 并复用已有 `diag_id`，避免 hook 自动诊断和手动诊断重复消耗 LLM。
+
+Dashboard 的 `Platform settings / dev_context` 提供两个单项探测按钮：
+
+- `probe MCP`：启动 `zstack-dev-mcp` 并列出可用 tools；
+- `probe logs`：按当前 server logs JSON 做一次短超时 tail 探测，结果只展示摘要。
 
 管理员可以在 Dashboard 的 `Admin ops / Audit log` 查看最近操作。后续如果接 Jira/MR/Confluence 回写，也应该继续沿用这套 audit 机制。
 

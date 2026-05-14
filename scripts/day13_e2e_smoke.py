@@ -256,7 +256,7 @@ async def _wait_for_runs(
 async def _diagnose(client: httpx.AsyncClient, backend: str, run_id: str) -> dict[str, Any]:
     r = await client.post(
         f"{backend}/api/diagnosis/by-run/{run_id}/jobs",
-        json={"include_dev_context": True, "overwrite_existing": True},
+        json={"include_dev_context": True, "overwrite_existing": False},
     )
     r.raise_for_status()
     job_id = r.json()["data"]["job_id"]
@@ -266,11 +266,23 @@ async def _diagnose(client: httpx.AsyncClient, backend: str, run_id: str) -> dic
         status.raise_for_status()
         data = status.json()["data"]
         if data["status"] == "done":
-            return data
+            return _assert_finished_diagnosis_job(data)
         if data["status"] == "failed":
             raise RuntimeError(f"diagnosis job failed: {data.get('error')}")
         await asyncio.sleep(2)
     raise TimeoutError(f"diagnosis job {job_id} did not finish")
+
+
+def _assert_finished_diagnosis_job(data: dict[str, Any]) -> dict[str, Any]:
+    if data.get("status") != "done":
+        raise RuntimeError(
+            f"diagnosis job {data.get('job_id') or '<unknown>'} ended with {data.get('status')}: {data.get('error') or ''}"
+        )
+    if not data.get("diag_id"):
+        raise RuntimeError(
+            f"diagnosis job {data.get('job_id') or '<unknown>'} is done but missing diag_id"
+        )
+    return data
 
 
 async def _delete_project(client: httpx.AsyncClient, backend: str, project_id: str) -> None:

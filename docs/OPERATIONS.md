@@ -101,6 +101,15 @@ Workspace-aware diagnosis runs through a background DiagnosisJob. The UI starts
 the job and polls `/api/diagnosis/jobs/{job_id}` until it reaches `done` or
 `failed`.
 
+Diagnosis job creation reuses an existing diagnosis for the same run when
+`overwrite_existing=false`; this avoids duplicate LLM calls when the failed-run
+hook already produced a diagnosis. Use the explicit regenerate action in the UI
+when a fresh diagnosis is needed.
+
+The Dashboard `dev_context` settings card has targeted probes for
+`zstack-dev-mcp` and configured server logs. Use those probes after changing
+workspace, MCP, or SSH log settings.
+
 ## 4. Main Workflow
 
 ### Step 1. Import PRD

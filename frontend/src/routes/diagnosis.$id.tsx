@@ -46,7 +46,19 @@ interface DiagnosisRow {
   feedback_target: string;
   feedback_at: string | null;
   created_at: string;
+  publish_suggestions?: PublishSuggestion[];
 }
+
+type PublishSuggestion =
+  | { type: "jira"; issue_key: string; label: string }
+  | { type: "confluence"; page_id: string; label: string }
+  | {
+      type: "gitlab_discussion";
+      project: string;
+      mr_iid: number;
+      discussion_id: string;
+      label: string;
+    };
 
 interface PatternMatch {
   pattern_id: string;
@@ -130,12 +142,15 @@ function DiagnosisDetailPage() {
   }, [id, job.data?.data.status, jobId, qc]);
 
   const generate = useMutation({
-    mutationFn: async (withDevContext: boolean = false) => {
+    mutationFn: async (args: { withDevContext?: boolean; overwrite?: boolean } = {}) => {
       const r = await apiFetch(`/api/diagnosis/by-run/${id}/jobs`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ overwrite_existing: true, include_dev_context: withDevContext }),
-        });
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          overwrite_existing: Boolean(args.overwrite),
+          include_dev_context: Boolean(args.withDevContext),
+        }),
+      });
       if (!r.ok) throw new Error(await r.text());
       return (await r.json()) as DiagnosisJobResponse;
     },
@@ -190,6 +205,35 @@ function DiagnosisDetailPage() {
   const diag = byRun.data?.data.diagnoses?.[0];
   const matches = byRun.data?.data.pattern_matches ?? [];
 
+  useEffect(() => {
+    const suggestion = diag?.publish_suggestions?.[0];
+    if (!suggestion) return;
+    if (publishTarget || publishProject || publishMrIid || publishDiscussionId) return;
+    applyPublishSuggestion(suggestion);
+  }, [diag?.diag_id]);
+
+  function applyPublishSuggestion(suggestion: PublishSuggestion) {
+    setPublishType(suggestion.type);
+    if (suggestion.type === "jira") {
+      setPublishTarget(suggestion.issue_key);
+      setPublishProject("");
+      setPublishMrIid("");
+      setPublishDiscussionId("");
+      return;
+    }
+    if (suggestion.type === "confluence") {
+      setPublishTarget(suggestion.page_id);
+      setPublishProject("");
+      setPublishMrIid("");
+      setPublishDiscussionId("");
+      return;
+    }
+    setPublishTarget("");
+    setPublishProject(suggestion.project);
+    setPublishMrIid(String(suggestion.mr_iid));
+    setPublishDiscussionId(suggestion.discussion_id);
+  }
+
   return (
     <div className="space-y-6">
       <Link to="/runs/$id" params={{ id }} className="text-xs text-slate-500 hover:text-slate-900">
@@ -218,14 +262,14 @@ function DiagnosisDetailPage() {
           </div>
           <button
             disabled={generate.isPending}
-            onClick={() => generate.mutate(false)}
+            onClick={() => generate.mutate({ withDevContext: false })}
             className="bg-slate-900 text-white text-sm px-3 py-1.5 rounded hover:bg-slate-700 disabled:opacity-50"
           >
             {generate.isPending || jobId ? "diagnosing…" : "Run diagnosis"}
           </button>
           <button
             disabled={generate.isPending}
-            onClick={() => generate.mutate(true)}
+            onClick={() => generate.mutate({ withDevContext: true })}
             className="ml-2 bg-indigo-700 text-white text-sm px-3 py-1.5 rounded hover:bg-indigo-800 disabled:opacity-50"
           >
             Analyze with workspace context
@@ -439,6 +483,23 @@ function DiagnosisDetailPage() {
 
           <Section title="publish back">
             <div className="flex flex-wrap items-center gap-2 text-sm">
+              {(diag.publish_suggestions ?? []).length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const suggestion = (diag.publish_suggestions ?? [])[Number(e.target.value)];
+                    if (suggestion) applyPublishSuggestion(suggestion);
+                  }}
+                  className="border border-slate-200 rounded px-2 py-1 text-sm"
+                >
+                  <option value="">suggested targets</option>
+                  {(diag.publish_suggestions ?? []).map((suggestion, index) => (
+                    <option key={`${suggestion.type}:${suggestion.label}`} value={index}>
+                      {suggestion.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <select
                 value={publishType}
                 onChange={(e) => {
@@ -510,14 +571,14 @@ function DiagnosisDetailPage() {
             </span>
             <button
               disabled={generate.isPending || Boolean(jobId)}
-              onClick={() => generate.mutate(false)}
+              onClick={() => generate.mutate({ withDevContext: false, overwrite: true })}
               className="text-xs px-2 py-0.5 rounded border border-slate-200 hover:border-slate-400"
             >
               {generate.isPending ? "regenerating…" : "↻ regenerate"}
             </button>
             <button
               disabled={generate.isPending || Boolean(jobId)}
-              onClick={() => generate.mutate(true)}
+              onClick={() => generate.mutate({ withDevContext: true, overwrite: true })}
               className="ml-2 text-xs px-2 py-0.5 rounded border border-indigo-200 text-indigo-700 hover:border-indigo-400"
             >
               workspace context

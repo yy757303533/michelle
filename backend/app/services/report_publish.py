@@ -24,6 +24,60 @@ def build_diagnosis_comment(diag: Diagnosis) -> str:
     )
 
 
+def build_publish_suggestions(diag: Diagnosis) -> list[dict[str, Any]]:
+    """Infer publish targets from collected external diagnosis evidence."""
+    external = (diag.evidence_pack or {}).get("external_context") or {}
+    suggestions: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    for row in external.get("jira") or []:
+        key = str(row.get("key") or "").strip()
+        if not key or not row.get("ok", True):
+            continue
+        marker = ("jira", key)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        suggestions.append({"type": "jira", "issue_key": key, "label": f"Jira {key}"})
+
+    for row in external.get("confluence") or []:
+        page_id = str(row.get("page_id") or "").strip()
+        if not page_id or not row.get("ok", True):
+            continue
+        marker = ("confluence", page_id)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        suggestions.append(
+            {"type": "confluence", "page_id": page_id, "label": f"Confluence {page_id}"}
+        )
+
+    for row in external.get("gitlab_discussions") or []:
+        project = str(row.get("project") or "").strip()
+        discussion_id = str(row.get("discussion_id") or "").strip()
+        try:
+            mr_iid = int(row.get("mr_iid") or 0)
+        except (TypeError, ValueError):
+            mr_iid = 0
+        if not project or not mr_iid or not discussion_id or not row.get("ok", True):
+            continue
+        marker = ("gitlab_discussion", project, mr_iid, discussion_id)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        suggestions.append(
+            {
+                "type": "gitlab_discussion",
+                "project": project,
+                "mr_iid": mr_iid,
+                "discussion_id": discussion_id,
+                "label": f"GitLab MR !{mr_iid} discussion",
+            }
+        )
+
+    return suggestions
+
+
 async def publish_diagnosis(
     *,
     diag: Diagnosis,

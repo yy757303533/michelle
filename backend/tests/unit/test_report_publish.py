@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from app.models import Diagnosis
-from app.services.report_publish import build_diagnosis_comment, publish_diagnosis
+from app.services.report_publish import (
+    build_diagnosis_comment,
+    build_publish_suggestions,
+    publish_diagnosis,
+)
 
 
 def _diag() -> Diagnosis:
@@ -18,6 +22,38 @@ def _diag() -> Diagnosis:
         reasoning="Backend returned 500.",
         fix_suggestion="Handle missing profile.",
     )
+
+
+def test_build_publish_suggestions_extracts_external_context_targets() -> None:
+    diag = _diag()
+    diag.evidence_pack = {
+        "external_context": {
+            "jira": [{"key": "ZSTAC-1", "ok": True}],
+            "confluence": [{"page_id": "12345", "ok": True}],
+            "gitlab_discussions": [
+                {
+                    "project": "zstack/main",
+                    "mr_iid": 42,
+                    "discussion_id": "abc123",
+                    "ok": True,
+                }
+            ],
+        }
+    }
+
+    suggestions = build_publish_suggestions(diag)
+
+    assert suggestions == [
+        {"type": "jira", "issue_key": "ZSTAC-1", "label": "Jira ZSTAC-1"},
+        {"type": "confluence", "page_id": "12345", "label": "Confluence 12345"},
+        {
+            "type": "gitlab_discussion",
+            "project": "zstack/main",
+            "mr_iid": 42,
+            "discussion_id": "abc123",
+            "label": "GitLab MR !42 discussion",
+        },
+    ]
 
 
 def test_build_diagnosis_comment_contains_core_fields() -> None:

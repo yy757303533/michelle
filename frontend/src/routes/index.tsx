@@ -1450,6 +1450,17 @@ interface ArtifactCleanupResponse {
   };
 }
 
+interface DevContextProbeResponse {
+  data: {
+    ok: boolean;
+    detail: string;
+    configured?: boolean;
+    tools?: string[];
+    snippets?: number;
+    elapsed_ms?: number;
+  };
+}
+
 /** Live-tunable platform knobs. Currently just `max_concurrent_runs`,
  * exposed as a number input + Save button. The new value affects runs
  * launched after save; in-flight runs keep their original semaphore slot. */
@@ -1561,6 +1572,20 @@ function RuntimeSettingsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ retention_days: artifactRetention, dry_run: dryRun }),
       });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+  });
+  const probeDevContextMcp = useMutation({
+    mutationFn: async (): Promise<DevContextProbeResponse> => {
+      const r = await apiFetch("/api/dev-context/probe/mcp", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+  });
+  const probeServerLogs = useMutation({
+    mutationFn: async (): Promise<DevContextProbeResponse> => {
+      const r = await apiFetch("/api/dev-context/probe/server-logs", { method: "POST" });
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     },
@@ -2104,7 +2129,52 @@ function RuntimeSettingsPanel() {
                 >
                   reset
                 </button>
+                <button
+                  onClick={() => probeDevContextMcp.mutate()}
+                  disabled={probeDevContextMcp.isPending}
+                  className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {probeDevContextMcp.isPending ? "probing…" : "probe MCP"}
+                </button>
+                <button
+                  onClick={() => probeServerLogs.mutate()}
+                  disabled={probeServerLogs.isPending}
+                  className="text-xs border border-slate-200 bg-white px-2 py-0.5 rounded hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {probeServerLogs.isPending ? "probing…" : "probe logs"}
+                </button>
               </div>
+              {(probeDevContextMcp.data || probeServerLogs.data) && (
+                <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                  {probeDevContextMcp.data && (
+                    <ProbeResultCard
+                      title="zstack-dev-mcp"
+                      result={probeDevContextMcp.data.data}
+                      extra={
+                        probeDevContextMcp.data.data.tools?.length
+                          ? `${probeDevContextMcp.data.data.tools.slice(0, 5).join(", ")}`
+                          : ""
+                      }
+                    />
+                  )}
+                  {probeServerLogs.data && (
+                    <ProbeResultCard
+                      title="server logs"
+                      result={probeServerLogs.data.data}
+                      extra={
+                        probeServerLogs.data.data.configured === false
+                          ? "not configured"
+                          : `${probeServerLogs.data.data.snippets ?? 0} snippets`
+                      }
+                    />
+                  )}
+                </div>
+              )}
+              {(probeDevContextMcp.error || probeServerLogs.error) && (
+                <div className="mt-2 text-xs text-red-600">
+                  {((probeDevContextMcp.error || probeServerLogs.error) as Error).message}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2137,6 +2207,32 @@ function EmailInput({
         className="mt-1 w-full border border-slate-200 rounded px-2 py-1 text-sm bg-white"
       />
     </label>
+  );
+}
+
+function ProbeResultCard({
+  title,
+  result,
+  extra,
+}: {
+  title: string;
+  result: DevContextProbeResponse["data"];
+  extra?: string;
+}) {
+  return (
+    <div className="rounded border border-slate-200 bg-white px-2 py-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-slate-700">{title}</span>
+        <span className={result.ok ? "text-emerald-700" : "text-amber-700"}>
+          {result.ok ? "ok" : "check"}
+        </span>
+      </div>
+      <div className="text-slate-500">
+        {result.detail}
+        {typeof result.elapsed_ms === "number" ? ` · ${result.elapsed_ms}ms` : ""}
+      </div>
+      {extra && <div className="truncate font-mono text-slate-500">{extra}</div>}
+    </div>
   );
 }
 
