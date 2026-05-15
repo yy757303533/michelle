@@ -68,6 +68,16 @@ Track these numbers:
 | Diagnosis confirmation rate | Are failure explanations useful? |
 | Feedback routing distribution | Are failures improving the right object? |
 
+Michelle exposes these as a pilot-readiness snapshot:
+
+```bash
+curl http://localhost:8000/api/pilot/metrics?project_id=<project_id>
+```
+
+Use the response as the pilot scorecard after each meaningful run batch. The
+rates are intentionally nullable when the denominator is zero, so an empty pilot
+does not look healthier than it is.
+
 ## 5. Human Review Rules
 
 Human review is mandatory for:

@@ -286,9 +286,35 @@ curl -X POST http://localhost:8000/api/regression-assets/<asset_id>/review \
 curl -X POST http://localhost:8000/api/regression-assets/<asset_id>/replay \
   -H 'Content-Type: application/json' \
   -d '{}'
+
+# Read pilot metrics
+curl http://localhost:8000/api/pilot/metrics?project_id=demo
 ```
 
-## 6. Operational Checks
+## 6. MCP Agent Surface
+
+Michelle also exposes an opt-in MCP server for agent clients:
+
+```bash
+cd backend
+uv run python -m app.mcp.server
+```
+
+The MCP tools reuse the same database and service functions as the REST API:
+
+| Tool | Purpose |
+|---|---|
+| `list_cases` | List active cases for a project, optionally filtered by review status. |
+| `get_case` | Fetch one test case by id. |
+| `execute_case` | Create a normal Michelle run and schedule execution for an approved case. |
+| `get_run` | Fetch run status and step events. |
+| `diagnose` | Run or reuse diagnosis for a failed run. |
+| `suggest_cases` | Returns a coverage-first guidance error; raw case generation is not a product path. |
+
+Agent integrations should prefer these MCP tools or the REST API. Do not build
+parallel execution or diagnosis logic outside the shared service layer.
+
+## 7. Operational Checks
 
 Before a pilot run, verify:
 
@@ -302,7 +328,20 @@ Before a pilot run, verify:
 - retention policy;
 - project base URL and credentials.
 
-## 7. Artifact Policy
+Before a production-like deployment, also verify:
+
+- `APP_ENV` is `shared`, `staging`, `prod`, or `production`;
+- the default admin password has been changed or bootstrapped from
+  `artifacts/bootstrap-admin.txt`;
+- PostgreSQL is used instead of SQLite;
+- artifact storage is on a backed-up volume;
+- `PLAYWRIGHT_MCP_PACKAGE` is pinned;
+- `FRONTEND_ORIGIN` exactly matches the deployed frontend origin;
+- `/api/settings/selfcheck?include_mcp_probe=true` reports no blocking finding;
+- `/api/pilot/metrics?project_id=<project_id>` has non-null rates for the
+  workflow stages you intend to demonstrate.
+
+## 8. Artifact Policy
 
 Artifacts are evidence. Do not delete them casually.
 
@@ -321,7 +360,7 @@ Retention should distinguish:
 - failed runs: longer retention;
 - runs used as asset sources: retain while the asset is active.
 
-## 8. Failure Handling
+## 9. Failure Handling
 
 | Symptom | First check |
 |---|---|
@@ -336,7 +375,7 @@ Retention should distinguish:
 | Workspace diagnosis has no code files | `MICHELLE_DEV_CONTEXT_REPOS`, workspace checkout, failure keywords |
 | Server logs are missing | `MICHELLE_SERVER_LOGS_JSON`, SSH key access, whitelisted log paths |
 
-## 9. Migration Rule
+## 10. Migration Rule
 
 The old PRD-direct-to-case flow should not remain a first-class product path.
 During refactor, legacy endpoints may exist for compatibility, but new UI and

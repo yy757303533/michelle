@@ -83,6 +83,25 @@ Feedback updates:
 | **Diagnosis** | AI analysis of a failed run. Human feedback decides where the lesson lands. |
 | **Pattern** | A confirmed recurring failure signature used to identify similar failures faster. |
 
+## Productization Status
+
+Michelle is ready for internal pilots and controlled early-user trials. It is
+not positioned as a fully autonomous testing product: human review remains a
+required trust boundary for coverage, cases, regression assets, and diagnosis
+feedback.
+
+The current product-readiness surface includes:
+
+- REST and Web UI support for the coverage-first workflow;
+- an MCP server that reuses the same case, run, and diagnosis services as REST;
+- pilot metrics at `/api/pilot/metrics` for coverage quality, case review,
+  first-run success, asset extraction, replay speedup, and diagnosis feedback;
+- operational self-checks for auth, database, runner, Dev Context, and
+  Playwright MCP prerequisites.
+
+Before external production use, run the real-target pilot in `docs/PILOT.md`
+and record the metric baseline from `/api/pilot/metrics`.
+
 ## Architecture Direction
 
 The existing codebase already has useful foundations: PRD parsing and diffing,
