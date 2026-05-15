@@ -124,6 +124,43 @@ async def test_extract_approve_and_replay_regression_asset(app_client, memory_db
 
 
 @pytest.mark.asyncio
+async def test_extracts_semantic_locator_metadata(app_client, memory_db):
+    run_id = await _seed_passed_run(memory_db)
+
+    async with memory_db() as session:
+        session.add(
+            StepEvent(
+                run_id=run_id,
+                step_index=2,
+                event="agent.step.executed",
+                intent="click login",
+                tool_name="browser_click",
+                tool_args={
+                    "element": "Login",
+                    "ref": "button-login",
+                    "selector": "button[type=submit]",
+                },
+                tool_result={"ok": True},
+                status="ok",
+            )
+        )
+        await session.commit()
+
+    extracted = await app_client.post(f"/api/regression-assets/from-run/{run_id}")
+
+    assert extracted.status_code == 201
+    asset = extracted.json()["data"]
+    action = asset["action_plan"][2]
+    assert action["tool_name"] == "browser_click"
+    assert action["tool_args"]["selector"] == "button[type=submit]"
+    assert action["locator"] == {
+        "strategy": "css",
+        "value": "button[type=submit]",
+        "fallbacks": [{"strategy": "text", "value": "Login"}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_replay_failure_diagnosis_links_to_asset(memory_db):
     from app.services.regression_assets import ensure_replay_failure_diagnosis
 
@@ -248,6 +285,83 @@ async def test_deterministic_replay_executes_asset_action_plan(memory_db):
 
 
 @pytest.mark.asyncio
+async def test_replay_falls_back_from_semantic_locator_to_raw_args(memory_db):
+    from app.services.regression_assets import execute_asset_replay
+
+    async with memory_db() as session:
+        session.add(Project(project_id="demo", name="Demo"))
+        session.add(
+            TestCase(
+                case_id="TC-20260512-001",
+                project_id="demo",
+                name="Login works",
+                intent="User logs in",
+                review_status="approved",
+            )
+        )
+        session.add(
+            RegressionAsset(
+                asset_id="asset_test",
+                project_id="demo",
+                case_id="TC-20260512-001",
+                source_run_id="run_passed",
+                status="approved",
+                action_plan=[
+                    {
+                        "intent": "submit",
+                        "tool_name": "browser_click",
+                        "tool_args": {"selector": "button[type=submit]"},
+                        "locator": {
+                            "strategy": "text",
+                            "value": "Login",
+                            "fallbacks": [],
+                        },
+                    },
+                ],
+            )
+        )
+        session.add(
+            Run(
+                run_id="run_replay",
+                trace_id="trace_replay",
+                project_id="demo",
+                case_id="TC-20260512-001",
+                asset_id="asset_test",
+                status="pending",
+                execution_mode="replay",
+            )
+        )
+        await session.commit()
+
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_call(tool_name: str, arguments: dict) -> dict:
+        calls.append((tool_name, arguments))
+        if arguments == {"element": "Login", "ref": "Login"}:
+            return {"isError": True, "error": "semantic locator drifted"}
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    run = await execute_asset_replay(run_id="run_replay", call_tool=fake_call)
+
+    assert run.status == "passed"
+    assert calls == [
+        ("browser_click", {"element": "Login", "ref": "Login"}),
+        ("browser_click", {"selector": "button[type=submit]"}),
+    ]
+    async with memory_db() as session:
+        steps = (
+            (await session.execute(select(StepEvent).order_by(StepEvent.step_index)))
+            .scalars()
+            .all()
+        )
+    assert steps[0].tool_result["chosen_args"] == {"selector": "button[type=submit]"}
+    assert steps[0].tool_result["attempted_args"] == [
+        {"element": "Login", "ref": "Login"},
+        {"selector": "button[type=submit]"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_repair_asset_updates_action_plan_and_status(app_client, memory_db):
     async with memory_db() as session:
         session.add(Project(project_id="demo", name="Demo"))
@@ -291,6 +405,51 @@ async def test_repair_asset_updates_action_plan_and_status(app_client, memory_db
     data = response.json()["data"]
     assert data["status"] == "draft"
     assert data["action_plan"][0]["tool_args"]["selector"] == "button.submit"
+
+
+@pytest.mark.asyncio
+async def test_export_playwright_spec_api(app_client, memory_db):
+    async with memory_db() as session:
+        session.add(Project(project_id="demo", name="Demo"))
+        session.add(
+            TestCase(
+                case_id="TC-20260512-001",
+                project_id="demo",
+                name="Login works",
+                intent="User logs in",
+                review_status="approved",
+            )
+        )
+        session.add(
+            RegressionAsset(
+                asset_id="asset_test",
+                project_id="demo",
+                case_id="TC-20260512-001",
+                source_run_id="run_passed",
+                status="approved",
+                action_plan=[
+                    {
+                        "intent": "open login",
+                        "tool_name": "browser_navigate",
+                        "tool_args": {"url": "https://example.test/login"},
+                    },
+                    {
+                        "intent": "submit",
+                        "tool_name": "browser_click",
+                        "tool_args": {"selector": "button[type=submit]"},
+                    },
+                ],
+            )
+        )
+        await session.commit()
+
+    response = await app_client.get("/api/regression-assets/asset_test/playwright-spec")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["filename"] == "login-works.spec.ts"
+    assert "import { test, expect } from '@playwright/test';" in data["content"]
+    assert "await page.goto('https://example.test/login');" in data["content"]
 
 
 @pytest.mark.asyncio

@@ -626,6 +626,11 @@ function RecentRunsWidget({ projectId }: { projectId: string }) {
 function RegressionAssetsWidget({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const [exportedSpec, setExportedSpec] = useState<{
+    assetId: string;
+    filename: string;
+    content: string;
+  } | null>(null);
   const assets = useQuery({
     queryKey: ["regression-assets", projectId],
     enabled: Boolean(projectId),
@@ -705,6 +710,18 @@ function RegressionAssetsWidget({ projectId }: { projectId: string }) {
       qc.invalidateQueries({ queryKey: ["regression-assets", projectId] });
     },
   });
+  const exportSpec = useMutation({
+    mutationFn: async (
+      assetId: string,
+    ): Promise<{ data: { filename: string; content: string } }> => {
+      const r = await apiFetch(`/api/regression-assets/${assetId}/playwright-spec`);
+      if (!r.ok) throw new Error(await r.text());
+      return r.json();
+    },
+    onSuccess: (resp, assetId) => {
+      setExportedSpec({ assetId, filename: resp.data.filename, content: resp.data.content });
+    },
+  });
   const assetRows = assets.data?.data ?? [];
 
   return (
@@ -745,6 +762,13 @@ function RegressionAssetsWidget({ projectId }: { projectId: string }) {
                     replay
                   </button>
                   <button
+                    disabled={asset.status !== "approved" || exportSpec.isPending}
+                    onClick={() => exportSpec.mutate(asset.asset_id)}
+                    className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 disabled:opacity-50"
+                  >
+                    export spec
+                  </button>
+                  <button
                     onClick={() =>
                       setEditingAssetId((current) =>
                         current === asset.asset_id ? null : asset.asset_id,
@@ -762,6 +786,22 @@ function RegressionAssetsWidget({ projectId }: { projectId: string }) {
                     onCancel={() => setEditingAssetId(null)}
                     onSave={(body) => repair.mutate({ assetId: asset.asset_id, body })}
                   />
+                )}
+                {exportedSpec?.assetId === asset.asset_id && (
+                  <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2">
+                    <div className="mb-1 flex items-center gap-2">
+                      <code className="text-xs text-slate-600">{exportedSpec.filename}</code>
+                      <button
+                        onClick={() => setExportedSpec(null)}
+                        className="ml-auto rounded border border-slate-200 px-2 py-1 text-xs text-slate-700"
+                      >
+                        close
+                      </button>
+                    </div>
+                    <pre className="max-h-64 overflow-auto rounded bg-white p-2 text-xs text-slate-700">
+                      {exportedSpec.content}
+                    </pre>
+                  </div>
                 )}
               </div>
             ))}
@@ -800,9 +840,9 @@ function RegressionAssetsWidget({ projectId }: { projectId: string }) {
           </div>
         </div>
       )}
-      {(approve.error || replay.error || extract.error) && (
+      {(approve.error || replay.error || extract.error || exportSpec.error) && (
         <pre className="mt-2 whitespace-pre-wrap text-xs text-red-600">
-          {((approve.error || replay.error || extract.error) as Error).message}
+          {((approve.error || replay.error || extract.error || exportSpec.error) as Error).message}
         </pre>
       )}
       {repair.error && (

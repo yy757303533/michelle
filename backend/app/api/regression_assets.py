@@ -9,7 +9,8 @@ from sqlmodel import desc, select
 
 from app.auth import accessible_project_ids, require_project_role
 from app.db import get_session
-from app.models import RegressionAsset, Run
+from app.models import RegressionAsset, Run, TestCase
+from app.services.playwright_spec_export import export_playwright_spec
 from app.services.regression_assets import (
     RegressionAssetError,
     approve_asset,
@@ -119,6 +120,23 @@ async def repair_asset_endpoint(
     except RegressionAssetError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"data": repaired.model_dump()}
+
+
+@router.get("/{asset_id}/playwright-spec")
+async def export_asset_playwright_spec(
+    asset_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    asset = await session.get(RegressionAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    await require_project_role(
+        getattr(request.state, "user", None), asset.project_id, "viewer", session
+    )
+    case = await session.get(TestCase, asset.case_id)
+    spec = export_playwright_spec(asset, case)
+    return {"data": {"filename": spec.filename, "content": spec.content}}
 
 
 @router.post("/{asset_id}/replay", status_code=202)

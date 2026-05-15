@@ -82,12 +82,7 @@ async def extract_asset_from_passed_run(*, run_id: str, session: AsyncSession) -
         source_run_id=run.run_id,
         status="draft",
         action_plan=[
-            {
-                "step_index": step.step_index,
-                "intent": step.intent or "",
-                "tool_name": step.tool_name or "",
-                "tool_args": step.tool_args or {},
-            }
+            _action_plan_entry_from_step(step)
             for step in steps
             if step.status == "ok" and (step.tool_name or "").startswith("browser_")
         ],
@@ -108,6 +103,36 @@ async def extract_asset_from_passed_run(*, run_id: str, session: AsyncSession) -
     await session.commit()
     await session.refresh(asset)
     return asset
+
+
+def _action_plan_entry_from_step(step: StepEvent) -> dict[str, Any]:
+    entry = {
+        "step_index": step.step_index,
+        "intent": step.intent or "",
+        "tool_name": step.tool_name or "",
+        "tool_args": step.tool_args or {},
+    }
+    locator = _semantic_locator_from_step(step)
+    if locator is not None:
+        entry["locator"] = locator
+    return entry
+
+
+def _semantic_locator_from_step(step: StepEvent) -> dict[str, Any] | None:
+    args = step.tool_args if isinstance(step.tool_args, dict) else {}
+    result = step.tool_result if isinstance(step.tool_result, dict) else {}
+    fallbacks: list[dict[str, Any]] = []
+    if text := args.get("text"):
+        fallbacks.append({"strategy": "text", "value": str(text)})
+    if element := args.get("element"):
+        fallbacks.append({"strategy": "text", "value": str(element)})
+    if selector := args.get("selector"):
+        return {"strategy": "css", "value": str(selector), "fallbacks": fallbacks}
+    if ref := args.get("ref"):
+        return {"strategy": "raw_mcp", "value": str(ref), "fallbacks": fallbacks}
+    if label := result.get("label"):
+        return {"strategy": "label", "value": str(label), "fallbacks": fallbacks}
+    return fallbacks[0] if fallbacks else None
 
 
 async def approve_asset(*, asset_id: str, session: AsyncSession) -> RegressionAsset:
@@ -230,13 +255,26 @@ async def _execute_replay_plan(
         tool_name = str(action.get("tool_name") or "")
         if not tool_name:
             continue
-        arguments = action.get("tool_args") if isinstance(action.get("tool_args"), dict) else {}
-        try:
-            result = await call_tool(tool_name, arguments)
-            is_error = bool(result.get("isError") or result.get("is_error"))
-        except Exception as exc:  # noqa: BLE001
-            result = {"error": str(exc)}
-            is_error = True
+        attempted_args: list[dict[str, Any]] = []
+        result: dict[str, Any] = {}
+        is_error = True
+        chosen_args: dict[str, Any] = {}
+        for arguments in _replay_argument_candidates(action):
+            attempted_args.append(arguments)
+            try:
+                result = await call_tool(tool_name, arguments)
+                is_error = bool(result.get("isError") or result.get("is_error"))
+            except Exception as exc:  # noqa: BLE001
+                result = {"error": str(exc)}
+                is_error = True
+            if not is_error:
+                chosen_args = arguments
+                break
+        if is_error and attempted_args:
+            chosen_args = attempted_args[-1]
+        tool_result = dict(result)
+        tool_result["attempted_args"] = attempted_args
+        tool_result["chosen_args"] = chosen_args
         step = StepEvent(
             run_id=run.run_id,
             step_index=index,
@@ -244,8 +282,8 @@ async def _execute_replay_plan(
             event="replay.step.executed",
             intent=str(action.get("intent") or ""),
             tool_name=tool_name,
-            tool_args=arguments,
-            tool_result=result,
+            tool_args=chosen_args,
+            tool_result=tool_result,
             status="failed" if is_error else "ok",
             error_message=str(result.get("error") or "")[:500] if is_error else None,
         )
@@ -294,6 +332,43 @@ async def _execute_replay_plan(
     await session.commit()
     if failed:
         await ensure_replay_failure_diagnosis(run_id=run.run_id, session=session)
+
+
+def _replay_argument_candidates(action: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_args = action.get("tool_args") if isinstance(action.get("tool_args"), dict) else {}
+    locator = action.get("locator") if isinstance(action.get("locator"), dict) else None
+    candidates: list[dict[str, Any]] = []
+    for loc in _locator_sequence(locator):
+        candidate = _locator_to_mcp_args(action, loc)
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    if raw_args not in candidates:
+        candidates.append(raw_args)
+    return candidates or [{}]
+
+
+def _locator_sequence(locator: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not locator:
+        return []
+    sequence = [locator]
+    fallbacks = locator.get("fallbacks")
+    if isinstance(fallbacks, list):
+        sequence.extend(item for item in fallbacks if isinstance(item, dict))
+    priority = {"role": 0, "label": 1, "test_id": 2, "text": 3, "css": 4, "raw_mcp": 5}
+    return sorted(sequence, key=lambda item: priority.get(str(item.get("strategy") or ""), 99))
+
+
+def _locator_to_mcp_args(action: dict[str, Any], locator: dict[str, Any]) -> dict[str, Any] | None:
+    _ = action
+    strategy = locator.get("strategy")
+    value = str(locator.get("value") or locator.get("name") or "")
+    if not value:
+        return None
+    if strategy in {"text", "role", "label", "test_id"}:
+        return {"element": value, "ref": value}
+    if strategy == "css":
+        return {"selector": value}
+    return None
 
 
 async def ensure_replay_failure_diagnosis(*, run_id: str, session: AsyncSession) -> Diagnosis:
